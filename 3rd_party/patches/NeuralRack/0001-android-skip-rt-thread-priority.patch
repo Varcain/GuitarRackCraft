@@ -1,0 +1,21 @@
+--- a/NeuralRack/engine/ParallelThread.h	2026-02-20 14:06:47.175151227 +0100
++++ NeuralRack/engine/ParallelThread.h	2026-02-20 14:06:55.810148049 +0100
+@@ -355,8 +355,9 @@
+         });    
+     }
+ 
+-    // set thread scheduling class and priority level 
++    // set thread scheduling class and priority level
+     inline void setThreadPolicy(int32_t rt_prio, int32_t rt_policy) noexcept {
++        #if !defined(__ANDROID__)
+         #if defined(__linux__) || defined(_UNIX) || defined(__APPLE__) || defined(_OS_UNIX_)
+         sched_param sch_params;
+         if (rt_prio == 0) {
+@@ -375,6 +376,7 @@
+         #else
+         //system does not supports thread priority!
+         #endif
++        #endif // !__ANDROID__
+     }
+ 
+     // calculate the timeout for the thread wait functions

@@ -1,0 +1,48 @@
+diff --git a/trunk/src/LV2/xputty/header/xputty.h b/trunk/src/LV2/xputty/header/xputty.h
+index 45e3ac33..0c9bb7e9 100644
+--- a/trunk/src/LV2/xputty/header/xputty.h
++++ b/trunk/src/LV2/xputty/header/xputty.h
+@@ -193,6 +193,8 @@ struct Xputty{
+     Widget_t *hold_grab;
+ /** bool to quit the main loop */
+     bool run;
++/** bool to consume the ButtonRelease after a popup dismiss */
++    bool dismiss_consume_release;
+ /** small fontsize for all Widget_t*/
+     int small_font;
+ /** normal fontsize  for all Widget_t*/
+diff --git a/trunk/src/LV2/xputty/xputty.cpp b/trunk/src/LV2/xputty/xputty.cpp
+index 8c57afe0..47faae46 100644
+--- a/trunk/src/LV2/xputty/xputty.cpp
++++ b/trunk/src/LV2/xputty/xputty.cpp
+@@ -32,6 +32,7 @@ void main_init(Xputty *main) {
+     set_dark_theme(main);
+     main->hold_grab = NULL;
+     main->run = true;
++    main->dismiss_consume_release = false;
+     main->small_font = 10;
+     main->normal_font = 12;
+     main->big_font = 16;
+diff --git a/trunk/src/LV2/xputty/xwidget-linux.cpp b/trunk/src/LV2/xputty/xwidget-linux.cpp
+index 1da8d3d9..e990baeb 100644
+--- a/trunk/src/LV2/xputty/xwidget-linux.cpp
++++ b/trunk/src/LV2/xputty/xwidget-linux.cpp
+@@ -226,6 +226,10 @@ void os_widget_event_loop(void *w_, void* event, Xputty *main, void* user_data)
+
+         case ButtonRelease:
+             _check_grab(wid, &xev->xbutton, main);
++            if (main->dismiss_consume_release) {
++                main->dismiss_consume_release = false;
++                break;
++            }
+             if (wid->state == 4) break;
+             _has_pointer(wid, &xev->xbutton);
+             if(wid->flags & HAS_POINTER) wid->state = 1;
+@@ -551,6 +555,7 @@ void os_run_embedded(Xputty *main) {
+                     XUngrabPointer(main->dpy,CurrentTime);
+                     widget_hide(main->hold_grab);
+                     main->hold_grab = NULL;
++                    main->dismiss_consume_release = true;
+                 }
+             }
+         break;

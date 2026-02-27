@@ -1,0 +1,23 @@
+From: varcain <kamil.lulko@gmail.com>
+Subject: [PATCH] gxtuner: disable SCHED_FIFO on Android
+
+On Android, pthread_create with SCHED_FIFO policy fails without root
+privileges, silently setting PitchTracker::error = true. This causes
+the pitch tracker's add() method to return immediately without
+processing any audio, so the tuner never detects a frequency.
+
+Use default scheduling policy (SCHED_OTHER) on Android instead.
+
+diff --git a/trunk/src/LV2/gxtuner.lv2/tuner.cc b/trunk/src/LV2/gxtuner.lv2/tuner.cc
+index 7a68a038..4f9ae60e 100644
+--- a/trunk/src/LV2/gxtuner.lv2/tuner.cc
++++ b/trunk/src/LV2/gxtuner.lv2/tuner.cc
+@@ -71,7 +71,7 @@ tuner::tuner()
+ void tuner::init(unsigned int samplingFreq, PluginLV2 *plugin) {
+     tuner& self = *static_cast<tuner*>(plugin);
+     int priority = 0, policy = 0;
+-#ifdef _POSIX_PRIORITY_SCHEDULING
++#if defined(_POSIX_PRIORITY_SCHEDULING) && !defined(__ANDROID__)
+     int priomax = sched_get_priority_max(SCHED_FIFO);
+     if ((priomax/2.2) > 0) {
+         priority = priomax/2.2;

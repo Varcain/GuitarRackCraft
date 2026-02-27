@@ -1,0 +1,177 @@
+diff --git a/rt-neural-generic/src/rt-neural-generic.cpp b/rt-neural-generic/src/rt-neural-generic.cpp
+index 753b7a3..1db0092 100644
+--- a/rt-neural-generic/src/rt-neural-generic.cpp
++++ b/rt-neural-generic/src/rt-neural-generic.cpp
+@@ -318,7 +318,7 @@ LV2_Handle RtNeuralGeneric::instantiate(const LV2_Descriptor* descriptor, double
+     self->loading = true;
+ 
+     // Initial model triggered by host default state load later on
+-    self->model = nullptr;
++    self->model.store(nullptr, std::memory_order_relaxed);
+ 
+ #if ! AIDADSP_MODEL_LOADER
+     // Trigger the loading of the first model later in ::run
+@@ -341,13 +341,14 @@ void RtNeuralGeneric::activate(LV2_Handle instance)
+     self->preGain.clearToTargetValue();
+     self->masterGain.clearToTargetValue();
+ 
+-    if (self->model == nullptr)
++    DynamicModel* m = self->model.load(std::memory_order_acquire);
++    if (m == nullptr)
+         return;
+ 
+     // @TODO: include the activate function code here
+-    // @TODO: if (self->samplerate != self->model->samplerate) ???
++    // @TODO: if (self->samplerate != m->samplerate) ???
+ #if AIDADSP_CONDITIONED_MODELS
+-    self->model->paramFirstRun = true;
++    m->paramFirstRun = true;
+ #endif
+ #if 0
+     std::visit (
+@@ -359,7 +360,7 @@ void RtNeuralGeneric::activate(LV2_Handle instance)
+                 custom_model.reset();
+             }
+         },
+-        self->model->variant);
++        m->variant);
+     lv2_log_note(&self->logger, "%s %d: mdl rst!\n", __func__, __LINE__);
+ #endif
+ }
+@@ -628,18 +629,22 @@ void RtNeuralGeneric::run(LV2_Handle instance, uint32_t n_samples)
+     if(eq_position == 1.0f && eq_bypass == 0.0f) {
+         applyToneControls(self->out_1, self->out_1, instance, n_samples); // Equalizer section
+     }
+-    if (self->model != nullptr) {
+-        if (!net_bypass) {
++    {
++        // Read model pointer once (acquire pairs with release in work_response).
++        DynamicModel* model = self->model.load(std::memory_order_acquire);
++        if (model != nullptr && !net_bypass) {
+ #if AIDADSP_CONDITIONED_MODELS
+-            self->model->param1Coeff.setTargetValue(param1);
+-            self->model->param2Coeff.setTargetValue(param2);
+-            if (self->model->paramFirstRun) {
+-                self->model->paramFirstRun = false;
+-                self->model->param1Coeff.clearToTargetValue();
+-                self->model->param2Coeff.clearToTargetValue();
++            model->param1Coeff.setTargetValue(param1);
++            model->param2Coeff.setTargetValue(param2);
++            if (model->paramFirstRun) {
++                model->paramFirstRun = false;
++                model->param1Coeff.clearToTargetValue();
++                model->param2Coeff.clearToTargetValue();
+             }
+ #endif
+-            applyModel(self->model, self->out_1, n_samples);
++            self->computing.store(true, std::memory_order_seq_cst);
++            applyModel(model, self->out_1, n_samples);
++            self->computing.store(false, std::memory_order_seq_cst);
+         }
+     }
+ #if AIDADSP_OPTIONAL_DCBLOCKER
+@@ -665,7 +670,7 @@ void RtNeuralGeneric::cleanup(LV2_Handle instance)
+ {
+     RtNeuralGeneric *self = (RtNeuralGeneric*) instance;
+ 
+-    freeModel (self->model);
++    freeModel (self->model.load(std::memory_order_relaxed));
+     delete self->dc_blocker;
+     delete self->in_lpf;
+     delete self->bass;
+@@ -769,7 +774,8 @@ LV2_State_Status RtNeuralGeneric::save(LV2_Handle instance,
+     RtNeuralGeneric* self = (RtNeuralGeneric*) instance;
+ 
+     // nothing loaded yet
+-    if (!self->model) {
++    DynamicModel* m = self->model.load(std::memory_order_acquire);
++    if (!m) {
+         return LV2_STATE_SUCCESS;
+     }
+ 
+@@ -781,7 +787,7 @@ LV2_State_Status RtNeuralGeneric::save(LV2_Handle instance,
+     }
+ 
+     if (map_path) {
+-        char* apath = map_path->abstract_path(map_path->handle, self->model->path);
++        char* apath = map_path->abstract_path(map_path->handle, m->path);
+         store(handle,
+                 self->uris.json,
+                 apath,
+@@ -819,9 +825,12 @@ LV2_Worker_Status RtNeuralGeneric::work(LV2_Handle instance,
+     {
+     case kWorkerLoad:
+ #if AIDADSP_CONDITIONED_MODELS
+-        if (self->model != nullptr) {
+-            param1 = self->model->param1Coeff.getTargetValue();
+-            param2 = self->model->param2Coeff.getTargetValue();
++        {
++            DynamicModel* m = self->model.load(std::memory_order_acquire);
++            if (m != nullptr) {
++                param1 = m->param1Coeff.getTargetValue();
++                param2 = m->param2Coeff.getTargetValue();
++            }
+         }
+ #endif
+ #if AIDADSP_MODEL_LOADER
+@@ -836,6 +845,11 @@ LV2_Worker_Status RtNeuralGeneric::work(LV2_Handle instance,
+         return LV2_WORKER_SUCCESS;
+ 
+     case kWorkerFree:
++        // Spin-wait until the audio thread finishes using the model.
++        // Prevents use-after-free when freeModel races with applyModel.
++        while (self->computing.load(std::memory_order_seq_cst)) {
++            sched_yield(); // avoid priority inversion on RT audio threads
++        }
+         freeModel (((const WorkerApplyMessage*)data)->model);
+         return LV2_WORKER_SUCCESS;
+ 
+@@ -866,10 +880,11 @@ LV2_Worker_Status RtNeuralGeneric::work_response(LV2_Handle instance, uint32_t s
+         return LV2_WORKER_ERR_UNKNOWN;
+ 
+     // prepare reply for deleting old model
+-    WorkerApplyMessage reply = { kWorkerFree, self->model };
++    WorkerApplyMessage reply = { kWorkerFree, self->model.load(std::memory_order_relaxed) };
+ 
+-    // swap current model with new one
+-    self->model = static_cast<const WorkerApplyMessage*>(data)->model;
++    // swap current model with new one (release pairs with acquire in run/work)
++    DynamicModel* newmodel = static_cast<const WorkerApplyMessage*>(data)->model;
++    self->model.store(newmodel, std::memory_order_release);
+ 
+     // send reply
+     self->schedule->schedule_work(self->schedule->handle, sizeof(reply), &reply);
+@@ -882,8 +897,8 @@ LV2_Worker_Status RtNeuralGeneric::work_response(LV2_Handle instance, uint32_t s
+     lv2_atom_forge_frame_time(&self->forge, 0);
+     write_set_file(&self->forge,
+                    &self->uris,
+-                   self->model->path,
+-                   strlen(self->model->path));
++                   newmodel->path,
++                   strlen(newmodel->path));
+ #endif
+ 
+     self->loading = false;
+diff --git a/rt-neural-generic/src/rt-neural-generic.h b/rt-neural-generic/src/rt-neural-generic.h
+index 8de845c..f2f55fa 100644
+--- a/rt-neural-generic/src/rt-neural-generic.h
++++ b/rt-neural-generic/src/rt-neural-generic.h
+@@ -29,6 +29,8 @@
+ #include <stdlib.h>
+ #include <string.h>
+ #include <math.h>
++#include <atomic>
++#include <sched.h>
+ 
+ #include <lv2/atom/forge.h>
+ #include <lv2/atom/util.h>
+@@ -316,7 +318,8 @@ private:
+     Biquad *depth;
+     Biquad *presence;
+ 
+-    DynamicModel* model;
++    std::atomic<DynamicModel*> model{nullptr};
++    std::atomic<bool> computing{false};
+ 
+     static void applyBiquadFilter(float *out, const float *in, Biquad *filter, uint32_t n_samples);
+     static void applyModel(DynamicModel *model, float *out, uint32_t n_samples);

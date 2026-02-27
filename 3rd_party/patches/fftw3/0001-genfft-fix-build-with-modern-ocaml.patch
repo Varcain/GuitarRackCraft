@@ -1,0 +1,124 @@
+diff --git a/genfft/Makefile.am b/genfft/Makefile.am
+index 6d00c26b..e85aecc1 100644
+--- a/genfft/Makefile.am
++++ b/genfft/Makefile.am
+@@ -19,7 +19,7 @@ gen_hc2cdft.native gen_hc2cdft_c.native gen_hc2hc.native		\
+ gen_mdct.native
+ 
+ all-local::
+-	$(OCAMLBUILD) -classic-display -libs unix,nums $(GENFFT_NATIVE)
++	$(OCAMLBUILD) -classic-display -pkgs num  $(GENFFT_NATIVE)
+ 
+ maintainer-clean-local::
+ 	$(OCAMLBUILD) -classic-display -clean
+diff --git a/genfft/annotate.ml b/genfft/annotate.ml
+index e565a51b..ff1634eb 100644
+--- a/genfft/annotate.ml
++++ b/genfft/annotate.ml
+@@ -85,7 +85,7 @@ let reorder l =
+ 	let b' = List.map (fun (a, _) -> a) c' in
+ 	a :: (loop b') in
+   let l' = List.map (fun x -> x, uniq (find_block_vars x)) l in
+-  (* start with smallest block --- does this matter ? *)
++  (* start with smallest block --- does this matter? *)
+   match l' with
+     [] -> []
+   | _ ->  
+diff --git a/genfft/c.ml b/genfft/c.ml
+index 0b4964bb..7962f960 100644
+--- a/genfft/c.ml
++++ b/genfft/c.ml
+@@ -249,7 +249,7 @@ and unparse_function = function
+ 
+ 
+ (*************************************************************
+- * traverse a a function and return a list of all expressions,
++ * traverse a function and return a list of all expressions,
+  * in the execution order
+  **************************************************************)
+ let rec fcn_to_expr_list = fun (Fcn (_, _, _, body)) -> ast_to_expr_list body 
+diff --git a/genfft/number.ml b/genfft/number.ml
+index 1762ca14..435b25fe 100644
+--- a/genfft/number.ml
++++ b/genfft/number.ml
+@@ -33,7 +33,7 @@
+    unity, since the Num package only supplies simple arithmetic.  The
+    arbitrary-precision operations in Num look like the normal
+    operations except that they have an appended slash (e.g. +/ -/ */
+-   // etcetera). *)
++   // etc.). *)
+ 
+ open Num
+ 
+diff --git a/genfft/schedule.ml b/genfft/schedule.ml
+index 3137a056..0fd09927 100644
+--- a/genfft/schedule.ml
++++ b/genfft/schedule.ml
+@@ -27,7 +27,7 @@
+    resulting schedule data structure expresses a "good" ordering
+    and structure for the computation.
+ 
+-   The scheduler makes use of utilties in Dag and other packages to
++   The scheduler makes use of utilities in Dag and other packages to
+    manipulate the Dag and the instruction list. *)
+ 
+ open Dag
+diff --git a/genfft/util.ml b/genfft/util.ml
+index 62bd12fa..6f11d758 100644
+--- a/genfft/util.ml
++++ b/genfft/util.ml
+@@ -21,7 +21,6 @@
+ 
+ (* various utility functions *)
+ open List
+-open Unix 
+ 
+ (*****************************************
+  * Integer operations
+@@ -50,7 +49,7 @@ let lowest_terms n m =
+       (1,0)
+     else
+       let nn = (abs n) in let mm = m * (n / nn)
+-      in let mpos = 
++      in let mpos =
+ 	  if (mm > 0) then (mm mod nn)
+ 	  else (mm + (1 + (abs mm) / nn) * nn) mod nn
+       and d = gcd nn (abs mm)
+@@ -84,7 +83,7 @@ let rec pow_mod x n p =
+     else x * (pow_mod x (n - 1) p) mod p
+ 
+ (******************************************
+- * auxiliary functions 
++ * auxiliary functions
+  ******************************************)
+ let rec forall id combiner a b f =
+     if (a >= b) then id
+@@ -93,11 +92,11 @@ let rec forall id combiner a b f =
+ let sum_list l = fold_right (+) l 0
+ let max_list l = fold_right (max) l (-999999)
+ let min_list l = fold_right (min) l 999999
+-let count pred = fold_left 
++let count pred = fold_left
+     (fun a elem -> if (pred elem) then 1 + a else a) 0
+ let remove elem = List.filter (fun e -> (e != elem))
+ let cons a b = a :: b
+-let null = function 
++let null = function
+     [] -> true
+   | _ -> false
+ let for_list l f = List.iter f l
+@@ -134,12 +133,9 @@ let rec suchthat a pred =
+ (* print an information message *)
+ let info string =
+   if !Magic.verbose then begin
+-    let now = Unix.times () 
+-    and pid = Unix.getpid () in
+-    prerr_string ((string_of_int pid) ^ ": " ^
+-		  "at t = " ^  (string_of_float now.tms_utime) ^ " : ");
++    prerr_string ("at t = " ^  (string_of_float (Sys.time())) ^ " : ");
+     prerr_string (string ^ "\n");
+-    flush Pervasives.stderr;
++    flush Stdlib.stderr;
+   end
+ 
+ (* iota n produces the list [0; 1; ...; n - 1] *)

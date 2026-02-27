@@ -1,0 +1,71 @@
+diff --git a/libxputty/xputty/widgets/xbutton_private.c b/libxputty/xputty/widgets/xbutton_private.c
+index c08b4f0..7835e34 100644
+--- a/libxputty/xputty/widgets/xbutton_private.c
++++ b/libxputty/xputty/widgets/xbutton_private.c
+@@ -55,8 +55,8 @@ void _pattern_in(Widget_t *w, Color_state st, int height) {
+ }
+ 
+ void _draw_image_button(Widget_t *w, int width_t, int height_t, float offset) {
+-    int width = cairo_xlib_surface_get_width(w->image);
+-    int height = cairo_xlib_surface_get_height(w->image);
++    int width = cairo_image_surface_get_width(w->image);
++    int height = cairo_image_surface_get_height(w->image);
+     double half_width = (width/height >=2) ? width*0.5 : width;
+     double x = (double)width_t/(double)(half_width);
+     double y = (double)height_t/(double)height;
+@@ -73,8 +73,8 @@ void _draw_image_button(Widget_t *w, int width_t, int height_t, float offset) {
+ }
+ 
+ void _draw_image_button_with_label(Widget_t *w, int width_t, int height_t) {
+-    int width = cairo_xlib_surface_get_width(w->image);
+-    int height = cairo_xlib_surface_get_height(w->image);
++    int width = cairo_image_surface_get_width(w->image);
++    int height = cairo_image_surface_get_height(w->image);
+     double x = (double)width_t/(double)height;
+     double y = (double)height/(double)width_t;
+     double buttonstate = adj_get_state(w->adj);
+diff --git a/libxputty/xputty/widgets/xknob_private.c b/libxputty/xputty/widgets/xknob_private.c
+index 265f36f..3364954 100644
+--- a/libxputty/xputty/widgets/xknob_private.c
++++ b/libxputty/xputty/widgets/xknob_private.c
+@@ -33,8 +33,8 @@ static void _show_label(Widget_t *w, int width, int height) {
+ }
+ 
+ void _draw_image_knob(Widget_t *w, int width_t, int height_t) {
+-    int width = cairo_xlib_surface_get_width(w->image);
+-    int height = cairo_xlib_surface_get_height(w->image);
++    int width = cairo_image_surface_get_width(w->image);
++    int height = cairo_image_surface_get_height(w->image);
+     double x = (double)width_t/(double)height;
+     double y = (double)height/(double)width_t;
+     double knobstate = adj_get_state(w->adj_y);
+diff --git a/libxputty/xputty/xpngloader.c b/libxputty/xputty/xpngloader.c
+index 29aa196..f9e5ad2 100644
+--- a/libxputty/xputty/xpngloader.c
++++ b/libxputty/xputty/xpngloader.c
+@@ -45,8 +45,10 @@ void _copy_surface_to_widget(Widget_t *w, cairo_surface_t *getpng) {
+     cairo_surface_destroy(w->image);
+     w->image = NULL;
+     
+-    w->image = cairo_surface_create_similar (w->surface, 
+-                        CAIRO_CONTENT_COLOR_ALPHA, width, height);
++    /* Use cairo_image_surface_create instead of cairo_surface_create_similar.
++       Without the X11 RENDER extension, create_similar returns an IMAGE surface
++       but callers use cairo_xlib_surface_get_width which returns 0 for IMAGE. */
++    w->image = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, width, height);
+     cairo_t *cri = cairo_create (w->image);
+     cairo_set_source_surface (cri, getpng,0,0);
+     cairo_paint (cri);
+@@ -63,8 +65,10 @@ void _copy_scaled_surface_to_widget(Widget_t *w, cairo_surface_t *getpng) {
+     cairo_surface_destroy(w->image);
+     w->image = NULL;
+ 
+-    w->image = cairo_surface_create_similar (w->surface, 
+-                        CAIRO_CONTENT_COLOR_ALPHA, width_t, height_t);
++    /* Use cairo_image_surface_create instead of cairo_surface_create_similar.
++       Without the X11 RENDER extension, create_similar returns an IMAGE surface
++       but callers use cairo_xlib_surface_get_width which returns 0 for IMAGE. */
++    w->image = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, width_t, height_t);
+     cairo_t *cri = cairo_create (w->image);
+     cairo_scale(cri, x,y);    
+     cairo_set_source_surface (cri, getpng,0,0);

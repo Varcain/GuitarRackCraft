@@ -1,0 +1,79 @@
+#!/bin/bash
+set -e
+
+# AIDA-X full build sync + TTL patching script
+# Generated from aidax_full_sync.sh.in by configure_file()
+# .so files go ONLY to jniLibs (not duplicated into assets)
+
+TTL_DIR="@_ttl_dir@"
+CROSS_BUILD="@_cross_build@"
+ASSETS_DIR="@_aidax_full_assets@"
+JNILIBS_DIR="@JNILIBS_DIR@"
+
+mkdir -p "${ASSETS_DIR}" "${JNILIBS_DIR}"
+
+# Copy TTL files from native build
+cp "${TTL_DIR}/"*.ttl "${ASSETS_DIR}/"
+
+# Find DSP .so (name varies between builds)
+DSP_SO="${CROSS_BUILD}/bin/AIDA-X.lv2/AIDA-X_dsp.so"
+[ ! -f "$DSP_SO" ] && DSP_SO="${CROSS_BUILD}/bin/AIDA-X.lv2/AIDA-X.so"
+[ ! -f "$DSP_SO" ] && echo 'ERROR: AIDA-X DSP .so not found' && exit 1
+DSP_BASE=$(basename "$DSP_SO")
+
+# Copy DSP .so to jniLibs only (with lib prefix)
+cp "$DSP_SO" "${JNILIBS_DIR}/lib${DSP_BASE}"
+
+# Handle UI .so if present
+UI_SO="${CROSS_BUILD}/bin/AIDA-X.lv2/AIDA-X_ui.so"
+if [ -f "$UI_SO" ]; then
+    UI_BASE=$(basename "$UI_SO")
+
+    # Copy UI .so to jniLibs only (with lib prefix)
+    cp "$UI_SO" "${JNILIBS_DIR}/lib${UI_BASE}"
+
+    PLUGIN_URI='http://aidadsp.cc/plugins/aidadsp-bundle/rt-neural-loader'
+    UI_URI="${PLUGIN_URI}#DPF_UI"
+
+    # Patch manifest.ttl with UI declaration
+    if ! grep -q 'ui:' "${ASSETS_DIR}/manifest.ttl"; then
+        sed -i '/@prefix rdfs:/a @prefix ui:   <http:\/\/lv2plug.in\/ns\/extensions\/ui#> .' \
+            "${ASSETS_DIR}/manifest.ttl"
+        cat >> "${ASSETS_DIR}/manifest.ttl" <<UIEOF
+
+<${UI_URI}>
+    a ui:X11UI ;
+    ui:binary <${UI_BASE}> ;
+    rdfs:seeAlso <AIDA-X_ui.ttl> .
+UIEOF
+    fi
+
+    # Patch DSP TTL with ui:ui reference
+    DSP_TTL="${ASSETS_DIR}/$DSP_BASE"
+    DSP_TTL="${DSP_TTL%.so}.ttl"
+    if [ -f "$DSP_TTL" ] && ! grep -q 'ui:ui' "$DSP_TTL"; then
+        sed -i '/@prefix spdx:/a @prefix ui:    <http:\/\/lv2plug.in\/ns\/extensions\/ui#> .' \
+            "$DSP_TTL"
+        sed -i "0,/lv2:port \[/s|lv2:port \[|ui:ui <${UI_URI}> ;\n\n    lv2:port [|" \
+            "$DSP_TTL"
+    fi
+
+    # Generate UI TTL
+    cat > "${ASSETS_DIR}/AIDA-X_ui.ttl" <<UITTL
+@prefix lv2:  <http://lv2plug.in/ns/lv2core#> .
+@prefix ui:   <http://lv2plug.in/ns/extensions/ui#> .
+@prefix opts: <http://lv2plug.in/ns/ext/options#> .
+<${UI_URI}>
+    lv2:extensionData opts:interface ,
+                      ui:idleInterface ,
+                      ui:showInterface ;
+    lv2:optionalFeature ui:noUserResize ,
+                        ui:parent ,
+                        ui:touch ,
+                        ui:requestValue ;
+    lv2:requiredFeature opts:options ,
+                        ui:idleInterface ,
+                        <http://lv2plug.in/ns/ext/urid#map> ;
+    opts:supportedOption <http://lv2plug.in/ns/ext/parameters#sampleRate> .
+UITTL
+fi

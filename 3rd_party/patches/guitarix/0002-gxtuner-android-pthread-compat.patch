@@ -1,0 +1,77 @@
+diff --git a/trunk/src/LV2/gxtuner.lv2/gx_pitch_tracker.cpp b/trunk/src/LV2/gxtuner.lv2/gx_pitch_tracker.cpp
+index 5fa61f19..80ca18ef 100644
+--- a/trunk/src/LV2/gxtuner.lv2/gx_pitch_tracker.cpp
++++ b/trunk/src/LV2/gxtuner.lv2/gx_pitch_tracker.cpp
+@@ -47,6 +47,9 @@ PitchTracker::PitchTracker()
+     : error(false),
+       busy(false),
+       tick(0),
++#ifdef __ANDROID__
++      m_pthr_stop(false),
++#endif
+       m_pthr(0),
+       resamp(),
+       m_sampleRate(),
+@@ -147,7 +150,12 @@ bool PitchTracker::setParameters(int priority, int policy, int sampleRate, int b
+ }
+ 
+ void PitchTracker::stop_thread() {
++#ifdef __ANDROID__
++    m_pthr_stop = true;
++    sem_post(&m_trig);
++#else
+     pthread_cancel (m_pthr);
++#endif
+     pthread_join (m_pthr, NULL);
+ }
+ 
+@@ -157,11 +165,15 @@ void PitchTracker::start_thread(int priority, int policy) {
+     spar.sched_priority = priority;
+     pthread_attr_init(&attr);
+     pthread_attr_setdetachstate(&attr,PTHREAD_CREATE_JOINABLE );
++#ifndef __ANDROID__
+     pthread_setcancelstate (PTHREAD_CANCEL_ENABLE, NULL);
++#endif
+     pthread_attr_setschedpolicy(&attr, policy);
+     pthread_attr_setschedparam(&attr, &spar);
+     pthread_attr_setscope(&attr, PTHREAD_SCOPE_SYSTEM);
++#ifndef __ANDROID__
+     pthread_attr_setinheritsched(&attr, PTHREAD_EXPLICIT_SCHED);
++#endif
+     // pthread_attr_setstacksize(&attr, 0x10000);
+     if (pthread_create(&m_pthr, &attr, static_run,
+                        reinterpret_cast<void*>(this))) {
+@@ -318,12 +330,18 @@ static int findsubMaximum(float *input, int len, float threshold) {
+ void PitchTracker::run() {
+     for (;;) {
+         busy = false;
++#ifdef __ANDROID__
++        if (m_pthr_stop) return;
++#endif
+         #ifdef __APPLE__
+             dispatch_semaphore_wait(m_trig, DISPATCH_TIME_FOREVER);
+         #else
+             sem_wait(&m_trig);
+         #endif
+-        
++#ifdef __ANDROID__
++        if (m_pthr_stop) return;
++#endif
++
+         if (error) {
+             continue;
+         }
+diff --git a/trunk/src/LV2/gxtuner.lv2/gx_pitch_tracker.h b/trunk/src/LV2/gxtuner.lv2/gx_pitch_tracker.h
+index 07aa8122..6251cf14 100644
+--- a/trunk/src/LV2/gxtuner.lv2/gx_pitch_tracker.h
++++ b/trunk/src/LV2/gxtuner.lv2/gx_pitch_tracker.h
+@@ -63,6 +63,9 @@ class PitchTracker {
+     sem_t           m_trig;
+    #endif
+     pthread_t       m_pthr;
++#ifdef __ANDROID__
++    volatile bool   m_pthr_stop;
++#endif
+     Resampler       resamp;
+     int             m_sampleRate;
+     int             fixed_sampleRate;

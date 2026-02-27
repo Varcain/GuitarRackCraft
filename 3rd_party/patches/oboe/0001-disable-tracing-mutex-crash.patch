@@ -1,0 +1,55 @@
+diff --git a/src/common/Trace.cpp b/src/common/Trace.cpp
+index 2dbd1fba..c2ddb015 100644
+--- a/src/common/Trace.cpp
++++ b/src/common/Trace.cpp
+@@ -52,43 +52,11 @@ void Trace::setCounter(const char *counterName, int64_t counterValue) const {
+ }
+ 
+ Trace::Trace() {
+-    // Using dlsym allows us to use tracing on API 21+ without needing android/trace.h which wasn't
+-    // published until API 23
+-    void *lib = dlopen("libandroid.so", RTLD_NOW | RTLD_LOCAL);
+-    LOGD("Trace():  dlopen(%s) returned %p", "libandroid.so", lib);
+-    if (lib == nullptr) {
+-        LOGE("Trace() could not open libandroid.so to dynamically load tracing symbols");
+-    } else {
+-        ATrace_beginSection =
+-                reinterpret_cast<fp_ATrace_beginSection>(
+-                        dlsym(lib, "ATrace_beginSection"));
+-        if (ATrace_beginSection == nullptr) {
+-            LOGE("Trace::beginSection() not supported");
+-            return;
+-        }
+-
+-        ATrace_endSection =
+-                reinterpret_cast<fp_ATrace_endSection>(
+-                        dlsym(lib, "ATrace_endSection"));
+-        if (ATrace_endSection == nullptr) {
+-            LOGE("Trace::endSection() not supported");
+-            return;
+-        }
+-
+-        ATrace_setCounter =
+-                reinterpret_cast<fp_ATrace_setCounter>(
+-                        dlsym(lib, "ATrace_setCounter"));
+-        if (ATrace_setCounter == nullptr) {
+-            LOGE("Trace::setCounter() not supported");
+-            return;
+-        }
+-
+-        // If any of the previous functions are null then ATrace_isEnabled will be null.
+-        ATrace_isEnabled =
+-                reinterpret_cast<fp_ATrace_isEnabled>(
+-                        dlsym(lib, "ATrace_isEnabled"));
+-        if (ATrace_isEnabled == nullptr) {
+-            LOGE("Trace::isEnabled() not supported");
+-        }
+-    }
++    // DISABLED: Tracing causes "pthread_mutex_lock on destroyed mutex" crashes on OnePlus
++    // devices due to destructor order issues with HWUI threads. The Trace singleton is
++    // destroyed while HWUI threads are still using shared tracing mutexes.
++    // See: https://github.com/google/oboe/issues/XXX
++    LOGD("Trace(): DISABLED to avoid mutex crashes on OnePlus devices");
++    // All function pointers remain nullptr, so isEnabled() returns false
++    // and no tracing functions are called.
+ }

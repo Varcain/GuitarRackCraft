@@ -1,0 +1,13 @@
+diff --git a/trunk/src/zita-convolver/zita-convolver.cc b/trunk/src/zita-convolver/zita-convolver.cc
+--- a/trunk/src/zita-convolver/zita-convolver.cc
++++ b/trunk/src/zita-convolver/zita-convolver.cc
+@@ -636,7 +636,9 @@
+     pthread_attr_setschedpolicy (&attr, policy);
+     pthread_attr_setschedparam (&attr, &parm);
+     pthread_attr_setscope (&attr, PTHREAD_SCOPE_SYSTEM);
++#ifndef __ANDROID__
+     pthread_attr_setinheritsched (&attr, PTHREAD_EXPLICIT_SCHED);
++#endif
+     pthread_attr_setstacksize (&attr, 0x10000);
+     pthread_create (&_pthr, &attr, static_main, this);
+     pthread_attr_destroy (&attr);

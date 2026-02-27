@@ -1,0 +1,5 @@
+# Extracted tarball directories (build scripts download + extract these on demand)
+expat-*/
+!expat-*.tar.gz
+mesa-*/
+!mesa-*.tar.xz

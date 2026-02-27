@@ -1,0 +1,59 @@
+diff --git a/Tools/compiler_c.py b/Tools/compiler_c.py
+index 2dba3f8..ec533b1 100644
+--- a/Tools/compiler_c.py
++++ b/Tools/compiler_c.py
+@@ -1,4 +1,5 @@
+ #!/usr/bin/env python
++import os
+ # encoding: utf-8
+ # Matthias Jahn jahn dôt matthias ât freenet dôt de, 2007 (pmarat)
+ 
+@@ -62,6 +63,12 @@ def default_compilers():
+ 	return ' '.join(possible_compiler_list)
+ 
+ def configure(conf):
++	# Honor CC from environment (e.g. Android NDK)
++	if os.environ.get("CC"):
++		conf.env.CC = conf.cmd_to_list(os.environ["CC"])
++		_s = os.environ.get("CC", "")
++		if "clang" in _s and not getattr(conf.options, "check_c_compiler", None):
++			conf.options.check_c_compiler = "clang"
+ 	"""
+ 	Detects a suitable C compiler
+ 
+diff --git a/Tools/compiler_cxx.py b/Tools/compiler_cxx.py
+index 1af65a2..c59898d 100644
+--- a/Tools/compiler_cxx.py
++++ b/Tools/compiler_cxx.py
+@@ -1,4 +1,5 @@
+ #!/usr/bin/env python
++import os
+ # encoding: utf-8
+ # Matthias Jahn jahn dôt matthias ât freenet dôt de 2007 (pmarat)
+ 
+@@ -63,6 +64,12 @@ def default_compilers():
+ 	return ' '.join(possible_compiler_list)
+ 
+ def configure(conf):
++	# Honor CXX from environment (e.g. Android NDK)
++	if os.environ.get("CXX"):
++		conf.env.CXX = conf.cmd_to_list(os.environ["CXX"])
++		_s = os.environ.get("CXX", "")
++		if "clang" in _s and not getattr(conf.options, "check_cxx_compiler", None):
++			conf.options.check_cxx_compiler = "clang++"
+ 	"""
+ 	Detects a suitable C++ compiler
+ 
+diff --git a/extras/c_nec.py b/extras/c_nec.py
+index 96bfae4..c23c0c7 100644
+--- a/extras/c_nec.py
++++ b/extras/c_nec.py
+@@ -32,7 +32,7 @@ def get_sxc_version(conf, fc):
+ 	if out:
+ 		match = version_re(out)
+ 	else:
+-		match = version_re(err)
++		match = version_re(err.decode("utf-8") if isinstance(err, bytes) else err)
+ 	if not match:
+ 		conf.fatal('Could not determine the NEC C compiler version.')
+ 	k = match.groupdict()

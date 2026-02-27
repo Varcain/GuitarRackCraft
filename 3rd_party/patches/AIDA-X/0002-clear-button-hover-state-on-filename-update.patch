@@ -1,0 +1,25 @@
+diff --git a/src/Widgets.hpp b/src/Widgets.hpp
+index 56c53d2..c0167a0 100644
+--- a/src/Widgets.hpp
++++ b/src/Widgets.hpp
+@@ -798,6 +798,8 @@ class AidaFilenameButton : public NanoSubWidget
+             labels.load = "Load " + label + "...";
+         }
+ 
++        void resetState() { clearState(); }
++
+         void onNanoDisplay() override
+         {
+             const uint width = getWidth();
+@@ -888,6 +890,11 @@ public:
+             button->filename = bname + 1;
+         else
+             button->filename = fname;
++        // Clear hover state so the filename text is shown immediately.
++        // On touch devices, kButtonStateHover is sticky (no mouse-leave event
++        // after finger lift), causing "Load model..." to display instead of
++        // the actual filename.
++        button->resetState();
+         button->repaint();
+     }
+ 

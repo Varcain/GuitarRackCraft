@@ -1,0 +1,24 @@
+diff --git a/modules/dpf/dgl/src/pugl-upstream/src/x11.c b/modules/dpf/dgl/src/pugl-upstream/src/x11.c
+index 217838f..787cd9b 100644
+--- a/modules/dpf/dgl/src/pugl-upstream/src/x11.c
++++ b/modules/dpf/dgl/src/pugl-upstream/src/x11.c
+@@ -1917,14 +1917,12 @@ puglPostRedisplayRect(PuglView* const view, const PuglRect rect)
+   const PuglExposeEvent event = {
+     PUGL_EXPOSE, 0, rect.x, rect.y, rect.width, rect.height};
+
+-  if (view->world->impl->dispatchingEvents) {
+-    // Currently dispatching events, add/expand expose for the loop end
++  if (view->impl->win) {
++    // Always merge directly into pendingExpose — the next flushExposures()
++    // in puglUpdate() will process it.  In embedded environments (Android
++    // X11 emulation) the XSendEvent round-trip may not complete before
++    // XEventsQueued returns, causing missed repaints.
+     mergeExposeEvents(&view->impl->pendingExpose.expose, &event);
+-  } else if (view->impl->win) {
+-    // Not dispatching events, send an X expose so we wake up next time
+-    PuglEvent exposeEvent = {{PUGL_EXPOSE, 0}};
+-    exposeEvent.expose    = event;
+-    return puglSendEvent(view, &exposeEvent);
+   }
+
+   return PUGL_SUCCESS;

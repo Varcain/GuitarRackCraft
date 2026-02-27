@@ -1,0 +1,115 @@
+[submodule "3rd_party/serd"]
+	path = 3rd_party/serd
+	url = https://gitlab.com/drobilla/serd.git
+[submodule "3rd_party/zix"]
+	path = 3rd_party/zix
+	url = https://gitlab.com/drobilla/zix.git
+[submodule "3rd_party/sord"]
+	path = 3rd_party/sord
+	url = https://gitlab.com/drobilla/sord.git
+[submodule "3rd_party/lv2"]
+	path = 3rd_party/lv2
+	url = https://gitlab.com/lv2/lv2.git
+[submodule "3rd_party/sratom"]
+	path = 3rd_party/sratom
+	url = https://gitlab.com/lv2/sratom.git
+[submodule "3rd_party/lilv"]
+	path = 3rd_party/lilv
+	url = https://github.com/atsushieno/lilv.git
+	branch = android
+[submodule "3rd_party/GxPlugins.lv2.Android"]
+	path = 3rd_party/GxPlugins.lv2.Android
+	url = https://github.com/djshaji/GxPlugins.lv2.Android.git
+[submodule "3rd_party/guitarix"]
+	path = 3rd_party/guitarix
+	url = https://github.com/brummer10/guitarix.git
+[submodule "3rd_party/oboe"]
+	path = 3rd_party/oboe
+	url = https://github.com/google/oboe.git
+[submodule "3rd_party/x11/xorgproto"]
+	path = 3rd_party/x11/xorgproto
+	url = https://gitlab.freedesktop.org/xorg/proto/xorgproto.git
+[submodule "3rd_party/x11/xtrans"]
+	path = 3rd_party/x11/xtrans
+	url = https://gitlab.freedesktop.org/xorg/lib/libxtrans.git
+[submodule "3rd_party/x11/libXau"]
+	path = 3rd_party/x11/libXau
+	url = https://gitlab.freedesktop.org/xorg/lib/libxau.git
+[submodule "3rd_party/x11/xcb-proto"]
+	path = 3rd_party/x11/xcb-proto
+	url = https://gitlab.freedesktop.org/xorg/proto/xcbproto.git
+[submodule "3rd_party/x11/libxcb"]
+	path = 3rd_party/x11/libxcb
+	url = https://gitlab.freedesktop.org/xorg/lib/libxcb.git
+[submodule "3rd_party/x11/libX11"]
+	path = 3rd_party/x11/libX11
+	url = https://gitlab.freedesktop.org/xorg/lib/libx11.git
+[submodule "3rd_party/x11/libXext"]
+	path = 3rd_party/x11/libXext
+	url = https://gitlab.freedesktop.org/xorg/lib/libxext.git
+[submodule "3rd_party/x11/libXrender"]
+	path = 3rd_party/x11/libXrender
+	url = https://gitlab.freedesktop.org/xorg/lib/libxrender.git
+[submodule "3rd_party/x11/pixman"]
+	path = 3rd_party/x11/pixman
+	url = https://gitlab.freedesktop.org/pixman/pixman.git
+[submodule "3rd_party/x11/libpng"]
+	path = 3rd_party/x11/libpng
+	url = https://github.com/pnggroup/libpng.git
+[submodule "3rd_party/x11/cairo"]
+	path = 3rd_party/x11/cairo
+	url = https://gitlab.freedesktop.org/cairo/cairo.git
+[submodule "3rd_party/x11/util-macros"]
+	path = 3rd_party/x11/util-macros
+	url = https://gitlab.freedesktop.org/xorg/util/macros.git
+[submodule "3rd_party/neural-amp-modeler-lv2"]
+	path = 3rd_party/neural-amp-modeler-lv2
+	url = https://github.com/mikeoliphant/neural-amp-modeler-lv2.git
+[submodule "3rd_party/aidadsp-lv2"]
+	path = 3rd_party/aidadsp-lv2
+	url = https://github.com/AidaDSP/aidadsp-lv2.git
+[submodule "3rd_party/eigen"]
+	path = 3rd_party/eigen
+	url = https://gitlab.com/libeigen/eigen.git
+[submodule "3rd_party/AIDA-X"]
+	path = 3rd_party/AIDA-X
+	url = https://github.com/AidaDSP/AIDA-X.git
+[submodule "3rd_party/NeuralRack"]
+	path = 3rd_party/NeuralRack
+	url = https://github.com/brummer10/NeuralRack.git
+[submodule "3rd_party/expat"]
+	path = 3rd_party/expat
+	url = https://github.com/libexpat/libexpat.git
+[submodule "3rd_party/libsndfile"]
+	path = 3rd_party/libsndfile
+	url = https://github.com/libsndfile/libsndfile.git
+[submodule "3rd_party/mesa"]
+	path = 3rd_party/mesa
+	url = https://gitlab.freedesktop.org/mesa/mesa.git
+[submodule "3rd_party/ImpulseLoader"]
+	path = 3rd_party/ImpulseLoader
+	url = https://github.com/brummer10/ImpulseLoader.git
+[submodule "3rd_party/XDarkTerror"]
+	path = 3rd_party/XDarkTerror
+	url = https://github.com/brummer10/XDarkTerror.lv2.git
+[submodule "3rd_party/XTinyTerror"]
+	path = 3rd_party/XTinyTerror
+	url = https://github.com/brummer10/XTinyTerror.lv2
+[submodule "3rd_party/CollisionDrive"]
+	path = 3rd_party/CollisionDrive
+	url = https://github.com/brummer10/CollisionDrive.git
+[submodule "3rd_party/MetalTone"]
+	path = 3rd_party/MetalTone
+	url = https://github.com/brummer10/MetalTone.git
+[submodule "3rd_party/GxCabSim.lv2"]
+	path = 3rd_party/GxCabSim.lv2
+	url = https://github.com/brummer10/GxCabSim.lv2.git
+[submodule "3rd_party/ModularAmpToolKit.lv2"]
+	path = 3rd_party/ModularAmpToolKit.lv2
+	url = https://github.com/brummer10/ModularAmpToolKit.lv2.git
+[submodule "3rd_party/FatFrog.lv2"]
+	path = 3rd_party/FatFrog.lv2
+	url = https://github.com/brummer10/FatFrog.lv2.git
+[submodule "3rd_party/fftw3"]
+	path = 3rd_party/fftw3
+	url = https://github.com/FFTW/fftw3.git

@@ -1,0 +1,235 @@
+diff --git a/NeuralRack/engine/NeuralModelLoader.cpp b/NeuralRack/engine/NeuralModelLoader.cpp
+index 214b65b..1c7b4aa 100644
+--- a/NeuralRack/engine/NeuralModelLoader.cpp
++++ b/NeuralRack/engine/NeuralModelLoader.cpp
+@@ -21,6 +21,7 @@ NeuralModelLoader::NeuralModelLoader(std::condition_variable *Sync)
+     phaseOffset = 0;
+     isInited = false;
+     ready.store(false, std::memory_order_release);
++    computing.store(false, std::memory_order_release);
+     do_ramp.store(false, std::memory_order_release);
+     do_ramp_down.store(false, std::memory_order_release);
+ }
+@@ -79,8 +80,13 @@ void NeuralModelLoader::compute(int count, float *input0, float *output0) {
+     if (output0 != input0)
+         memcpy(output0, input0, count*sizeof(float));
+ 
++    // Mark as computing - prevents loadModel() from deleting model while we use it.
++    // seq_cst ensures: if we see ready==true, then loadModel() must see computing==true
++    // before it proceeds to delete the model.
++    computing.store(true, std::memory_order_seq_cst);
++
+     // process model
+-    if (model && ready.load(std::memory_order_acquire)) {
++    if (model && ready.load(std::memory_order_seq_cst)) {
+ 
+         float buf[count];
+         memcpy(buf, output0, count*sizeof(float));
+@@ -125,6 +131,10 @@ void NeuralModelLoader::compute(int count, float *input0, float *output0) {
+             }
+         }
+     }
++
++    // Done using model - safe for loadModel() to proceed with deletion
++    computing.store(false, std::memory_order_seq_cst);
++
+     if (do_ramp_down.load(std::memory_order_acquire)) {
+         for (int i = 0; i < count; i++) {
+             if (ramp_down > 0.0) {
+@@ -143,12 +153,18 @@ bool NeuralModelLoader::loadModel() {
+         if (model) {
+             do_ramp_down.store(true, std::memory_order_release);
+             std::unique_lock<std::mutex> lkr(WMutex);
+-            SyncIntern.wait_for(lkr, std::chrono::milliseconds(60));
++            SyncIntern.wait_for(lkr, std::chrono::milliseconds(200));
+         }
+         //fprintf(stderr, "Load file %s\n", modelFile.c_str());
+-        ready.store(false, std::memory_order_release);
++        ready.store(false, std::memory_order_seq_cst);
+         std::unique_lock<std::mutex> lk(WMutex);
+-        SyncWait->wait_for(lk, std::chrono::milliseconds(60));
++        SyncWait->wait_for(lk, std::chrono::milliseconds(200));
++        // Spin-wait until compute() is no longer accessing the model.
++        // After ready=false (seq_cst), any new compute() call won't enter
++        // the model section. We just need to wait for any in-flight call.
++        while (computing.load(std::memory_order_seq_cst)) {
++            std::this_thread::yield();
++        }
+         if (model != nullptr) {
+             delete model;
+             model = nullptr;
+@@ -216,8 +232,11 @@ bool NeuralModelLoader::loadModel() {
+ // non rt callback
+ void NeuralModelLoader::unloadModel() {
+     std::unique_lock<std::mutex> lk(WMutex);
+-    ready.store(false, std::memory_order_release);
+-    SyncWait->wait_for(lk, std::chrono::milliseconds(160));
++    ready.store(false, std::memory_order_seq_cst);
++    SyncWait->wait_for(lk, std::chrono::milliseconds(200));
++    while (computing.load(std::memory_order_seq_cst)) {
++        std::this_thread::yield();
++    }
+     if (model != nullptr) {
+         delete model;
+         model = nullptr;
+diff --git a/NeuralRack/engine/NeuralModelLoader.h b/NeuralRack/engine/NeuralModelLoader.h
+index c443029..3767c08 100644
+--- a/NeuralRack/engine/NeuralModelLoader.h
++++ b/NeuralRack/engine/NeuralModelLoader.h
+@@ -17,6 +17,7 @@
+ #include <mutex>
+ #include <cstring>
+ #include <condition_variable>
++#include <thread>
+ 
+ #include "NeuralModel.h"
+ 
+@@ -36,6 +37,7 @@ private:
+     gx_resample::FixedRateResampler smp;
+ 
+     std::atomic<bool>               ready;
++    std::atomic<bool>               computing;
+     std::atomic<bool>               do_ramp;
+     std::atomic<bool>               do_ramp_down;
+ 
+diff --git a/NeuralRack/engine/engine.h b/NeuralRack/engine/engine.h
+index 43c2687..0fdb944 100644
+--- a/NeuralRack/engine/engine.h
++++ b/NeuralRack/engine/engine.h
+@@ -161,6 +161,7 @@ private:
+     float*                       bufferoutput1;
+     float*                       bufferinput0;
+     float*                       _bufb;
++    uint32_t                     _bufbSize;
+ 
+     double                       fRec0[2];
+     double                       fRec3[2];
+@@ -198,7 +199,8 @@ inline Engine::Engine() :
+     bufferoutput0(NULL),
+     bufferoutput1(NULL),
+     bufferinput0(NULL),
+-    _bufb(0) {
++    _bufb(NULL),
++    _bufbSize(0) {
+         bufsize = 0;
+         buffersize = 0;
+         phaseOffset = 0;
+@@ -243,6 +245,7 @@ inline Engine::~Engine(){
+     delete[] bufferoutput0;
+     delete[] bufferoutput1;
+     delete[] bufferinput0;
++    delete[] _bufb;
+ 
+     dcb->del_instance(dcb);
+     peq->del_instance(peq);
+@@ -316,10 +319,13 @@ inline void Engine::setEQPos(uint32_t eqPosition) {
+ inline void Engine::setModel(NeuralModelLoader *slot,
+                 std::string *file, std::atomic<bool> *set) {
+     if ((*file).compare(slot->getModelFile()) != 0) {
++        // Disable compute() for this slot BEFORE loading so the audio thread
++        // won't call slot->compute() while the model is being replaced.
++        set->store(false, std::memory_order_release);
+         slot->setModelFile(*file);
+         if (!slot->loadModel()) {
+             *file = "None";
+-            set->store(false, std::memory_order_release);
++            // set already false
+         } else {
+             set->store(true, std::memory_order_release);
+         }
+@@ -370,6 +376,8 @@ void Engine::do_work_mono() {
+     
+     // init buffer for background processing
+     if (buffersize < bufsize) {
++        // Mark buffers invalid BEFORE freeing so the audio thread won't use them
++        bufferIsInit.store(false, std::memory_order_release);
+         buffersize = bufsize * 2;
+         delete[] bufferoutput0;
+         bufferoutput0 = NULL;
+@@ -383,12 +391,18 @@ void Engine::do_work_mono() {
+         bufferinput0 = NULL;
+         bufferinput0 = new float[buffersize];
+         memset(bufferinput0, 0, buffersize*sizeof(float));
++        delete[] _bufb;
++        _bufb = NULL;
++        _bufbSize = buffersize;
++        _bufb = new float[_bufbSize];
++        memset(_bufb, 0, _bufbSize*sizeof(float));
+         par.setTimeOut(std::max(100,static_cast<int>((bufsize/(s_rate*0.000001))*0.1)));
+-        bufferIsInit.store(true, std::memory_order_release);
+         // set wait function time out for parallel processor thread
+         pro.setTimeOut(std::max(100,static_cast<int>((bufsize/(s_rate*0.000001))*0.1)));
+         slotA.setMaxBufferSize(bufsize * 2);
+         slotB.setMaxBufferSize(bufsize * 2);
++        // Mark buffers valid AFTER all setup is complete
++        bufferIsInit.store(true, std::memory_order_release);
+     }
+     // set flag that work is done ready
+     _execute.store(false, std::memory_order_release);
+@@ -543,15 +557,22 @@ inline void Engine::processDsp(uint32_t n_samples, float* output, float* output1
+     // set buffer for stereo output
+     float bufa[n_samples];
+     memcpy(bufa, output, n_samples*sizeof(float));
+-    float bufb[n_samples];
+-    memcpy(bufb, output, n_samples*sizeof(float));
++    // _bufb is heap-allocated so the parallel conv1 thread can safely write
++    // to it even if processWait() times out (no stack use-after-free).
++    if (!_bufb || _bufbSize < n_samples) {
++        delete[] _bufb;
++        _bufbSize = n_samples * 2;
++        _bufb = new float[_bufbSize];
++        memset(_bufb, 0, _bufbSize * sizeof(float));
++    }
++    memcpy(_bufb, output, n_samples*sizeof(float));
+     bufsize = n_samples;
+-
+     // process conv1 in parallel thread
+-    _bufb = bufb;
++    bool conv1Parallel = false;
+     if (!_execute.load(std::memory_order_acquire) && conv1.is_runnable()) {
+         if (pro.getProcess()) {
+             pro.runProcess();
++            conv1Parallel = true;
+         } else {
+             XrunCounter += 1;
+             _notify_ui.store(true, std::memory_order_release);
+@@ -562,8 +583,13 @@ inline void Engine::processDsp(uint32_t n_samples, float* output, float* output1
+     if (!_execute.load(std::memory_order_acquire) && conv.is_runnable())
+         conv.compute(n_samples, bufa, bufa);
+ 
++    // process conv1 sequentially if parallel wasn't possible
++    if (!conv1Parallel && !_execute.load(std::memory_order_acquire) && conv1.is_runnable()) {
++        conv1.compute(n_samples, _bufb, _bufb);
++    }
++
+     // wait for parallel processed conv1 when needed
+-    if (!_execute.load(std::memory_order_acquire) && conv1.is_runnable()) {
++    if (conv1Parallel) {
+         if (!pro.processWait()) {
+             XrunCounter += 1;
+             _notify_ui.store(true, std::memory_order_release);
+@@ -580,7 +606,7 @@ inline void Engine::processDsp(uint32_t n_samples, float* output, float* output1
+         // IRoutputGain1
+         for (uint32_t i0 = 0; i0 < n_samples; i0 = i0 + 1) {
+             fRec5[0] = fSlow5 + 0.999 * fRec5[1];
+-            output1[i0] = bufb[i0] * fRec5[0];
++            output1[i0] = _bufb[i0] * fRec5[0];
+             fRec5[1] = fRec5[0];
+         }
+     } else { // Mix mode
+@@ -591,13 +617,13 @@ inline void Engine::processDsp(uint32_t n_samples, float* output, float* output1
+             double fSlow6 = 0.0010000000000000009 * double(IRmix);
+             for (uint32_t i0 = 0; i0 < n_samples; i0 = i0 + 1) {
+                 fRec6[0] = fSlow6 + 0.999 * fRec6[1];
+-                output[i0] = bufa[i0] * (1.0 - fRec6[0]) + bufb[i0] * fRec6[0];
++                output[i0] = bufa[i0] * (1.0 - fRec6[0]) + _bufb[i0] * fRec6[0];
+                 fRec6[1] = fRec6[0];
+             }
+         } else if (!_execute.load(std::memory_order_acquire) && conv.is_runnable()) {
+             memcpy(output, bufa, n_samples*sizeof(float));
+         } else if (!_execute.load(std::memory_order_acquire) && conv1.is_runnable()) {
+-            memcpy(output, bufb, n_samples*sizeof(float));
++            memcpy(output, _bufb, n_samples*sizeof(float));
+         }
+         // MasterOutGain
+         for (uint32_t i0 = 0; i0 < n_samples; i0 = i0 + 1) {

@@ -1,0 +1,52 @@
+diff --git a/libxputty/xputty/header/xputty.h b/libxputty/xputty/header/xputty.h
+index a40ee96..144e637 100644
+--- a/libxputty/xputty/header/xputty.h
++++ b/libxputty/xputty/header/xputty.h
+@@ -212,6 +212,8 @@ struct Xputty{
+     Widget_t *submenu;
+ /** bool to quit the main loop */
+     bool run;
++/** bool to consume the ButtonRelease after a popup dismiss */
++    bool dismiss_consume_release;
+ /** small fontsize for all Widget_t*/
+     int small_font;
+ /** normal fontsize  for all Widget_t*/
+diff --git a/libxputty/xputty/xputty.c b/libxputty/xputty/xputty.c
+index 7335cba..191a106 100644
+--- a/libxputty/xputty/xputty.c
++++ b/libxputty/xputty/xputty.c
+@@ -33,6 +33,7 @@ void main_init(Xputty *main) {
+     main->hold_grab = NULL;
+     main->submenu = NULL;
+     main->run = true;
++    main->dismiss_consume_release = false;
+     main->small_font = 10;
+     main->normal_font = 12;
+     main->big_font = 16;
+diff --git a/libxputty/xputty/xwidget.c b/libxputty/xputty/xwidget.c
+index b4e3dac..4b580cd 100644
+--- a/libxputty/xputty/xwidget.c
++++ b/libxputty/xputty/xwidget.c
+@@ -570,6 +570,10 @@ void widget_event_loop(void *w_, void* event, Xputty *main, void* user_data) {
+             XButtonEvent *xbutton = &xev->xbutton;
+             _check_grab(wid, xbutton, main);
+             _check_submenu(wid, xbutton, main);
++            if (main->dismiss_consume_release) {
++                main->dismiss_consume_release = false;
++                break;
++            }
+             if (wid->state == 4) break;
+             if (xbutton->button == Button1) {
+                 if (xbutton->time < wid->double_click+300) {
+diff --git a/libxputty/xputty/xwidget_private.c b/libxputty/xputty/xwidget_private.c
+index 962b7f4..39c1133 100644
+--- a/libxputty/xputty/xwidget_private.c
++++ b/libxputty/xputty/xwidget_private.c
+@@ -137,6 +137,7 @@ void _check_grab(Widget_t * wid, XButtonEvent *xbutton, Xputty *main) {
+             }
+             widget_hide(main->hold_grab);
+             main->hold_grab = NULL;
++            main->dismiss_consume_release = true;
+ 
+         } /*else if(xbutton->button == Button4) {
+             _scroll_event(view_port, 1);

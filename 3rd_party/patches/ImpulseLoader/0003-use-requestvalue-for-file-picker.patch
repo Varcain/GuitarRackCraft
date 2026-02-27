@@ -1,0 +1,66 @@
+--- a/ImpulseLoader/gui/widgets.cc
++++ b/ImpulseLoader/gui/widgets.cc
+@@ -922,6 +922,22 @@
+ static void my_fbutton_callback(void *w_, void* user_data) {
+     Widget_t *w = (Widget_t*)w_;
+     FileButton *filebutton = (FileButton *)w->private_struct;
++    /* If host provides ui:requestValue (Android), use native file picker.
++       Check before HAS_POINTER — our X11 server doesn't send EnterNotify. */
++    if (adj_get_value(w->adj)) {
++        Widget_t *par = (Widget_t*)w->parent;
++        X11_UI *ui = (X11_UI*)par->parent_struct;
++        if (ui->itf.request_value) {
++            typedef struct { void* handle;
++                uint32_t (*request)(void*, uint32_t, uint32_t, const void*);
++            } RV_t;
++            RV_t *rv = (RV_t*)ui->itf.request_value;
++            LV2_URID key = ui->itf.uris.conv_ir_file;
++            if (key) rv->request(rv->handle, key, 0, NULL);
++            adj_set_value(w->adj, 0.0);
++            return;
++        }
++    }
+     if (w->flags & HAS_POINTER && adj_get_value(w->adj)){
+         filebutton->is_active = true;
+         if (!filebutton->w) {
+--- a/ImpulseLoader/lv2/lv2_plugin.cc
++++ b/ImpulseLoader/lv2/lv2_plugin.cc
+@@ -208,6 +208,7 @@
+ 
+     ui->parentXwindow = 0;
+     ui->private_ptr = NULL;
++    ui->itf.request_value = NULL;
+     ui->need_resize = 1;
+     ui->loop_counter = 4;
+     ui->uiKnowSampleRate = false;
+@@ -229,6 +230,8 @@
+             ui->itf.resize = (LV2UI_Resize*)features[i]->data;
+         } else if (!strcmp(features[i]->URI, LV2_URID_URI "#map")) {
+             ui->itf.map = (LV2_URID_Map*)features[i]->data;
++        } else if (!strcmp(features[i]->URI, LV2_UI__requestValue)) {
++            ui->itf.request_value = features[i]->data;
+         }
+     }
+ 
+--- a/ImpulseLoader/lv2/lv2_plugin.h
++++ b/ImpulseLoader/lv2/lv2_plugin.h
+@@ -38,6 +38,9 @@
+ #define LV2_UI__scaleFactor  "http://lv2plug.in/ns/extensions/ui#scaleFactor"
+ #endif
+ 
++#ifndef LV2_UI__requestValue
++#define LV2_UI__requestValue "http://lv2plug.in/ns/extensions/ui#requestValue"
++#endif
+ 
+ 
+ #define PLUGIN_UI_URI "urn:brummer:ImpulseLoader_ui"
+@@ -82,7 +85,8 @@
+     LV2UI_Write_Function write_function;
+     LV2UI_Resize* resize;
+     LV2_Atom_Forge forge;
+-    X11LV2URIs   uris;    
++    X11LV2URIs   uris;
++    void *request_value;
+ };
+ 
+ #include "widgets.h"

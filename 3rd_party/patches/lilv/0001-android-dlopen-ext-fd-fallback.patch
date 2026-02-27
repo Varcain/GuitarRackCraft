@@ -1,0 +1,40 @@
+--- a/src/lib.c	2026-02-25 20:58:26.988658345 +0100
++++ b/src/lib.c	2026-02-25 20:58:43.783737380 +0100
+@@ -25,6 +25,13 @@
+ #	include <dlfcn.h>
+ #endif
+ 
++#if defined(__ANDROID__)
++#	include <android/dlext.h>
++#	include <fcntl.h>
++#	include <string.h>
++#	include <unistd.h>
++#endif
++
+ #include <stdint.h>
+ #include <stdlib.h>
+ 
+@@ -58,6 +65,23 @@
+ 	const char *dl_path = lib_path;
+ #endif
+ 	void* lib = dlopen(dl_path, RTLD_NOW);
++#if defined(__ANDROID__)
++	if (!lib) {
++		/* Android 10+ restricts dlopen() from the app's writable directories.
++		   Use android_dlopen_ext() with a file descriptor to bypass the
++		   linker namespace path restriction. */
++		int fd = open(lib_path, O_RDONLY);
++		if (fd >= 0) {
++			android_dlextinfo extinfo;
++			memset(&extinfo, 0, sizeof(extinfo));
++			extinfo.flags = ANDROID_DLEXT_USE_LIBRARY_FD;
++			extinfo.library_fd = fd;
++			dlerror();
++			lib = android_dlopen_ext(lib_path, RTLD_NOW, &extinfo);
++			close(fd);
++		}
++	}
++#endif
+ 	if (!lib) {
+ 		LILV_ERRORF("Failed to open library %s (%s)\n", lib_path, dlerror());
+ 		serd_free(lib_path);

@@ -1,0 +1,64 @@
+#!/bin/bash
+set -e
+
+# AIDA-X full build configure script
+# Generated from aidax_full_configure.sh.in by configure_file()
+
+X11_SYSROOT="@X11_SYSROOT@"
+AIDAX_SRC="@_aidax_full_src@"
+DSP_ONLY_CMAKE="@_dsp_only_cmake@"
+CROSS_BUILD="@_cross_build@"
+CMAKE_TOOLCHAIN_FILE="@CMAKE_TOOLCHAIN_FILE@"
+ANDROID_ABI="@ANDROID_ABI@"
+ANDROID_PLATFORM="@ANDROID_PLATFORM@"
+GL_SHIM_DIR="@_gl_shim_dir@"
+NDK_SYSROOT="@NDK_SYSROOT@"
+NDK_LIBDIR="@NDK_LIBDIR@"
+CCACHE_PROGRAM="@CCACHE_PROGRAM@"
+
+# Build ccache cmake args if ccache is available
+CCACHE_ARGS=""
+if [ -n "$CCACHE_PROGRAM" ]; then
+    CCACHE_ARGS="-DCMAKE_C_COMPILER_LAUNCHER=$CCACHE_PROGRAM -DCMAKE_CXX_COMPILER_LAUNCHER=$CCACHE_PROGRAM"
+fi
+
+if [ -f "${X11_SYSROOT}/lib/libX11.so" ] && [ -f "${X11_SYSROOT}/include/X11/Xlib.h" ]; then
+    echo 'Building with EGL+GLES2 UI'
+    PKG_CONFIG_LIBDIR="${X11_SYSROOT}/lib/pkgconfig:${X11_SYSROOT}/share/pkgconfig" \
+    PKG_CONFIG_SYSROOT_DIR='' \
+    cmake "${AIDAX_SRC}" -B "${CROSS_BUILD}" \
+        -DCMAKE_TOOLCHAIN_FILE="${CMAKE_TOOLCHAIN_FILE}" \
+        -DANDROID_ABI=${ANDROID_ABI} \
+        -DANDROID_PLATFORM=${ANDROID_PLATFORM} \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_CROSSCOMPILING_EMULATOR=true \
+        -DRTNEURAL_XSIMD=ON \
+        "-DCMAKE_C_FLAGS_RELEASE=-O3 -DNDEBUG -DDGL_USE_GLES2 -I${GL_SHIM_DIR}" \
+        "-DCMAKE_CXX_FLAGS_RELEASE=-O3 -DNDEBUG -funroll-loops -DDGL_USE_GLES2 -I${GL_SHIM_DIR}" \
+        "-DCMAKE_SHARED_LINKER_FLAGS_RELEASE=-Wl,--as-needed -Wl,--strip-all" \
+        -DCMAKE_PREFIX_PATH="${X11_SYSROOT}" \
+        "-DCMAKE_FIND_ROOT_PATH=${X11_SYSROOT};${NDK_SYSROOT}" \
+        -DCMAKE_FIND_ROOT_PATH_MODE_INCLUDE=BOTH \
+        -DCMAKE_FIND_ROOT_PATH_MODE_LIBRARY=BOTH \
+        -DCMAKE_FIND_ROOT_PATH_MODE_PACKAGE=BOTH \
+        -DX11_X11_LIB="${X11_SYSROOT}/lib/libX11.so" \
+        -DX11_X11_INCLUDE_PATH="${X11_SYSROOT}/include" \
+        -DX11_INCLUDE_DIR="${X11_SYSROOT}/include" \
+        -DOPENGL_INCLUDE_DIR="${NDK_SYSROOT}/usr/include" \
+        "-DOPENGL_gl_LIBRARY=${NDK_LIBDIR}/libGLESv2.so;${NDK_LIBDIR}/libEGL.so;${NDK_LIBDIR}/liblog.so" \
+        -DOPENGL_FOUND=TRUE \
+        $CCACHE_ARGS
+else
+    echo 'Building DSP-only'
+    cmake -S "${DSP_ONLY_CMAKE}" -B "${CROSS_BUILD}" \
+        -DCMAKE_TOOLCHAIN_FILE="${CMAKE_TOOLCHAIN_FILE}" \
+        -DANDROID_ABI=${ANDROID_ABI} \
+        -DANDROID_PLATFORM=${ANDROID_PLATFORM} \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_CROSSCOMPILING_EMULATOR=true \
+        -DAIDAX_SRC="${AIDAX_SRC}" \
+        -DRTNEURAL_XSIMD=ON \
+        "-DCMAKE_CXX_FLAGS_RELEASE=-O3 -DNDEBUG -funroll-loops" \
+        "-DCMAKE_SHARED_LINKER_FLAGS_RELEASE=-Wl,--as-needed -Wl,--strip-all" \
+        $CCACHE_ARGS
+fi

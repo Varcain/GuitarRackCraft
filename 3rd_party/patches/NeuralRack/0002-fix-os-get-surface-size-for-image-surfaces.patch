@@ -1,0 +1,23 @@
+diff --git a/libxputty/xputty/xwidget-linux.c b/libxputty/xputty/xwidget-linux.c
+index eb5fbf4..0bd1a17 100644
+--- a/libxputty/xputty/xwidget-linux.c
++++ b/libxputty/xputty/xwidget-linux.c
+@@ -116,8 +116,16 @@ void os_resize_window(Display *dpy, Widget_t *w, int x, int y) {
+ }
+ 
+ void os_get_surface_size(cairo_surface_t *surface, int *width, int *height) {
+-    *width = cairo_xlib_surface_get_width(surface);
+-    *height = cairo_xlib_surface_get_height(surface);
++    /* Without X11 RENDER extension, cairo_surface_create_similar may return
++       IMAGE surfaces.  cairo_xlib_surface_get_width returns 0 for those,
++       causing division-by-zero in callers (draw_image_button etc.). */
++    if (cairo_surface_get_type(surface) == CAIRO_SURFACE_TYPE_XLIB) {
++        *width = cairo_xlib_surface_get_width(surface);
++        *height = cairo_xlib_surface_get_height(surface);
++    } else {
++        *width = cairo_image_surface_get_width(surface);
++        *height = cairo_image_surface_get_height(surface);
++    }
+ }
+ 
+ void os_set_widget_surface_size(Widget_t *w, int width, int height) {

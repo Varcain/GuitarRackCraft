@@ -1,0 +1,97 @@
+diff --git a/modules/dpf/dgl/src/pugl.cpp b/modules/dpf/dgl/src/pugl.cpp
+index 4acb5334..183ada27 100644
+--- a/modules/dpf/dgl/src/pugl.cpp
++++ b/modules/dpf/dgl/src/pugl.cpp
+@@ -103,7 +103,11 @@
+ #  include <cairo-xlib.h>
+ # endif
+ # ifdef DGL_OPENGL
+-#  include <GL/glx.h>
++#  ifdef __ANDROID__
++#   include <EGL/egl.h>
++#  else
++#   include <GL/glx.h>
++#  endif
+ # endif
+ # ifdef DGL_VULKAN
+ #  include <vulkan/vulkan_xlib.h>
+@@ -197,7 +201,11 @@ START_NAMESPACE_DGL
+ #  include "pugl-upstream/src/x11_cairo.c"
+ # endif
+ # ifdef DGL_OPENGL
+-#  include "pugl-upstream/src/x11_gl.c"
++#  ifdef __ANDROID__
++#   include "pugl-extra/x11_egl.c"
++#  else
++#   include "pugl-upstream/src/x11_gl.c"
++#  endif
+ # endif
+ # ifdef DGL_VULKAN
+ #  include "pugl-upstream/src/x11_vulkan.c"
+@@ -433,7 +441,7 @@ void puglOnDisplayPrepare(PuglView*)
+ {
+   #ifdef DGL_OPENGL
+     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+-   #ifndef DGL_USE_OPENGL3
++   #if !defined(DGL_USE_OPENGL3) && !defined(DGL_USE_GLES2)
+     glLoadIdentity();
+    #endif
+   #endif
+@@ -447,7 +455,7 @@ void puglFallbackOnResize(PuglView* const view, const uint width, const uint hei
+   #ifdef DGL_OPENGL
+     glEnable(GL_BLEND);
+     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+-   #ifdef DGL_USE_OPENGL3
++   #if defined(DGL_USE_OPENGL3) || defined(DGL_USE_GLES2)
+     glViewport(0, 0, static_cast<GLsizei>(width), static_cast<GLsizei>(height));
+    #else
+     glMatrixMode(GL_PROJECTION);
+diff --git a/modules/dpf/distrho/extra/Mutex.hpp b/modules/dpf/distrho/extra/Mutex.hpp
+index b7d35dce..1d828335 100644
+--- a/modules/dpf/distrho/extra/Mutex.hpp
++++ b/modules/dpf/distrho/extra/Mutex.hpp
+@@ -58,7 +58,11 @@ public:
+        #else
+         pthread_mutexattr_t attr;
+         pthread_mutexattr_init(&attr);
++       #ifndef __ANDROID__
+         pthread_mutexattr_setprotocol(&attr, inheritPriority ? PTHREAD_PRIO_INHERIT : PTHREAD_PRIO_NONE);
++       #else
++        (void)inheritPriority;
++       #endif
+         pthread_mutexattr_settype(&attr, PTHREAD_MUTEX_NORMAL);
+         pthread_mutex_init(&fMutex, &attr);
+         pthread_mutexattr_destroy(&attr);
+@@ -140,7 +144,9 @@ public:
+        #else
+         pthread_mutexattr_t attr;
+         pthread_mutexattr_init(&attr);
++       #ifndef __ANDROID__
+         pthread_mutexattr_setprotocol(&attr, PTHREAD_PRIO_INHERIT);
++       #endif
+         pthread_mutexattr_settype(&attr, PTHREAD_MUTEX_RECURSIVE);
+         pthread_mutex_init(&fMutex, &attr);
+         pthread_mutexattr_destroy(&attr);
+@@ -230,7 +236,9 @@ public:
+ 
+         pthread_mutexattr_t mattr;
+         pthread_mutexattr_init(&mattr);
++       #ifndef __ANDROID__
+         pthread_mutexattr_setprotocol(&mattr, PTHREAD_PRIO_INHERIT);
++       #endif
+         pthread_mutexattr_settype(&mattr, PTHREAD_MUTEX_NORMAL);
+         pthread_mutex_init(&fMutex, &mattr);
+         pthread_mutexattr_destroy(&mattr);
+diff --git a/modules/dpf/distrho/extra/Thread.hpp b/modules/dpf/distrho/extra/Thread.hpp
+index eb961f60..b4d980cc 100644
+--- a/modules/dpf/distrho/extra/Thread.hpp
++++ b/modules/dpf/distrho/extra/Thread.hpp
+@@ -115,7 +115,7 @@ public:
+            #endif
+             sched_param.sched_priority = 80;
+ 
+-           #ifndef DISTRHO_OS_HAIKU
++           #if !defined(DISTRHO_OS_HAIKU) && !defined(__ANDROID__)
+             if (pthread_attr_setscope(&attr, PTHREAD_SCOPE_SYSTEM)          == 0  &&
+                 pthread_attr_setinheritsched(&attr, PTHREAD_EXPLICIT_SCHED) == 0  &&
+               #ifndef DISTRHO_OS_WINDOWS

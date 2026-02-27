@@ -1,0 +1,21 @@
+diff --git a/trunk/src/LV2/xputty/xwidget-linux.cpp b/trunk/src/LV2/xputty/xwidget-linux.cpp
+--- a/trunk/src/LV2/xputty/xwidget-linux.cpp
++++ b/trunk/src/LV2/xputty/xwidget-linux.cpp
+@@ -529,6 +529,17 @@
+ 
+     while (XPending(main->dpy) > 0) {
+         XNextEvent(main->dpy, &xev);
++        // Coalesce consecutive MotionNotify events for the same window —
++        // skip stale intermediate positions to avoid redundant redraws.
++        // Uses XCheckTypedWindowEvent which scans the queue (including one
++        // read-pass) and removes a matching event if found.
++        if (xev.type == MotionNotify) {
++            XEvent next;
++            while (XCheckTypedWindowEvent(main->dpy, xev.xmotion.window,
++                                          MotionNotify, &next)) {
++                xev = next;  // replace with newer position
++            }
++        }
+         ew = childlist_find_widget(main->childlist, xev.xany.window);
+         if(ew  >= 0) {
+             Widget_t * w = main->childlist->childs[ew];

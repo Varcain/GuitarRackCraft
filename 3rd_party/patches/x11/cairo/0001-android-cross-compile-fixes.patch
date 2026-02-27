@@ -1,0 +1,55 @@
+diff --git a/meson.build b/meson.build
+index 6dafaad6e..bf09cb650 100644
+--- a/meson.build
++++ b/meson.build
+@@ -390,7 +390,7 @@ if x11_dep.found() and xext_dep.found()
+ endif
+ 
+ if feature_conf.get('CAIRO_HAS_XLIB_SURFACE', 0) == 1
+-  xrender_dep = dependency('xrender', required: get_option('xlib'),
++  xrender_dep = dependency('xrender', required: false,
+                            version: xrender_required_version)
+ 
+   if xrender_dep.found()
+@@ -797,7 +797,11 @@ else
+   cairoboilerplate_dep = dependency('', required: false)
+ endif
+ 
+-subdir('util')
++if host_machine.system() != 'android'
++  subdir('util')
++else
++  libcairoscript_dep = dependency('', required: false)
++endif
+ 
+ if not get_option('tests').disabled() and feature_conf.get('CAIRO_HAS_PNG_FUNCTIONS', 0) == 1
+   subdir('test')
+diff --git a/src/cairo-fontconfig-private.h b/src/cairo-fontconfig-private.h
+index 15dc03281..dc3c5fd47 100644
+--- a/src/cairo-fontconfig-private.h
++++ b/src/cairo-fontconfig-private.h
+@@ -49,4 +49,24 @@
+ #include <fontconfig/fcfreetype.h>
+ #endif
+ 
++/* Fallback definitions when fontconfig is not available */
++#if !CAIRO_HAS_FC_FONT
++#define FC_HINT_NONE   0
++#define FC_HINT_SLIGHT 1
++#define FC_HINT_MEDIUM 2
++#define FC_HINT_FULL   3
++
++#define FC_RGBA_UNKNOWN 0
++#define FC_RGBA_RGB     1
++#define FC_RGBA_BGR     2
++#define FC_RGBA_VRGB    3
++#define FC_RGBA_VBGR    4
++#define FC_RGBA_NONE    5
++
++#define FC_LCD_NONE    0
++#define FC_LCD_DEFAULT 1
++#define FC_LCD_LIGHT   2
++#define FC_LCD_LEGACY  3
++#endif
++
+ #endif /* _CAIRO_FONTCONFIG_PRIVATE_H */

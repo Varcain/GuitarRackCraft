@@ -1,0 +1,18 @@
+--- a/ImpulseLoader/engine/ParallelThread.h
++++ b/ImpulseLoader/engine/ParallelThread.h
+@@ -357,6 +357,7 @@
+
+     // set thread scheduling class and priority level
+     inline void setThreadPolicy(int32_t rt_prio, int32_t rt_policy) noexcept {
++        #if !defined(__ANDROID__)
+         #if defined(__linux__) || defined(_UNIX) || defined(__APPLE__) || defined(_OS_UNIX_)
+         sched_param sch_params;
+         if (rt_prio == 0) {
+@@ -375,6 +376,7 @@
+         #else
+         //system does not supports thread priority!
+         #endif
++        #endif // !__ANDROID__
+     }
+
+     // calculate the timeout for the thread wait functions

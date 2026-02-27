@@ -1,0 +1,34 @@
+diff --git a/PowerAmpImpulses/DSP/zita-convolver/zita-convolver.cc b/PowerAmpImpulses/DSP/zita-convolver/zita-convolver.cc
+index 7904416..b6292f0 100644
+--- a/PowerAmpImpulses/DSP/zita-convolver/zita-convolver.cc
++++ b/PowerAmpImpulses/DSP/zita-convolver/zita-convolver.cc
+@@ -627,10 +627,12 @@ void Convlevel::start (int abspri, int policy)
+     parm.sched_priority = abspri;
+     pthread_attr_init (&attr);
+     pthread_attr_setdetachstate (&attr, PTHREAD_CREATE_DETACHED);
++#ifndef __ANDROID__
+     pthread_attr_setschedpolicy (&attr, policy);
+     pthread_attr_setschedparam (&attr, &parm);
+     pthread_attr_setscope (&attr, PTHREAD_SCOPE_SYSTEM);
+     pthread_attr_setinheritsched (&attr, PTHREAD_EXPLICIT_SCHED);
++#endif
+     pthread_attr_setstacksize (&attr, 0x10000);
+     pthread_create (&_pthr, &attr, static_main, this);
+     pthread_attr_destroy (&attr);
+diff --git a/PreAmpImpulses/DSP/zita-convolver/zita-convolver.cc b/PreAmpImpulses/DSP/zita-convolver/zita-convolver.cc
+index 7904416..b6292f0 100644
+--- a/PreAmpImpulses/DSP/zita-convolver/zita-convolver.cc
++++ b/PreAmpImpulses/DSP/zita-convolver/zita-convolver.cc
+@@ -627,10 +627,12 @@ void Convlevel::start (int abspri, int policy)
+     parm.sched_priority = abspri;
+     pthread_attr_init (&attr);
+     pthread_attr_setdetachstate (&attr, PTHREAD_CREATE_DETACHED);
++#ifndef __ANDROID__
+     pthread_attr_setschedpolicy (&attr, policy);
+     pthread_attr_setschedparam (&attr, &parm);
+     pthread_attr_setscope (&attr, PTHREAD_SCOPE_SYSTEM);
+     pthread_attr_setinheritsched (&attr, PTHREAD_EXPLICIT_SCHED);
++#endif
+     pthread_attr_setstacksize (&attr, 0x10000);
+     pthread_create (&_pthr, &attr, static_main, this);
+     pthread_attr_destroy (&attr);

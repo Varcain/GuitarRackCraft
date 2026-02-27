@@ -1,0 +1,252 @@
+# Copyright (C) 2026 Kamil Lulko <kamil.lulko@gmail.com>
+#
+# This file is part of Guitar RackCraft.
+#
+# Guitar RackCraft is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# Guitar RackCraft is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with Guitar RackCraft. If not, see <https://www.gnu.org/licenses/>.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
+  GRADLE_OPTS: -Dorg.gradle.daemon=false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    steps:
+      # ── 1. Checkout & submodules ────────────────────────────────────────
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Restore submodule cache
+        id: submodule-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: .git/modules
+          key: submodules-${{ runner.os }}-${{ hashFiles('.gitmodules') }}-${{ github.sha }}
+          restore-keys: |
+            submodules-${{ runner.os }}-${{ hashFiles('.gitmodules') }}-
+
+      - name: Initialize submodules
+        run: git submodule update --init --recursive --depth 1
+
+      - name: Save submodule cache
+        if: steps.submodule-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: .git/modules
+          key: submodules-${{ runner.os }}-${{ hashFiles('.gitmodules') }}-${{ github.sha }}
+
+      # ── 2. System dependencies ───────────────────────────────────────────
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            ninja-build meson python3 python3-mako pkg-config \
+            autoconf automake libtool gettext patch cmake \
+            flex bison ocaml ocamlbuild ocaml-findlib libnum-ocaml-dev
+
+      # ── 3. JDK 17 ───────────────────────────────────────────────────────
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      # ── 4. Android SDK components ────────────────────────────────────────
+      - name: Install Android SDK components
+        run: |
+          yes | $ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager --licenses || true
+          [ -d "$ANDROID_SDK_ROOT/ndk/27.2.12479018" ] || \
+            $ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager "ndk;27.2.12479018"
+          [ -d "$ANDROID_SDK_ROOT/cmake/3.22.1" ] || \
+            $ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager "cmake;3.22.1"
+          [ -d "$ANDROID_SDK_ROOT/platforms/android-34" ] || \
+            $ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager "platforms;android-34"
+          [ -d "$ANDROID_SDK_ROOT/build-tools/34.0.0" ] || \
+            $ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager "build-tools;34.0.0"
+
+      # ── 5. Native build cache ────────────────────────────────────────────
+      - name: Compute native cache key
+        id: native-cache-key
+        run: |
+          # Hash build script, cmake configs, and patches
+          FILES_HASH=$(cat \
+            build.sh \
+            $(find cmake -name '*.cmake' -o -name 'CMakeLists.txt' -o -name 'CMakePresets.json' | sort) \
+            $(find 3rd_party/patches -name '*.patch' 2>/dev/null | sort) \
+            | sha256sum | cut -d' ' -f1)
+          # Hash submodule commits
+          SUBMOD_HASH=$(git submodule status | sha256sum | cut -d' ' -f1)
+          echo "files-hash=${FILES_HASH}" >> "$GITHUB_OUTPUT"
+          echo "key=native-${{ runner.os }}-${FILES_HASH}-${SUBMOD_HASH}" >> "$GITHUB_OUTPUT"
+
+      - name: Restore native build cache
+        id: native-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            build/prebuild
+            build/shared
+            build/aidadsp
+            build/aidax_full
+            build/nam
+            build/lv2
+            build/x11_ui
+            build/mesa
+            build/fftw3
+            build/fftw3-codelets
+            build/neuralrack
+            build/impulseloader
+            build/xdarkterror
+            build/xtinyterror
+            build/collisiondrive
+            build/metaltone
+            build/gxcabsim
+            build/modamptk
+            build/fatfrog
+            build/lv2_wrapper
+            app/src/main/jniLibs
+            app/src/full/jniLibs
+            app/src/main/assets
+            app/src/main/cpp/libs
+            gxplugins_pack/src/main/assets/plugins
+            neural_pack/src/main/assets/plugins
+            brummer_pack/src/main/assets/plugins
+          key: ${{ steps.native-cache-key.outputs.key }}
+          restore-keys: |
+            native-${{ runner.os }}-${{ steps.native-cache-key.outputs.files-hash }}-
+            native-${{ runner.os }}-
+
+      # ── 6. ccache ────────────────────────────────────────────────────────
+      - name: Setup ccache
+        run: |
+          sudo apt-get install -y --no-install-recommends ccache
+          ccache --set-config=max_size=2G
+          ccache --set-config=compression=true
+          ccache --set-config=compression_level=6
+          ccache --set-config=sloppiness=include_file_mtime,include_file_ctime,time_macros,file_stat_matches,file_stat_matches_ctime
+          ccache --set-config=hash_dir=false
+          ccache --zero-stats
+
+      - name: Restore ccache
+        id: ccache-restore
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.cache/ccache
+          key: ccache-${{ runner.os }}-${{ github.sha }}
+          restore-keys: |
+            ccache-${{ runner.os }}-
+
+      # ── 7. Native build ──────────────────────────────────────────────────
+      - name: Build native libraries
+        run: ./build.sh full
+        env:
+          ANDROID_NDK: ${{ env.ANDROID_SDK_ROOT }}/ndk/27.2.12479018
+          NATIVE_CACHE_EXACT: ${{ steps.native-cache.outputs.cache-hit }}
+
+      - name: Dump ExternalProject logs on failure
+        if: failure()
+        run: for f in build/prebuild/*/src/*/stamp/*-*.log; do [ -f "$f" ] && echo "=== $f ===" && cat "$f"; done || true
+
+      - name: Show ccache stats
+        if: always()
+        run: ccache --show-stats
+
+      - name: Save native build cache
+        if: "!cancelled() && steps.native-cache.outputs.cache-hit != 'true'"
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            build/prebuild
+            build/shared
+            build/aidadsp
+            build/aidax_full
+            build/nam
+            build/lv2
+            build/x11_ui
+            build/mesa
+            build/fftw3
+            build/fftw3-codelets
+            build/neuralrack
+            build/impulseloader
+            build/xdarkterror
+            build/xtinyterror
+            build/collisiondrive
+            build/metaltone
+            build/gxcabsim
+            build/modamptk
+            build/fatfrog
+            build/lv2_wrapper
+            app/src/main/jniLibs
+            app/src/full/jniLibs
+            app/src/main/assets
+            app/src/main/cpp/libs
+            gxplugins_pack/src/main/assets/plugins
+            neural_pack/src/main/assets/plugins
+            brummer_pack/src/main/assets/plugins
+          key: ${{ steps.native-cache-key.outputs.key }}
+
+      - name: Save ccache
+        if: "!cancelled() && steps.ccache-restore.outputs.cache-hit != 'true'"
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.cache/ccache
+          key: ccache-${{ runner.os }}-${{ github.sha }}
+
+      # ── 8. Gradle build (debug, no signing) ──────────────────────────────
+      - name: Restore Gradle cache
+        id: gradle-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+            ~/.gradle/build-cache
+          key: gradle-${{ runner.os }}-${{ hashFiles('**/*.gradle.kts', 'gradle/wrapper/gradle-wrapper.properties') }}
+          restore-keys: |
+            gradle-${{ runner.os }}-
+
+      - name: Build debug APK
+        run: ./gradlew assembleFullDebug
+
+      - name: Save Gradle cache
+        if: "!cancelled() && steps.gradle-cache.outputs.cache-hit != 'true'"
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+            ~/.gradle/build-cache
+          key: gradle-${{ runner.os }}-${{ hashFiles('**/*.gradle.kts', 'gradle/wrapper/gradle-wrapper.properties') }}
+
+      # ── 9. Upload debug APK ──────────────────────────────────────────────
+      - name: Upload debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: guitarrackcraft-debug-${{ github.sha }}
+          path: app/build/outputs/apk/full/debug/*.apk

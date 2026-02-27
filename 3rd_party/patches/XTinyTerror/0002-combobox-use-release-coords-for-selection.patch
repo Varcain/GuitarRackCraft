@@ -1,0 +1,17 @@
+diff --git a/libxputty/xputty/widgets/xcombobox_private.c b/libxputty/xputty/widgets/xcombobox_private.c
+index 37938d2..d19f162 100644
+--- a/libxputty/xputty/widgets/xcombobox_private.c
++++ b/libxputty/xputty/widgets/xcombobox_private.c
+@@ -294,8 +294,11 @@ void _combobox_entry_released(void *w_, void* button_, void* user_data) {
+                 comboboxlist->prelight_item = prelight_item;
+             }
+         } else if(xbutton->button == Button1) {
++            /* Use release coordinates to determine which item was tapped.
++               On touch devices there may be no prior MotionNotify to set prelight_item. */
++            comboboxlist->prelight_item = prelight_item;
+             Widget_t* combobox = (Widget_t*) w->parent;
+-            comboboxlist->active_item = comboboxlist->prelight_item;
++            comboboxlist->active_item = prelight_item;
+             adj_set_value(combobox->adj,comboboxlist->active_item);
+             adj_set_value(comboboxlist->combobox->adj,comboboxlist->active_item +
+                                         comboboxlist->combobox->adj->min_value);

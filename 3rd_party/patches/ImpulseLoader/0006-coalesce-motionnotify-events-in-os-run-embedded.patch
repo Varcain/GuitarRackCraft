@@ -1,0 +1,21 @@
+diff --git a/libxputty/xputty/xwidget-linux.c b/libxputty/xputty/xwidget-linux.c
+--- a/libxputty/xputty/xwidget-linux.c
++++ b/libxputty/xputty/xwidget-linux.c
+@@ -995,6 +995,17 @@
+
+     while (XPending(main->dpy) > 0) {
+         XNextEvent(main->dpy, &xev);
++        // Coalesce consecutive MotionNotify events for the same window —
++        // skip stale intermediate positions to avoid redundant redraws.
++        // Uses XCheckTypedWindowEvent which scans the queue (including one
++        // read-pass) and removes a matching event if found.
++        if (xev.type == MotionNotify) {
++            XEvent next;
++            while (XCheckTypedWindowEvent(main->dpy, xev.xmotion.window,
++                                          MotionNotify, &next)) {
++                xev = next;  // replace with newer position
++            }
++        }
+         if (xev.type == ClientMessage || xev.type == SelectionNotify) {
+             Widget_t * w = main->childlist->childs[0];
+             w->event_callback(w, &xev, main, NULL);

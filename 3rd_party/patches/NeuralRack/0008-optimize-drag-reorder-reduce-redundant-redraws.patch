@@ -1,0 +1,119 @@
+diff --git a/NeuralRack/gui/SizeGroup.h b/NeuralRack/gui/SizeGroup.h
+--- a/NeuralRack/gui/SizeGroup.h
++++ b/NeuralRack/gui/SizeGroup.h
+@@ -194,33 +194,32 @@
+ static inline void vsg_beginDrag(VerticalSizeGroup* g,Widget_t* w,int my) {
+     g->dragWidget = w;
+     g->dragOffsetY = my;
+-    os_raise_widget(w);
++    for (int i=0;i<g->entryCount;i++) {
++        if (g->entries[i] == w) {
++            g->oldIndex = i;
++            break;
++        }
++    }
++    g->newIndex = g->oldIndex;
+ }
+ 
+-// while move the element
++// while move the element — widget stays in place, highlight shows drop target
+ static inline void vsg_dragMove(VerticalSizeGroup* g,int my) {
+     if (!g->dragWidget) return;
+ 
+     g->wmy = g->dragWidget->scale.init_y + my - g->dragOffsetY;
+-    os_move_window(g->parent->app->dpy,
+-                   g->dragWidget,
+-                   g->dragWidget->scale.init_x,
+-                   g->wmy);
+-
+-    // find current index
+-    for (int i=0;i<g->entryCount;i++) {
+-        if (g->entries[i] == g->dragWidget) {
+-            g->oldIndex = i;
+-            break;
+-        }
+-    }
+ 
++    int prevIndex = g->newIndex;
+     g->newIndex = vsg_findDropIndex(g);
+ 
+-    expose_widget(g->parent);
++    if (g->newIndex != prevIndex) {
++        if (prevIndex >= 0 && prevIndex < g->entryCount)
++            expose_widget(g->entries[prevIndex]);
++        expose_widget(g->entries[g->newIndex]);
++    }
+ }
+ 
+-// insert dropped element in size-group at new index
++// insert dropped element in size-group at new index — instant placement
+ static inline void vsg_endDrag(VerticalSizeGroup* g) {
+     if (!g->dragWidget) return;
+ 
+@@ -235,10 +234,15 @@
+         g->entries[g->newIndex] = w;
+     }
+ 
+-    g->from = g->oldIndex<g->newIndex?g->oldIndex:g->newIndex;
+-    g->to   = g->oldIndex>g->newIndex?g->oldIndex+1:g->newIndex+1;
++    Display* dpy = g->parent->app->dpy;
++    int y = g->startY;
++    for (int i=0;i<g->entryCount;i++) {
++        Widget_t* w = g->entries[i];
++        os_move_window(dpy,w,w->scale.init_x,y);
++        w->scale.init_y = y;
++        y += w->height + g->spacingY;
++    }
+ 
+-    vsg_relayout(g);
+     g->dragWidget = NULL;
+     *g->glowY = -1;
+     expose_widget(g->parent);
+diff --git a/NeuralRack/gui/widgets.cc b/NeuralRack/gui/widgets.cc
+--- a/NeuralRack/gui/widgets.cc
++++ b/NeuralRack/gui/widgets.cc
+@@ -140,6 +140,20 @@
+     return dst;
+ }
+ 
++// draw a highlight border on the current drop target during drag reorder
++static inline void drawDropHighlight(Widget_t *w) {
++    X11_UI* ui = (X11_UI*)w->parent_struct;
++    if (!ui->g.dragWidget) return;
++    if (ui->g.newIndex < 0 || ui->g.newIndex >= ui->g.entryCount) return;
++    if (ui->g.entries[ui->g.newIndex] != w) return;
++
++    cairo_set_source_rgba(w->crb, 0.3, 0.8, 0.3, 0.4);
++    cairo_set_line_width(w->crb, 4);
++    round_rectangle(w->crb, 10 * w->scale.rcscale_x * w->app->hdpi, 10 * w->scale.rcscale_y * w->app->hdpi,
++        w->width-20 * w->scale.rcscale_x * w->app->hdpi, w->height-20 * w->scale.rcscale_y * w->app->hdpi, 0.08);
++    cairo_stroke(w->crb);
++}
++
+ // draw the EQ and the Noise Gate window
+ void draw_eq_window(void *w_, void* user_data) {
+     Widget_t *w = (Widget_t*)w_;
+@@ -183,6 +197,7 @@
+     cairo_show_text(w->crb, w->label);
+     widget_reset_scale(w);
+ 
++    drawDropHighlight(w);
+     cairo_pop_group_to_source (w->crb);
+     cairo_paint (w->crb);
+ }
+@@ -269,6 +284,7 @@
+  
+     widget_reset_scale(w);
+ 
++    drawDropHighlight(w);
+     cairo_pop_group_to_source (w->crb);
+     cairo_paint (w->crb);
+ }
+@@ -365,6 +381,7 @@
+  
+     widget_reset_scale(w);
+ 
++    drawDropHighlight(w);
+     cairo_pop_group_to_source (w->crb);
+     cairo_paint (w->crb);
+ }
