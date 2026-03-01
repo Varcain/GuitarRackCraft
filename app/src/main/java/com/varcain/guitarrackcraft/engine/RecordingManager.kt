@@ -20,6 +20,8 @@
 package com.varcain.guitarrackcraft.engine
 
 import android.content.Context
+import android.util.Log
+import org.json.JSONObject
 import java.io.File
 import java.io.RandomAccessFile
 import java.text.SimpleDateFormat
@@ -31,11 +33,20 @@ data class RecordingEntry(
     val displayName: String,
     val rawFile: File,
     val processedFile: File,
-    val durationSec: Double
+    val durationSec: Double,
+    val presetFile: File? = null
 )
+
+fun RecordingEntry.hasPreset(): Boolean = presetFile != null && presetFile.exists()
+
+fun RecordingEntry.readPresetJson(): String? {
+    val f = presetFile ?: return null
+    return if (f.exists()) f.readText() else null
+}
 
 object RecordingManager {
 
+    private const val TAG = "RecordingManager"
     private const val DIR_NAME = "recordings"
     private val fileTimestampFormat = SimpleDateFormat("yyyy-MM-dd_HH-mm-ss", Locale.US)
     private val displayFormat = SimpleDateFormat("MMM dd, yyyy h:mm:ss a", Locale.US)
@@ -52,6 +63,22 @@ object RecordingManager {
 
         val dir = recordingsDir(context)
         val ts = fileTimestampFormat.format(Date())
+
+        // Save sidecar preset if rack has plugins
+        try {
+            val stateJson = engine.saveChainState()
+            if (stateJson != null) {
+                val root = JSONObject(stateJson)
+                val plugins = root.optJSONArray("plugins")
+                if (plugins != null && plugins.length() > 0) {
+                    File(dir, "Preset_$ts.json").writeText(root.toString(2))
+                    Log.i(TAG, "startRecording: saved sidecar preset for $ts")
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "startRecording: failed to save sidecar preset", e)
+        }
+
         val rawPath = File(dir, "Raw_$ts.wav").absolutePath
         val processedPath = File(dir, "Processed_$ts.wav").absolutePath
         return engine.startRecording(rawPath, processedPath)
@@ -85,12 +112,15 @@ object RecordingManager {
 
             val duration = getWavDurationFromHeader(rawFile)
 
+            val presetFile = File(dir, "Preset_$ts.json")
+
             RecordingEntry(
                 timestamp = ts,
                 displayName = displayName,
                 rawFile = rawFile,
                 processedFile = processedFile,
-                durationSec = duration
+                durationSec = duration,
+                presetFile = if (presetFile.exists()) presetFile else null
             )
         }
     }
@@ -98,6 +128,7 @@ object RecordingManager {
     fun deleteRecording(entry: RecordingEntry) {
         entry.rawFile.delete()
         entry.processedFile.delete()
+        entry.presetFile?.delete()
     }
 
     private fun readLeU16(raf: RandomAccessFile): Int {

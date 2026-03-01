@@ -76,8 +76,7 @@ class PresetManager(private val engine: NativeEngine) {
     }
 
     /**
-     * Load a preset by name: clears the current rack, adds plugins by URI,
-     * then restores their control port values and state properties.
+     * Load a preset by name: reads the file and delegates to [loadPresetFromJson].
      * @return true if all plugins restored successfully.
      */
     fun loadPreset(context: Context, name: String): Boolean {
@@ -86,11 +85,19 @@ class PresetManager(private val engine: NativeEngine) {
             Log.e(TAG, "loadPreset: file not found: ${file.absolutePath}")
             return false
         }
+        return loadPresetFromJson(file.readText())
+    }
 
-        val root = JSONObject(file.readText())
+    /**
+     * Load a preset from a raw JSON string: clears the current rack, adds plugins by URI,
+     * then restores their control port values and state properties.
+     * @return true if all plugins restored successfully.
+     */
+    fun loadPresetFromJson(json: String): Boolean {
+        val root = JSONObject(json)
         val plugins = root.optJSONArray("plugins")
         if (plugins == null) {
-            Log.e(TAG, "loadPreset: no plugins array in preset")
+            Log.e(TAG, "loadPresetFromJson: no plugins array in preset")
             return false
         }
 
@@ -104,13 +111,13 @@ class PresetManager(private val engine: NativeEngine) {
         for (i in 0 until plugins.length()) {
             val uri = plugins.getJSONObject(i).optString("uri", "")
             if (uri.isEmpty()) {
-                Log.e(TAG, "loadPreset: plugin[$i] has no URI")
+                Log.e(TAG, "loadPresetFromJson: plugin[$i] has no URI")
                 return false
             }
             val fullId = "LV2:$uri"
             val pos = engine.addPluginToRack(fullId, -1)
             if (pos < 0) {
-                Log.e(TAG, "loadPreset: failed to add plugin '$fullId'")
+                Log.e(TAG, "loadPresetFromJson: failed to add plugin '$fullId'")
                 return false
             }
         }
@@ -124,7 +131,7 @@ class PresetManager(private val engine: NativeEngine) {
             }
         }
 
-        Log.i(TAG, "loadPreset: '$name' restored, allOk=$allOk")
+        Log.i(TAG, "loadPresetFromJson: restored, allOk=$allOk")
         return allOk
     }
 

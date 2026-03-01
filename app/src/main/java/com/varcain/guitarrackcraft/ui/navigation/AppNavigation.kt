@@ -153,6 +153,10 @@ fun AppNavigation(
                         val isRaw = fileName.startsWith("Raw_")
                         rackViewModel.setWavProcessEffects(isRaw)
                         rackViewModel.loadWav(path, fileName)
+                    },
+                    onLoadRecordingPreset = { json ->
+                        rackViewModel.loadRecordingPreset(json)
+                        navController.popBackStack()
                     }
                 )
             }

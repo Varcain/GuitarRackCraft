@@ -484,6 +484,26 @@ class RackViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun loadRecordingPreset(json: String) {
+        viewModelScope.launch {
+            val engine = NativeEngine.getInstance()
+            val ok = withContext(Dispatchers.IO) {
+                engine.setChainBypass(true)
+                try {
+                    presetManager.loadPresetFromJson(json)
+                } finally {
+                    engine.setChainBypass(false)
+                }
+            }
+            if (ok) {
+                refreshRack()
+                _presetMessage.value = "Recording preset loaded"
+            } else {
+                _presetMessage.value = "Failed to load recording preset"
+            }
+        }
+    }
+
     fun deletePreset(ctx: Context, name: String) {
         viewModelScope.launch {
             presetManager.deletePreset(ctx, name)

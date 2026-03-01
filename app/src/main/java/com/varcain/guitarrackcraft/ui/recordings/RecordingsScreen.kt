@@ -27,6 +27,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.LibraryMusic
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -38,12 +39,15 @@ import androidx.compose.ui.unit.dp
 import androidx.core.content.FileProvider
 import com.varcain.guitarrackcraft.engine.RecordingEntry
 import com.varcain.guitarrackcraft.engine.RecordingManager
+import com.varcain.guitarrackcraft.engine.hasPreset
+import com.varcain.guitarrackcraft.engine.readPresetJson
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun RecordingsScreen(
     onNavigateBack: () -> Unit,
-    onPlayRecording: (path: String) -> Unit
+    onPlayRecording: (path: String) -> Unit,
+    onLoadRecordingPreset: (json: String) -> Unit = {}
 ) {
     val context = LocalContext.current
     var recordings by remember { mutableStateOf(RecordingManager.listRecordings(context)) }
@@ -100,6 +104,7 @@ fun RecordingsScreen(
                             }
                             context.startActivity(Intent.createChooser(intent, "Share Recording"))
                         },
+                        onLoadPreset = { json -> onLoadRecordingPreset(json) },
                         onDelete = { deleteTarget = entry }
                     )
                 }
@@ -137,8 +142,12 @@ private fun RecordingCard(
     onPlayRaw: () -> Unit,
     onPlayProcessed: () -> Unit,
     onShare: () -> Unit,
+    onLoadPreset: (json: String) -> Unit,
     onDelete: () -> Unit
 ) {
+    val context = LocalContext.current
+    var presetMenuExpanded by remember { mutableStateOf(false) }
+
     Card(
         modifier = Modifier.fillMaxWidth()
     ) {
@@ -173,6 +182,44 @@ private fun RecordingCard(
                     contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
                 ) {
                     Text("Play Processed", style = MaterialTheme.typography.labelSmall)
+                }
+                Box {
+                    IconButton(
+                        onClick = { presetMenuExpanded = true },
+                        enabled = entry.hasPreset(),
+                        modifier = Modifier.size(36.dp)
+                    ) {
+                        Icon(
+                            Icons.Default.LibraryMusic,
+                            contentDescription = "Preset",
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
+                    DropdownMenu(
+                        expanded = presetMenuExpanded,
+                        onDismissRequest = { presetMenuExpanded = false }
+                    ) {
+                        DropdownMenuItem(
+                            text = { Text("Load Preset") },
+                            onClick = {
+                                presetMenuExpanded = false
+                                entry.readPresetJson()?.let { onLoadPreset(it) }
+                            }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Share Preset") },
+                            onClick = {
+                                presetMenuExpanded = false
+                                entry.readPresetJson()?.let { json ->
+                                    val intent = Intent(Intent.ACTION_SEND).apply {
+                                        type = "text/plain"
+                                        putExtra(Intent.EXTRA_TEXT, json)
+                                    }
+                                    context.startActivity(Intent.createChooser(intent, "Share Preset"))
+                                }
+                            }
+                        )
+                    }
                 }
                 IconButton(onClick = onShare, modifier = Modifier.size(36.dp)) {
                     Icon(Icons.Default.Share, contentDescription = "Share", modifier = Modifier.size(18.dp))
