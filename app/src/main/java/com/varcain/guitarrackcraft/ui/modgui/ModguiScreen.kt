@@ -408,7 +408,27 @@ private fun buildAssetLoader(
         .addPathHandler("/") { path ->
             val relativePath = path.trimStart('/')
             if (relativePath.startsWith("resources/")) {
-                // Try shared modgui resources first
+                // Try plugin bundle first: map /resources/X → modgui/X
+                // Plugins like GxBlueAmp bundle their own specific images
+                // (background, knobs, switches) that must take priority over
+                // the generic shared resources.
+                val resourceFileName = relativePath.removePrefix("resources/")
+                val bundleResourceFile = File(baseDir, "modgui/$resourceFileName")
+                if (bundleResourceFile.exists() &&
+                    bundleResourceFile.canonicalPath.startsWith(baseDir.canonicalPath)) {
+                    val ext = bundleResourceFile.extension.lowercase()
+                    val mimeType = when (ext) {
+                        "png" -> "image/png"
+                        "jpg", "jpeg" -> "image/jpeg"
+                        "gif" -> "image/gif"
+                        "svg" -> "image/svg+xml"
+                        "css" -> "text/css"
+                        else -> "application/octet-stream"
+                    }
+                    return@addPathHandler WebResourceResponse(mimeType, "UTF-8",
+                        bundleResourceFile.inputStream())
+                }
+                // Fall back to shared modgui resources (boxy pedal themes, etc.)
                 val assetPath = "lv2/modgui_shared_resources/$relativePath"
                 val sharedResult = try {
                     val bytes = context.assets.open(assetPath).use { it.readBytes() }
@@ -426,24 +446,6 @@ private fun buildAssetLoader(
                     null
                 }
                 if (sharedResult != null) return@addPathHandler sharedResult
-                // Fall through: map /resources/X → modgui/X in the plugin bundle
-                // (modgui:resourcesDirectory <modgui> in TTL)
-                val resourceFileName = relativePath.removePrefix("resources/")
-                val bundleResourceFile = File(baseDir, "modgui/$resourceFileName")
-                if (bundleResourceFile.exists() &&
-                    bundleResourceFile.canonicalPath.startsWith(baseDir.canonicalPath)) {
-                    val ext = bundleResourceFile.extension.lowercase()
-                    val mimeType = when (ext) {
-                        "png" -> "image/png"
-                        "jpg", "jpeg" -> "image/jpeg"
-                        "gif" -> "image/gif"
-                        "svg" -> "image/svg+xml"
-                        "css" -> "text/css"
-                        else -> "application/octet-stream"
-                    }
-                    return@addPathHandler WebResourceResponse(mimeType, "UTF-8",
-                        bundleResourceFile.inputStream())
-                }
             }
             val file = File(baseDir, relativePath)
             if (!file.exists()) return@addPathHandler null
@@ -469,6 +471,7 @@ private fun buildAssetLoader(
                         """
                         <style>
                         html, body { margin: 0; padding: 0; background: transparent; overflow: hidden; touch-action: none; }
+                        .mod-pedal-input, .mod-pedal-output { display: none !important; }
                         .modgui-inline-wrap {
                             position: absolute; top: 0; left: 0;
                             transform-origin: top left;
@@ -479,6 +482,7 @@ private fun buildAssetLoader(
                         <script>
                         var _naturalW = 0, _naturalH = 0;
                         window.addEventListener('load', function() {
+                            requestAnimationFrame(function() {
                             var wrap = document.querySelector('.modgui-inline-wrap');
                             if (!wrap) return;
                             // Measure at no transform
@@ -508,6 +512,7 @@ private fun buildAssetLoader(
                                 AndroidHost.setContentSize(Math.ceil(cw), Math.ceil(ch));
                                 fitInline();
                             }
+                            });
                         });
 
                         function fitInline() {
@@ -611,10 +616,15 @@ private fun buildAssetLoader(
                         <style>
                         /* Disable Android WebView tap highlight and text selection */
                         * { -webkit-tap-highlight-color: transparent; -webkit-user-select: none; user-select: none; }
-                        /* Fix z-index stacking: ensure controls render above background elements */
-                        .mod-control-group { z-index: 10; }
+                        /* Base MOD platform styles (from mod-ui pedals.css + bootstrap) */
+                        .clearfix:before, .clearfix:after { display: table; content: " "; }
+                        .clearfix:after { clear: both; }
+                        .mod-pedal { display: inline-block; z-index: 100; }
+                        .mod-pedal .mod-drag-handle { position: absolute; top: 0; left: 0; right: 0; bottom: 0; z-index: 20; }
+                        .mod-pedal .mod-pedal-input { position: absolute; top: 106px; left: -88px; width: 88px; }
+                        .mod-pedal .mod-pedal-output { position: absolute; top: 106px; right: -87px; width: 87px; }
+                        .mod-pedal .mod-control-group { z-index: 20; }
                         .mod-knob { overflow: visible !important; }
-                        .mod-pedal-input, .mod-pedal-output { z-index: 5; }
                         /* Bypass indicator light — CSS-only, no external PNG required */
                         .mod-pedal .mod-light { display: flex; align-items: center; justify-content: center; }
                         .mod-pedal .mod-light::after { content: ''; width: 14px; height: 14px; border-radius: 50%; display: block; }
