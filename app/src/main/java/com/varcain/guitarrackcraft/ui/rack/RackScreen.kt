@@ -85,12 +85,18 @@ import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.Placeholder
+import androidx.compose.ui.text.PlaceholderVerticalAlign
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.foundation.text.appendInlineContent
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.foundation.text.InlineTextContent
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import android.content.Intent
 import android.util.Log
 import androidx.compose.foundation.shape.CircleShape
@@ -721,6 +727,44 @@ fun RackScreen(
                             .wrapContentHeight()
                     ) {
             Spacer(modifier = Modifier.height(16.dp))
+            if (!isEngineRunning) {
+                val bannerText = buildAnnotatedString {
+                    append("Engine not running, tap ")
+                    appendInlineContent("playIcon", "[>]")
+                    append(" Play to start the engine")
+                }
+                val bannerInlineContent = mapOf(
+                    "playIcon" to InlineTextContent(
+                        Placeholder(
+                            width = 18.sp,
+                            height = 18.sp,
+                            placeholderVerticalAlign = PlaceholderVerticalAlign.Center
+                        )
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.PlayArrow,
+                            contentDescription = null,
+                            modifier = Modifier.fillMaxSize(),
+                            tint = MaterialTheme.colorScheme.onSecondaryContainer
+                        )
+                    }
+                )
+                Card(
+                    onClick = { viewModel.restartEngine(context) },
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.secondaryContainer
+                    )
+                ) {
+                    Text(
+                        text = bannerText,
+                        inlineContent = bannerInlineContent,
+                        modifier = Modifier.padding(16.dp),
+                        color = MaterialTheme.colorScheme.onSecondaryContainer
+                    )
+                }
+                Spacer(modifier = Modifier.height(8.dp))
+            }
             errorMessage?.let { error ->
                 Card(
                     modifier = Modifier.fillMaxWidth(),
