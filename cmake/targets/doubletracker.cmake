@@ -88,6 +88,7 @@ add_custom_command(
     OUTPUT "${_dt_ttl}"
     COMMAND ${HOST_CXX} -std=c++11 -O2
         -include "${_dt_gen}/doubletracker_defines.h"
+        -I"${LV2_COMPAT_DIR}" -I"${LV2_INCLUDE}"
         "${_dt_cpp}" -o "${_dt_ttl_gen}"
     COMMAND ${_dt_ttl_gen} > "${_dt_ttl}"
     COMMAND ${CMAKE_COMMAND} -E rm -f "${_dt_ttl_gen}"
