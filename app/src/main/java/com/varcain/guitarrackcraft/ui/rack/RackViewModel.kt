@@ -191,6 +191,9 @@ class RackViewModel(application: Application) : AndroidViewModel(application) {
                 )
                 android.util.Log.i("AudioLifecycle", "RackViewModel.startEngine() result=$started")
                 _isEngineRunning.value = started
+                if (started) {
+                    _errorMessage.value = null
+                }
             } catch (e: Exception) {
                 _errorMessage.value = "Failed to start engine: ${e.message}"
             }
@@ -497,6 +500,10 @@ class RackViewModel(application: Application) : AndroidViewModel(application) {
     fun clearRecentPresets(ctx: Context) {
         ensureRecentManager(ctx).clearRecents()
         _recentPresets.value = emptyList()
+    }
+
+    fun clearError() {
+        _errorMessage.value = null
     }
 
     fun clearPresetMessage() {
