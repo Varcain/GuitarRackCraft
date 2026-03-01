@@ -133,6 +133,12 @@ else
         cmake --preset android-arm64 -S "$CMAKE_DIR"
     fi
 
+    # Metadata stamps must regenerate to pick up new/changed plugins.
+    # They depend on custom targets (ordering-only in Ninja), so a
+    # stale stamp from cache would prevent regeneration.
+    rm -f "$BUILD_DIR/stamps/metadata_json.stamp" \
+          "$BUILD_DIR/stamps/strip_asset_binaries.stamp"
+
     echo "=== Building all targets ==="
     cmake --build "$BUILD_DIR" --target all_plugins -j"$(nproc)"
     echo "=== Build complete ==="
