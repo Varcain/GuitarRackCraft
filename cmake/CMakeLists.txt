@@ -192,6 +192,9 @@ include(${CMAKE_CURRENT_SOURCE_DIR}/targets/modamptk.cmake)
 # FatFrog (DSP + UI)
 include(${CMAKE_CURRENT_SOURCE_DIR}/targets/fatfrog.cmake)
 
+# DoubleTracker (DSP-only, Faust)
+include(${CMAKE_CURRENT_SOURCE_DIR}/targets/doubletracker.cmake)
+
 # ─── Phase 4: Metadata + modgui ──────────────────────────────────────────────
 include(${CMAKE_CURRENT_SOURCE_DIR}/targets/metadata.cmake)
 
@@ -215,6 +218,7 @@ add_custom_target(all_plugins
         gxcabsim_done
         modamptk_done
         fatfrog_done
+        doubletracker_done
         metadata_done
     COMMENT "All plugins built"
 )

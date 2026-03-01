@@ -41,6 +41,7 @@ set(_all_plugin_deps
     gxcabsim_done
     modamptk_done
     fatfrog_done
+    doubletracker_done
 )
 
 # ─── Plugin metadata JSON (stamp-based) ─────────────────────────────────────

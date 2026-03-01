@@ -52,6 +52,12 @@ Local modifications are stored as numbered patch files in `patches/<submodule>/`
 | **XTinyTerror** | Amp simulation |
 | **ModularAmpToolKit.lv2** | PreAmps, PowerAmps, impulse modules |
 
+## LV2 Plugins - Varcain
+
+| Submodule | Description |
+|-----------|-------------|
+| **doubletracker.lv2** | Guitar double-track emulation |
+
 ## Audio / Math
 
 | Submodule | Description |

@@ -291,6 +291,7 @@ scan_external_assets("PreAmpImpulses" "brummer10")
 scan_external_assets("PowerAmpImpulses" "brummer10")
 scan_external_assets("FatFrog" "brummer10")
 scan_external_assets("Neuralrack" "brummer10")
+scan_external_assets("doubletracker" "Varcain")
 
 # --- Helper: Populate a JSON object field from "key|value" list ---
 function(json_set_map JSON_VAR FIELD)

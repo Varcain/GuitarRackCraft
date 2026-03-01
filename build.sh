@@ -45,6 +45,7 @@ if [ "$FLAVOR" = "clean" ]; then
     rm -rf "$PROJECT_ROOT/build/gxcabsim"
     rm -rf "$PROJECT_ROOT/build/modamptk"
     rm -rf "$PROJECT_ROOT/build/fatfrog"
+    rm -rf "$PROJECT_ROOT/build/doubletracker"
     rm -rf "$PROJECT_ROOT/build/lv2_wrapper"
 
     echo "Restoring 3rd_party to pristine state..."
@@ -294,21 +295,22 @@ if [ "$NEED_PACKS" = true ]; then
     manifest_count=$(wc -l < "$MANIFEST")
     echo "  plugin_libs.txt: $manifest_count entries"
 
-    # Generate LV2 asset manifests.
-    # assets.list() is unreliable across split APKs; extractLV2Assets() reads these instead.
-    LV2_ASSET_DIR="$PROJECT_ROOT/app/src/main/assets/lv2"
-    if [ -d "$LV2_ASSET_DIR" ]; then
-        # Bundle directory names (top-level)
-        LV2_BUNDLES="$PROJECT_ROOT/app/src/main/assets/lv2_bundles.txt"
-        ls -1 "$LV2_ASSET_DIR" | grep '\.lv2$' > "$LV2_BUNDLES"
-        lv2_count=$(wc -l < "$LV2_BUNDLES")
-        echo "  lv2_bundles.txt: $lv2_count entries"
+fi
 
-        # Comprehensive file manifest (all files under lv2/, relative paths)
-        LV2_FILES="$PROJECT_ROOT/app/src/main/assets/lv2_files.txt"
-        (cd "$LV2_ASSET_DIR" && find . -type f | sed 's|^\./||' | sort) > "$LV2_FILES"
-        lv2_files_count=$(wc -l < "$LV2_FILES")
-        echo "  lv2_files.txt: $lv2_files_count entries"
-    fi
+# Generate LV2 asset manifests (all flavors).
+# assets.list() is unreliable across split APKs; extractLV2Assets() reads these instead.
+LV2_ASSET_DIR="$PROJECT_ROOT/app/src/main/assets/lv2"
+if [ -d "$LV2_ASSET_DIR" ]; then
+    # Bundle directory names (top-level)
+    LV2_BUNDLES="$PROJECT_ROOT/app/src/main/assets/lv2_bundles.txt"
+    ls -1 "$LV2_ASSET_DIR" | grep '\.lv2$' > "$LV2_BUNDLES"
+    lv2_count=$(wc -l < "$LV2_BUNDLES")
+    echo "  lv2_bundles.txt: $lv2_count entries"
+
+    # Comprehensive file manifest (all files under lv2/, relative paths)
+    LV2_FILES="$PROJECT_ROOT/app/src/main/assets/lv2_files.txt"
+    (cd "$LV2_ASSET_DIR" && find . -type f | sed 's|^\./||' | sort) > "$LV2_FILES"
+    lv2_files_count=$(wc -l < "$LV2_FILES")
+    echo "  lv2_files.txt: $lv2_files_count entries"
 fi
 echo "=== Partitioning complete ==="

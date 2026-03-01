@@ -113,3 +113,6 @@
 [submodule "3rd_party/fftw3"]
 	path = 3rd_party/fftw3
 	url = https://github.com/FFTW/fftw3.git
+[submodule "3rd_party/doubletracker.lv2"]
+	path = 3rd_party/doubletracker.lv2
+	url = https://github.com/Varcain/doubletracker.lv2

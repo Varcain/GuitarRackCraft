@@ -46,6 +46,7 @@ function(generate_lv2_compat_headers DIR)
         "state/state"   "options/options"
         "log/log"   "log/logger"
         "presets/presets"
+        "dynmanifest/dynmanifest"
     )
     foreach(_ext IN LISTS _ext_pairs)
         get_filename_component(_ext_dir "${_ext}" DIRECTORY)
