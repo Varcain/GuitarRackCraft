@@ -221,6 +221,12 @@ static const char* LV2_ATOM__URID        = "http://lv2plug.in/ns/ext/atom#URID";
 static const char* LV2_ATOM__Path        = "http://lv2plug.in/ns/ext/atom#Path";
 static const char* LV2_ATOM__eventTransfer = "http://lv2plug.in/ns/ext/atom#eventTransfer";
 
+/* Serialise setenv("DISPLAY") + plugin instantiate() across threads.
+   XOpenDisplay(NULL) reads the global DISPLAY env var; without this mutex,
+   concurrent instantiations race on setenv and multiple plugins connect to
+   the wrong X11 server (which only handles one client), causing a deadlock. */
+static std::mutex sDisplayEnvMutex;
+
 namespace guitarrackcraft {
 
 LV2PluginUI::LV2PluginUI() = default;
@@ -318,19 +324,17 @@ bool LV2PluginUI::instantiate(
     paramCb_ = std::move(paramCallback);
     libCopyPath_.clear();
 
-    /* --- Set DISPLAY so Xlib inside the UI .so connects to the minimal X11 server.
-           Always use TCP (127.0.0.1:N) because our custom libxcb doesn't support
-           abstract Unix sockets and /tmp/.X11-unix/ doesn't exist on Android. */
+    /* Build DISPLAY string — actual setenv is deferred to just before plugin
+       instantiate() and protected by sDisplayEnvMutex to prevent races when
+       multiple plugins instantiate concurrently on different threads.
+       Always use TCP (127.0.0.1:N) because our custom libxcb doesn't support
+       abstract Unix sockets and /tmp/.X11-unix/ doesn't exist on Android. */
     std::string displayEnv = "127.0.0.1:" + std::to_string(displayNumber) + ".0";
-    setenv("DISPLAY", displayEnv.c_str(), 1 /*overwrite*/);
-    LOGI("instantiate: DISPLAY=%s", displayEnv.c_str());
-    
-    /* Set XCB threading options to be more tolerant.
-     * LIBXCB_ALLOW_SLOPPY_LOCK allows XCB to work even with some threading issues.
-     * This helps prevent the "xcb_xlib_threads_sequence_lost" assertion failure
-     * when the plugin uses X11 from multiple threads internally. */
+    LOGI("instantiate: DISPLAY=%s (will set before plugin instantiate)", displayEnv.c_str());
+
+    /* Set XCB threading options to be more tolerant (process-wide, idempotent). */
     setenv("LIBXCB_ALLOW_SLOPPY_LOCK", "1", 1);
-    
+
     LOGI("instantiate: [2] DISPLAY=%s LIBXCB_ALLOW_SLOPPY_LOCK=1", displayEnv.c_str());
 
     /* Extract base name and bundle dir from uiBinaryPath */
@@ -600,14 +604,22 @@ bool LV2PluginUI::instantiate(
     LOGI("instantiate: [7] calling plugin instantiate() uri=%s DISPLAY=%s parent=0x%lx bundlePath=%s",
          pluginUri.c_str(), displayEnv.c_str(), parentWindowId, bundlePath.c_str());
 
-    uiHandle_ = desc_->instantiate(
-        desc_,
-        pluginUri.c_str(),
-        bundlePath.c_str(),
-        reinterpret_cast<LV2UI_Write_Function>(&writeFunction),
-        static_cast<void*>(this),   /* controller */
-        &widget,
-        features);
+    /* Lock: setenv("DISPLAY") + plugin instantiate() must be atomic.
+       The plugin calls XOpenDisplay(NULL) which reads the global DISPLAY env.
+       Without this lock, another thread's setenv overwrites DISPLAY and the
+       plugin connects to the wrong X11 server, deadlocking everything. */
+    {
+        std::lock_guard<std::mutex> displayLock(sDisplayEnvMutex);
+        setenv("DISPLAY", displayEnv.c_str(), 1 /*overwrite*/);
+        uiHandle_ = desc_->instantiate(
+            desc_,
+            pluginUri.c_str(),
+            bundlePath.c_str(),
+            reinterpret_cast<LV2UI_Write_Function>(&writeFunction),
+            static_cast<void*>(this),   /* controller */
+            &widget,
+            features);
+    }
 
     LOGI("instantiate: [8] plugin instantiate() RETURNED handle=%p widget=%p", uiHandle_, widget);
     if (!uiHandle_) {
@@ -951,7 +963,7 @@ bool LV2PluginUI::gracefulShutdown(int displayNumber, int timeoutMs) {
     // Phase 2: Wait for the plugin's event loop thread to exit
     // We don't have direct access to the plugin's thread, so we wait
     // and hope the thread exits within the timeout
-    // CRITICAL: Guitarix plugins need at least 1000ms for their event loop to fully exit
+    // Brief wait for plugin's event loop thread to exit
     static constexpr int kPluginShutdownTimeoutMs = 1000;
     int effectiveTimeout = timeoutMs > 0 ? timeoutMs : kPluginShutdownTimeoutMs;
     LOGI("gracefulShutdown: Phase 2 - waiting %dms for plugin thread to exit", effectiveTimeout);

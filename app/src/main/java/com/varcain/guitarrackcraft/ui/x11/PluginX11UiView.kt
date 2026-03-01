@@ -164,11 +164,13 @@ fun PluginX11UiView(
     LaunchedEffect(isVisible) {
         if (isVisible) {
             Log.i(TAG, "[LIFECYCLE] PluginX11UiView becoming visible - resuming display=$displayNumber")
+            // The display may not exist yet if this fires before onSurfaceTextureAvailable.
+            // resumeX11Display is a safe no-op when the display doesn't exist.
             X11Bridge.resumeX11Display(displayNumber)
-            // Force complete redraw by pumping idle and requesting multiple frames
-            // This ensures the plugin refreshes its entire interface, not just touched parts
-            repeat(10) {
-                X11Bridge.idlePluginUIs()
+            // Pump frame requests with enough iterations to cover the createPluginUI delay
+            // (X11_INIT_DELAY_MS + instantiation time). requestFrame() auto-restarts the
+            // render thread if it died, so this also recovers from screen-off/on EGL failures.
+            repeat(30) {
                 X11Bridge.requestX11Frame(displayNumber)
                 delay(50)
             }
@@ -178,7 +180,8 @@ fun PluginX11UiView(
         }
     }
 
-    // Low-frequency fallback frame request as safety net (rendering is primarily damage-driven via PutImage)
+    // Low-frequency fallback frame request as safety net (rendering is primarily damage-driven via PutImage).
+    // requestFrame() auto-restarts dead render threads, so this also serves as a heartbeat.
     LaunchedEffect(isVisible) {
         if (isVisible) {
             while (isActive) {
@@ -235,10 +238,14 @@ fun PluginX11UiView(
                     attached = false
                     return
                 }
-                Log.i("AudioLifecycle", "PluginX11UiView attachSurfaceToDisplay ok rootId=$rootId -> nativeBeginCreatePluginUI then post executor")
+                Log.i("AudioLifecycle", "PluginX11UiView attachSurfaceToDisplay ok rootId=$rootId -> nativeBeginCreatePluginUI then create")
                 X11Bridge.beginCreatePluginUI(displayNumber, pluginIndex)
-                X11DisplayManager.pluginUiExecutor.execute {
-                    Log.i("AudioLifecycle", "PluginX11UiView executor block STARTED display=$displayNumber (ensureX11LibsDir, sleep 400ms, then createPluginUI)")
+                // Each plugin uses its own X11 display + pluginUI thread, so
+                // createPluginUI calls don't need to be serialized.  Running them
+                // on separate threads avoids the single-threaded executor
+                // bottleneck where one slow/hung plugin blocks all others.
+                Thread({
+                    Log.i("AudioLifecycle", "PluginX11UiView create thread STARTED display=$displayNumber (ensureX11LibsDir, sleep ${X11_INIT_DELAY_MS}ms, then createPluginUI)")
                     X11Bridge.ensureX11LibsDir(ctx)
                     Thread.sleep(X11_INIT_DELAY_MS)
                     Log.i("AudioLifecycle", "createPluginUI START pluginIndex=$pluginIndex display=$displayNumber rootId=$rootId thread=${Thread.currentThread().name}")
@@ -284,7 +291,7 @@ fun PluginX11UiView(
                             Log.i(TAG, "[LIFECYCLE] createPluginUI done: no pendingDetach, no deferred cleanup needed")
                         }
                     }, 1)
-                }
+                }, "X11Create-$displayNumber").apply { isDaemon = true }.start()
             }
 
             fun doSurfaceDestroyed() {

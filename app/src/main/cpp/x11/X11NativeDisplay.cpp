@@ -2428,6 +2428,21 @@ struct X11NativeDisplay::Impl {
                     [this]() { return !pluginUITasks.empty() || !pluginUIRunning; });
             }
         }
+
+        // Drain remaining tasks so postTaskAndWait callers are not blocked forever.
+        // This handles the case where detachSurface() sets pluginUIRunning=false
+        // while a task is queued but not yet processed.
+        {
+            std::unique_lock<std::mutex> lock(pluginUITaskMutex);
+            while (!pluginUITasks.empty()) {
+                auto task = std::move(pluginUITasks.front());
+                pluginUITasks.pop();
+                lock.unlock();
+                task();
+                lock.lock();
+            }
+        }
+
         LOGI("X11Debug: pluginUI thread exiting display=%d tid=%ld", displayNumber_, getTid());
     }
 };
@@ -2607,6 +2622,8 @@ void X11NativeDisplay::stopRenderThreadOnly() {
 }
 
 void X11NativeDisplay::startRenderThread() {
+    // Serialize to prevent concurrent starts (e.g. resumeX11Display + requestFrame).
+    std::lock_guard<std::mutex> guard(impl_->renderExitMutex);
     LOGI("X11Debug: startRenderThread display=%d tid=%ld (restarting render thread)", displayNumber_, getTid());
 
     // Check if render thread is already running
@@ -2630,7 +2647,7 @@ void X11NativeDisplay::startRenderThread() {
     impl_->renderThreadRunning = true;
     impl_->dirty = true;
 
-    LOGI("X11Debug: startRenderThread display=%d starting new render thread, eglSurface=%p", 
+    LOGI("X11Debug: startRenderThread display=%d starting new render thread, eglSurface=%p",
          displayNumber_, (void*)impl_->eglSurface);
     impl_->renderThread = std::thread(&Impl::renderLoop, impl_.get());
 
@@ -2794,6 +2811,14 @@ bool X11NativeDisplay::isWidgetAtPoint(int surfaceX, int surfaceY) {
 
 void X11NativeDisplay::requestFrame() {
     if (impl_->window != nullptr) {
+        // Auto-restart render thread if it has exited (e.g., eglSwapBuffers failure
+        // during screen off, or surface invalidation).  startRenderThread() handles
+        // its own locking and is safe to call concurrently.
+        if (impl_->renderThreadExited.load(std::memory_order_acquire)) {
+            LOGI("X11Debug: requestFrame display=%d render thread dead, restarting", displayNumber_);
+            startRenderThread();
+            return;  // startRenderThread sets dirty=true
+        }
         impl_->dirty = true;
         impl_->dirtyCv.notify_one();
     }
@@ -2935,11 +2960,15 @@ void withDisplaySetIdleCallback(int displayNumber, X11NativeDisplay::IdleCallbac
 }
 
 bool withDisplayPostTaskAndWait(int displayNumber, std::function<void()> task) {
-    std::lock_guard<std::mutex> lock(g_displayMutex);
-    auto it = g_displays.find(displayNumber);
-    if (it == g_displays.end())
-        return false;
-    it->second->postTaskAndWait(std::move(task));
+    X11NativeDisplay* disp = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(g_displayMutex);
+        auto it = g_displays.find(displayNumber);
+        if (it == g_displays.end())
+            return false;
+        disp = it->second.get();
+    }
+    disp->postTaskAndWait(std::move(task));
     return true;
 }
 

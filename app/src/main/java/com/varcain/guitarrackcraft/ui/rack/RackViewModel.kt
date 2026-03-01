@@ -280,8 +280,8 @@ class RackViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun refreshRack() {
-        updateRackState()
+    fun refreshRack(forceNewInstanceIds: Boolean = false) {
+        updateRackState(forceNewInstanceIds)
     }
 
     fun loadWav(path: String, fileName: String? = null) {
@@ -412,14 +412,17 @@ class RackViewModel(application: Application) : AndroidViewModel(application) {
         PluginUiPreferenceManager.setStoredUiType(getApplication<Application>(), pluginFullId, uiType)
     }
 
-    private fun updateRackState() {
+    private fun updateRackState(forceNewInstanceIds: Boolean = false) {
         viewModelScope.launch {
             try {
                 val plugins = RackManager.getRackPlugins()
                 val oldList = _rackPlugins.value
-                // Preserve instanceIds for plugins that stayed in the rack
-                // Match by pluginId, consuming old entries to handle duplicates
-                val availableOld = oldList.groupBy { it.pluginId }.mapValues { it.value.toMutableList() }
+                // Preserve instanceIds for plugins that stayed in the rack,
+                // unless forceNewInstanceIds is set (e.g. after preset load which
+                // removes and re-adds all plugins — the native UIs are detached
+                // and Compose must tear down and recreate views).
+                val availableOld = if (forceNewInstanceIds) emptyMap()
+                    else oldList.groupBy { it.pluginId }.mapValues { it.value.toMutableList() }
                 _rackPlugins.value = plugins.mapIndexed { index, pluginInfo ->
                     val fullId = pluginInfo.fullId
                     val existing = availableOld[fullId]?.removeFirstOrNull()
@@ -430,7 +433,7 @@ class RackViewModel(application: Application) : AndroidViewModel(application) {
                         instanceId = existing?.instanceId ?: RackPlugin.nextInstanceId()
                     )
                 }
-                android.util.Log.i("AudioLifecycle", "updateRackState: ok size=${plugins.size}")
+                android.util.Log.i("AudioLifecycle", "updateRackState: ok size=${plugins.size} forceNewInstanceIds=$forceNewInstanceIds")
             } catch (e: Exception) {
                 _errorMessage.value = "Failed to get rack plugins: ${e.message}"
                 android.util.Log.e("AudioLifecycle", "updateRackState: failed (keeping previous list to avoid tearing down X11 UIs): ${e.message}", e)
@@ -476,7 +479,7 @@ class RackViewModel(application: Application) : AndroidViewModel(application) {
             if (ok) {
                 ensureRecentManager(ctx).addRecent(name)
                 refreshPresets(ctx)
-                refreshRack()
+                refreshRack(forceNewInstanceIds = true)
                 _presetMessage.value = "Preset '$name' loaded"
             } else {
                 _presetMessage.value = "Failed to load preset (plugin count mismatch?)"
@@ -496,7 +499,7 @@ class RackViewModel(application: Application) : AndroidViewModel(application) {
                 }
             }
             if (ok) {
-                refreshRack()
+                refreshRack(forceNewInstanceIds = true)
                 _presetMessage.value = "Recording preset loaded"
             } else {
                 _presetMessage.value = "Failed to load recording preset"
