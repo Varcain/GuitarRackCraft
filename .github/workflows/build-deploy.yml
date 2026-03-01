@@ -86,7 +86,8 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             ninja-build meson python3 python3-mako pkg-config \
             autoconf automake libtool gettext patch cmake \
-            flex bison ocaml ocamlbuild ocaml-findlib libnum-ocaml-dev
+            flex bison ocaml ocamlbuild ocaml-findlib libnum-ocaml-dev \
+            faust libboost-dev
 
       # ── 3. JDK 17 ───────────────────────────────────────────────────────
       - name: Set up JDK 17
