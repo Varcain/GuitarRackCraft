@@ -58,8 +58,15 @@ add_custom_command(
     COMMAND ${FAUST} -i
         -a /usr/share/faust/lv2.cpp
         -cn doubletracker
+        -ftz 1
         -o "${_dt_cpp}"
         "${_dt_dsp}"
+    # Inject ARM64 hardware FTZ (FPCR.FZ bit) at the top of compute().
+    # Faust's -ftz 1 only guards recursive signal assignments; this catches
+    # ALL denormals including intermediates, matching x86 MXCSR FTZ/DAZ behavior.
+    COMMAND ${CMAKE_COMMAND}
+        -DFILE="${_dt_cpp}"
+        -P "${CMAKE_CURRENT_LIST_DIR}/../inject_arm64_ftz.cmake"
     DEPENDS "${_dt_dsp}"
     COMMENT "Generating doubletracker C++ from Faust DSP (lv2.cpp architecture)"
 )
@@ -111,6 +118,10 @@ endif()
 add_library(doubletracker_dsp SHARED "${_dt_cpp}")
 add_dependencies(doubletracker_dsp doubletracker_faust)
 lv2_set_dsp_properties(doubletracker_dsp "doubletracker" "${_dt_build}")
+
+# -fwrapv: makes signed integer overflow wrapping-defined (safety for Faust PRNGs)
+# -ffp-contract=off: prevents FMA contraction that can shift IIR filter pole positions
+target_compile_options(doubletracker_dsp PRIVATE -fwrapv -ffp-contract=off)
 
 target_compile_definitions(doubletracker_dsp PRIVATE
     PLUGIN_URI="https://faustlv2.bitbucket.io/doubletracker"
