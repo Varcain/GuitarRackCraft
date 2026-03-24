@@ -51,10 +51,14 @@ namespace X11Op {
     static constexpr uint8_t GetSelectionOwner = 23;
     static constexpr uint8_t SendEvent = 25;
     static constexpr uint8_t QueryPointer = 38;
+    static constexpr uint8_t CreatePixmap = 53;
+    static constexpr uint8_t FreePixmap = 54;
+    static constexpr uint8_t CopyArea = 62;
     static constexpr uint8_t PolyFillRectangle = 70;
     static constexpr uint8_t PutImage = 72;
+    static constexpr uint8_t GetImage = 73;
     static constexpr uint8_t QueryExtension = 98;
-    static constexpr uint8_t ListExtensions = 100;
+    static constexpr uint8_t ListExtensions = 99;
     static constexpr uint8_t kGLXMajorOpcode = 128;
 } // namespace X11Op
 

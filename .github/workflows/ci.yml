@@ -31,6 +31,23 @@ env:
   GRADLE_OPTS: -Dorg.gradle.daemon=false
 
 jobs:
+  test-x11:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - name: Install test dependencies
+        run: sudo apt-get update && sudo apt-get install -y cmake g++ libxcb1-dev
+      - name: Build and run X11 unit tests
+        run: |
+          mkdir -p build/tests && cd build/tests
+          cmake ../../tests -DCMAKE_BUILD_TYPE=Debug
+          make -j$(nproc)
+          ctest --output-on-failure
+
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 120

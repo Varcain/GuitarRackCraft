@@ -19,6 +19,14 @@
 
 #include "X11NativeDisplay.h"
 #include "X11Protocol.h"
+#include "X11ByteOrder.h"
+#include "X11AtomStore.h"
+#include "X11WindowManager.h"
+#include "X11PixmapStore.h"
+#include "X11Framebuffer.h"
+#include "X11ConnectionHandler.h"
+#include "X11EventBuilder.h"
+#include "X11Log.h"
 #include "../plugin/PluginUIGuard.h"
 #include "../utils/ThreadUtils.h"
 #include <android/log.h>
@@ -50,9 +58,9 @@
 #include <algorithm>
 
 #define LOG_TAG "X11NativeDisplay"
-#define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
-#define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
-#define LOGW(...) __android_log_print(ANDROID_LOG_WARN, LOG_TAG, __VA_ARGS__)
+#define LOGI(...) X11_LOGI(LOG_TAG, __VA_ARGS__)
+#define LOGE(...) X11_LOGE(LOG_TAG, __VA_ARGS__)
+#define LOGW(...) X11_LOGW(LOG_TAG, __VA_ARGS__)
 
 /* Swap R and B channels in an array of ARGB pixels using NEON SIMD.
  * Each pixel: swap byte 0 (B/R) with byte 2 (R/B), keep bytes 1 (G) and 3 (A). */
@@ -148,21 +156,25 @@ struct X11NativeDisplay::Impl {
     GLuint texUniform = 0;
     GLuint fbTex = 0;    // persistent framebuffer texture (avoid per-frame alloc)
     GLuint fbVbo = 0;    // persistent vertex buffer
-    bool msbFirst_ = true;  // X11 byte order: true = MSB first (0x42), false = LSB first (0x6c)
+    X11ByteOrder byteOrder_{true};  // X11 byte order (replaces msbFirst_)
+    // Convenience aliases: keep existing call sites working via delegation
+    bool& msbFirst_ = byteOrder_.msbFirst;
     std::atomic<bool> listening_{false};
     std::atomic<uint16_t> lastSeq_{0};  // last request sequence number, for event injection
     std::atomic<uint16_t> lastReplySeq_{0};  // sequence of last REPLY sent (not void requests)
     std::mutex writeMutex;  // protects writes to clientFd (replies + injected events)
-    std::vector<uint32_t> childWindows;  // window IDs created by client (for event delivery)
     std::atomic<int> lastPointerX{0};     // last injected pointer X position (for QueryPointer)
     std::atomic<int> lastPointerY{0};     // last injected pointer Y position (for QueryPointer)
     std::atomic<bool> pointerButton1Down{false};  // button 1 state (for QueryPointer)
-    std::unordered_map<uint32_t, uint32_t> windowEventMasks;  // window ID -> event mask (for pointer event filtering)
 
-    /* Atom table: InternAtom maps name -> unique ID; GetAtomName maps ID -> name. */
-    std::unordered_map<std::string, uint32_t> atomNameToId;
-    std::unordered_map<uint32_t, std::string> atomIdToName;
-    uint32_t nextAtomId = 1;  // atoms start at 1 (0 = None)
+    // Extracted modules (replace inline state)
+    X11AtomStore atoms_;
+    X11WindowManager windowManager_{kRootWindowId};
+    X11PixmapStore pixmapStore_;
+    X11EventBuilder eventBuilder_{byteOrder_};
+
+    // Legacy accessors — delegate to windowManager_ for code that still uses these directly
+    const std::vector<uint32_t>& childWindows = windowManager_.childWindows();
 
     /* Queued touch events: injected from UI thread, drained from server thread between requests.
      * This prevents xcb_xlib_threads_sequence_lost: events must not arrive on the socket while
@@ -173,63 +185,21 @@ struct X11NativeDisplay::Impl {
     };
     std::mutex touchQueueMutex;
     std::vector<QueuedTouch> touchQueue;
-    std::mutex windowMapMutex;  // protects childWindows, windowPositions, windowSizes (read from UI thread via isWidgetAtPoint)
-    std::unordered_map<uint32_t, std::pair<int, int>> windowSizes;  // window ID -> (width, height) for GetGeometry
-    struct WindowPos { int x = 0, y = 0; uint32_t parent = 0; };
-    std::unordered_map<uint32_t, WindowPos> windowPositions;  // window ID -> position relative to parent
-    std::unordered_set<uint32_t> unmappedWindows;  // windows hidden via UnmapWindow
-    int originalChildW = 0;  // original child window size from CreateWindow (before any scaling)
-    int originalChildH = 0;
+    std::mutex windowMapMutex;  // protects windowManager_ reads from UI thread via isWidgetAtPoint
     int pluginWidth = 0;   // plugin's current window width (may be scaled)
     int pluginHeight = 0;  // plugin's current window height
     float uiScale = 1.0f;  // UI scale factor for plugin rendering (< 1.0 = smaller = faster)
 
-    // Pixmap tracking: maps pixmap/window ID -> pixel buffer (BGRA, 4 bytes/pixel)
-    struct PixmapData {
-        int w = 0, h = 0;
-        std::vector<uint32_t> pixels;  // same format as framebuffer (ARGB)
-    };
-    std::unordered_map<uint32_t, PixmapData> pixmaps;  // offscreen pixmaps
-
-    // Compute absolute position of a window by walking parent chain
-    // Returns offset relative to the top-level plugin window (childWindows[0])
+    // Compute absolute position — delegates to windowManager_
     std::pair<int, int> getAbsolutePos(uint32_t wid) const {
-        int ax = 0, ay = 0;
-        uint32_t cur = wid;
-        for (int depth = 0; depth < 32; depth++) {  // prevent infinite loop
-            auto it = windowPositions.find(cur);
-            if (it == windowPositions.end()) break;
-            ax += it->second.x;
-            ay += it->second.y;
-            cur = it->second.parent;
-            // Stop when we reach the top-level plugin window
-            if (!childWindows.empty() && cur == childWindows[0]) break;
-            if (cur == kRootWindowId || cur == 0) break;
-        }
-        return {ax, ay};
+        return windowManager_.getAbsolutePos(wid);
     }
 
-    uint16_t read16(const uint8_t* p, int off) const {
-        if (msbFirst_) return (uint16_t)((p[off] << 8) | p[off + 1]);
-        return (uint16_t)(p[off] | (p[off + 1] << 8));
-    }
-    uint32_t read32(const uint8_t* p, int off) const {
-        if (msbFirst_) return (uint32_t)((p[off]<<24)|(p[off+1]<<16)|(p[off+2]<<8)|p[off+3]);
-        return (uint32_t)(p[off]|(p[off+1]<<8)|(p[off+2]<<16)|(p[off+3]<<24));
-    }
-    void write16(uint8_t* p, int off, uint16_t val) const {
-        if (msbFirst_) { p[off] = (val >> 8) & 0xff; p[off+1] = val & 0xff; }
-        else { p[off] = val & 0xff; p[off+1] = (val >> 8) & 0xff; }
-    }
-    void write32(uint8_t* p, int off, uint32_t val) const {
-        if (msbFirst_) {
-            p[off] = (val >> 24) & 0xff; p[off+1] = (val >> 16) & 0xff;
-            p[off+2] = (val >> 8) & 0xff; p[off+3] = val & 0xff;
-        } else {
-            p[off] = val & 0xff; p[off+1] = (val >> 8) & 0xff;
-            p[off+2] = (val >> 16) & 0xff; p[off+3] = (val >> 24) & 0xff;
-        }
-    }
+    // Byte-order read/write — delegate to byteOrder_ (keeps all existing call sites working)
+    uint16_t read16(const uint8_t* p, int off) const { return byteOrder_.read16(p, off); }
+    uint32_t read32(const uint8_t* p, int off) const { return byteOrder_.read32(p, off); }
+    void write16(uint8_t* p, int off, uint16_t val) const { byteOrder_.write16(p, off, val); }
+    void write32(uint8_t* p, int off, uint32_t val) const { byteOrder_.write32(p, off, val); }
 
     bool initGL() {
         const char* vs = "attribute vec2 aPos; attribute vec2 aTex; varying vec2 vTex; void main() { gl_Position = vec4(aPos, 0, 1); vTex = aTex; }";
@@ -477,72 +447,11 @@ struct X11NativeDisplay::Impl {
     // X11 Connection Setup reply (success). Layout must match libX11/XCB parsing.
     // See X11 Protocol "Connection Setup" and libX11 OpenDis.c.
     void sendConnectionReply() {
-        uint8_t body[120];  // 8 (header) + 112 (setup) = 120
-        size_t off = 0;
-#define APPEND(p, n) do { memcpy(body + off, (p), (n)); off += (n); } while(0)
-
-        // 0) Reply header (8 bytes)
-        body[off++] = kX11ConnectionAccepted;
-        body[off++] = 0;
-        write16(body + off, 0, kX11Major); off += 2;
-        write16(body + off, 0, kX11Minor); off += 2;
-        write16(body + off, 0, 28); off += 2;  // length in 4-byte units
-        // 1) Fixed setup prefix (18 bytes)
-        write32(body + off, 0, 0);          // release-number
-        write32(body + off, 4, 0x00200000); // resource-id-base (disjoint from mask)
-        write32(body + off, 8, 0x001FFFFF); // resource-id-mask (21 bits, disjoint from base)
-        write32(body + off, 12, 256);       // motion-buffer-size
-        write16(body + off, 16, 0);         // vendor-length
-        off += 18;
-        // 2) Match android-xserver order: max_request_length (2), num_screens (1), num_formats (1), image/bitmap/keycode (6), pad (4) = 14 → prefix total 32
-        write16(body + off, 0, 32767); off += 2;   // max_request_length (0x7fff)
-        body[off++] = 1;   // num roots (screens)
-        body[off++] = 1;   // num formats
-        body[off++] = msbFirst_ ? 1 : 0;  // image byte order: 0=LSBFirst, 1=MSBFirst
-        body[off++] = msbFirst_ ? 1 : 0;  // bitmap bit order: 0=LeastSignificant, 1=MostSignificant
-        body[off++] = 8; body[off++] = 8;  // bitmap scanline unit, pad
-        body[off++] = 8; body[off++] = 255; // min/max keycode (min must be >= 8 per X11 spec)
-        body[off++] = 0; body[off++] = 0; body[off++] = 0; body[off++] = 0;  // pad 4
-        // 4) PixmapFormat (8)
-        body[off++] = 24; body[off++] = 32;
-        write16(body + off, 0, 32); off += 2;
-        memset(body + off, 0, 4); off += 4;
-        // 5) WindowRoot (40)
-        write32(body + off, 0, kRootWindowId);
-        write32(body + off, 4, kDefaultColormapId);
-        write32(body + off, 8, kWhitePixel);
-        write32(body + off, 12, kBlackPixel);
-        write32(body + off, 16, 0);
-        write16(body + off, 20, (uint16_t)width);
-        write16(body + off, 22, (uint16_t)height);
-        write16(body + off, 24, (uint16_t)(width * 254 / 100));
-        write16(body + off, 26, (uint16_t)(height * 254 / 100));
-        write16(body + off, 28, 0);
-        write16(body + off, 30, 0);
-        write32(body + off, 32, kDefaultVisualId);  // root_visual
-        body[off + 36] = 0; body[off + 37] = 0; body[off + 38] = 24; body[off + 39] = 1;
-        off += 40;
-        // 6) Depth (8) + VisualType (24)
-        body[off++] = 24; body[off++] = 0;
-        write16(body + off, 0, 1); off += 2;
-        memset(body + off, 0, 4); off += 4;
-        write32(body + off, 0, kDefaultVisualId);  // visual ID (must be non-zero for Xlib lookups)
-        body[off + 4] = 4; body[off + 5] = 32;
-        write16(body + off, 6, 256);
-        write32(body + off, 8, 0xff0000);
-        write32(body + off, 12, 0x00ff00);
-        write32(body + off, 16, 0x0000ff);
-        memset(body + off + 20, 0, 4);
-        off += 24;
-        // 7) No extra pad — total must be exactly 120 (8 + 112) so libX11 usedbytes == setuplength
-        if (off != 120) LOGE("X11 connection reply: wrong size %zu (expected 120)", off);
-#undef APPEND
-        LOGI("X11 connection reply: sending %zu bytes (header+setup)", off);
-        logHex("X11 reply", body, off);
-
-        if (!sendAllLocked(clientFd,body, off)) {
+        auto reply = X11ConnectionHandler::buildConnectionReply(byteOrder_, width, height);
+        LOGI("X11 connection reply: sending %zu bytes (header+setup)", reply.size());
+        logHex("X11 reply", reply.data(), reply.size());
+        if (!sendAllLocked(clientFd, reply.data(), reply.size())) {
             LOGE("X11 connection reply: send failed");
-            return;
         }
     }
 
@@ -582,10 +491,10 @@ struct X11NativeDisplay::Impl {
 
         auto sendExpose = [&](uint32_t wid) {
             int w = width, h = height;
-            auto it = windowSizes.find(wid);
-            if (it != windowSizes.end()) {
-                w = it->second.first;
-                h = it->second.second;
+            auto sz = windowManager_.getSize(wid);
+            if (sz.first > 0 && sz.second > 0) {
+                w = sz.first;
+                h = sz.second;
             }
             uint8_t evt[32];
             memset(evt, 0, 32);
@@ -692,35 +601,12 @@ struct X11NativeDisplay::Impl {
         }
     }
 
-    // Hit-test: find the deepest child window containing (x,y) in framebuffer coords.
-    // Returns {windowId, localX, localY} where local coords are relative to the found window.
-    struct HitResult { uint32_t wid; int localX; int localY; };
+    // Hit-test: delegates to windowManager_.hitTest().
+    // lockMap controls whether windowMapMutex is acquired (needed from UI thread).
     HitResult hitTestChildWindow(int x, int y, bool lockMap = false) {
         std::unique_lock<std::mutex> mapLock(windowMapMutex, std::defer_lock);
         if (lockMap) mapLock.lock();
-        // Default: top-level plugin window (or root)
-        uint32_t topWin = childWindows.empty() ? kRootWindowId : childWindows[0];
-        HitResult best = {topWin, x, y};
-
-        // Walk child windows in reverse order (last created = topmost) to find deepest hit
-        // Skip childWindows[0] which is the top-level plugin window
-        for (int i = (int)childWindows.size() - 1; i >= 1; i--) {
-            uint32_t wid = childWindows[i];
-            if (unmappedWindows.count(wid)) continue;  // skip hidden windows
-            auto posIt = windowPositions.find(wid);
-            auto sizeIt = windowSizes.find(wid);
-            if (posIt == windowPositions.end() || sizeIt == windowSizes.end()) continue;
-
-            auto absPos = getAbsolutePos(wid);
-            int wx = absPos.first, wy = absPos.second;
-            int ww = sizeIt->second.first, wh = sizeIt->second.second;
-
-            if (x >= wx && x < wx + ww && y >= wy && y < wy + wh) {
-                best = {wid, x - wx, y - wy};
-                break;  // Found deepest (topmost) hit
-            }
-        }
-        return best;
+        return windowManager_.hitTest(x, y);
     }
 
     uint32_t x11Timestamp() {
@@ -809,12 +695,10 @@ struct X11NativeDisplay::Impl {
             LOGI("X11 accept: client connected (%s)", useUnixSocket_ ? "Unix" : "TCP");
             {
                 std::lock_guard<std::mutex> mapLock(windowMapMutex);
-                childWindows.clear();
-                windowSizes.clear();
-                windowPositions.clear();
-                unmappedWindows.clear();
+                windowManager_.clear();
             }
-            pixmaps.clear();
+            pixmapStore_.clear();
+            atoms_.clear();
 
             uint8_t req[12];
             if (!recvAll(clientFd, req, 12)) {
@@ -1006,7 +890,7 @@ struct X11NativeDisplay::Impl {
                             }
 
                             /* Skip PutImage for unmapped (hidden) windows */
-                            if (isWindow && !isTopLevel && unmappedWindows.count(drawable)) {
+                            if (isWindow && !isTopLevel && windowManager_.isUnmapped(drawable)) {
                                 if (reqLogCount <= 100) LOGI("X11 PutImage SKIP unmapped wid=0x%x", drawable);
                                 isWindow = false;  // suppress framebuffer write
                             }
@@ -1022,23 +906,13 @@ struct X11NativeDisplay::Impl {
                              * On a real X11 server, child windows float above parents. On our
                              * single-framebuffer server, we simulate this by skipping parent
                              * pixels that fall within mapped child window bounds. */
-                            struct ClipRect { int x1, y1, x2, y2; };
                             static thread_local std::vector<ClipRect> childClip;
                             childClip.clear();
                             if (isWindow) {
                                 std::lock_guard<std::mutex> mapLock(windowMapMutex);
-                                for (auto& [cwid, cpos] : windowPositions) {
-                                    if (cpos.parent == drawable && !unmappedWindows.count(cwid)) {
-                                        auto csizeIt = windowSizes.find(cwid);
-                                        if (csizeIt != windowSizes.end()) {
-                                            auto cabs = getAbsolutePos(cwid);
-                                            childClip.push_back({
-                                                cabs.first, cabs.second,
-                                                cabs.first + csizeIt->second.first,
-                                                cabs.second + csizeIt->second.second
-                                            });
-                                        }
-                                    }
+                                auto rects = windowManager_.getMappedChildRectsOf(drawable);
+                                for (auto& r : rects) {
+                                    childClip.push_back({r.x1, r.y1, r.x2, r.y2});
                                 }
                             }
 
@@ -1049,10 +923,10 @@ struct X11NativeDisplay::Impl {
                             if (isWindow && framebuffer.size() == (size_t)fbw * fbh) {
                                 dstBuf = framebuffer.data(); dW = fbw; dH = fbh;
                             } else {
-                                auto it = pixmaps.find(drawable);
-                                if (it != pixmaps.end()) {
-                                    dstBuf = it->second.pixels.data();
-                                    dW = it->second.w; dH = it->second.h;
+                                auto* pm = pixmapStore_.get(drawable);
+                                if (pm) {
+                                    dstBuf = pm->pixels.data();
+                                    dW = pm->w; dH = pm->h;
                                 }
                             }
 
@@ -1184,21 +1058,13 @@ struct X11NativeDisplay::Impl {
                         int winHeight = (int)read16(buf, 18);
                         {
                             std::lock_guard<std::mutex> mapLock(windowMapMutex);
-                            windowSizes[wid] = {winWidth, winHeight};
-                            windowPositions[wid] = {winX, winY, parentWid};
-                            childWindows.push_back(wid);
-                            /* In X11, newly created windows are unmapped until XMapWindow.
-                             * Track this so popup windows (created at init but shown later)
-                             * are invisible to hit testing until explicitly mapped. */
-                            unmappedWindows.insert(wid);
+                            windowManager_.createWindow(wid, parentWid, winX, winY, winWidth, winHeight);
                         }
                         LOGI("X11 handle CreateWindow wid=0x%x parent=0x%x pos=(%d,%d) %dx%d (childWindows size=%zu)",
                              wid, parentWid, winX, winY, winWidth, winHeight, childWindows.size());
                         // Capture the plugin's window size from the first child window
                         if (pluginWidth == 0 && winWidth > 0 && winHeight > 0) {
                             std::lock_guard<std::mutex> fbLock(bufferMutex);
-                            originalChildW = winWidth;
-                            originalChildH = winHeight;
                             pluginWidth = winWidth;
                             pluginHeight = winHeight;
                             // Framebuffer stores X11 wire format (BGRA): B=0x20, G=0x20, R=0x30, A=0xFF
@@ -1229,58 +1095,26 @@ struct X11NativeDisplay::Impl {
                         uint32_t wid = read32(buf, 4);
                         {
                             std::lock_guard<std::mutex> mapLock(windowMapMutex);
-                            unmappedWindows.erase(wid);
+                            windowManager_.mapWindow(wid);
 
                             /* Raise popup subtree to front: when a top-level window
                              * (child of root, e.g. a popup menu) is mapped, move its
                              * entire subtree to the end of childWindows so the hit test
                              * (reverse iteration) finds popup windows before regular
-                             * plugin widgets.  Sort by window ID to preserve creation
-                             * order within the subtree (children after parent, later
-                             * siblings after earlier ones). */
-                            if (!childWindows.empty() && wid != childWindows[0]) {
-                                auto posIt = windowPositions.find(wid);
-                                if (posIt != windowPositions.end() &&
-                                    posIt->second.parent == kRootWindowId) {
-                                    // BFS to collect entire subtree
-                                    std::unordered_set<uint32_t> subtree;
-                                    subtree.insert(wid);
-                                    bool changed = true;
-                                    while (changed) {
-                                        changed = false;
-                                        for (auto& [cw, pos] : windowPositions) {
-                                            if (subtree.count(pos.parent) &&
-                                                !subtree.count(cw)) {
-                                                subtree.insert(cw);
-                                                changed = true;
-                                            }
-                                        }
-                                    }
-                                    // Sort by window ID (= creation order)
-                                    std::vector<uint32_t> toMove(subtree.begin(),
-                                                                  subtree.end());
-                                    std::sort(toMove.begin(), toMove.end());
-                                    // Remove subtree from childWindows
-                                    childWindows.erase(
-                                        std::remove_if(childWindows.begin(),
-                                                       childWindows.end(),
-                                            [&subtree](uint32_t w) {
-                                                return subtree.count(w);
-                                            }),
-                                        childWindows.end());
-                                    // Add back at the end in creation order
-                                    for (auto w : toMove)
-                                        childWindows.push_back(w);
-                                    LOGI("X11 MapWindow: raised subtree of 0x%x "
-                                         "(%zu windows) to front", wid, toMove.size());
-                                }
+                             * plugin widgets. */
+                            size_t raised = windowManager_.raiseSubtreeToFront(wid);
+                            if (raised > 0) {
+                                LOGI("X11 MapWindow: raised subtree of 0x%x "
+                                     "(%zu windows) to front", wid, raised);
                             }
                         }
                         int expW = width, expH = height;
-                        auto mapSizeIt = windowSizes.find(wid);
-                        if (mapSizeIt != windowSizes.end()) {
-                            expW = mapSizeIt->second.first;
-                            expH = mapSizeIt->second.second;
+                        {
+                            auto mapSize = windowManager_.getSize(wid);
+                            if (mapSize.first > 0 && mapSize.second > 0) {
+                                expW = mapSize.first;
+                                expH = mapSize.second;
+                            }
                         }
                         LOGI("X11 handle MapWindow wid=0x%x -> sending Expose %dx%d", wid, expW, expH);
                         uint16_t evtSeq = lastReplySeq_.load(std::memory_order_relaxed);
@@ -1311,31 +1145,38 @@ struct X11NativeDisplay::Impl {
                     case GetGeometry: {
                         /* GetGeometry request: opcode(1), unused(1), length(2), drawable(4) */
                         uint32_t drawable = read32(buf, 4);
+                        /* Validate drawable exists */
+                        if (drawable != kRootWindowId && !windowManager_.exists(drawable) && !pixmapStore_.exists(drawable)) {
+                            sendError(9 /*BadDrawable*/, seq, drawable);
+                            break;
+                        }
                         int geoWidth = width;
                         int geoHeight = height;
                         const char* source = "surface-default";
                         /* Check if querying a child window with stored size */
-                        auto sizeIt = windowSizes.find(drawable);
-                        if (sizeIt != windowSizes.end()) {
-                            geoWidth = sizeIt->second.first;
-                            geoHeight = sizeIt->second.second;
-                            source = "windowSizes";
-                        } else if (drawable == kRootWindowId && originalChildW > 0) {
-                            /* Return SCALED original child window size for root/parent window queries.
-                             * Plugins call XGetWindowAttributes(parentXwindow) in resize_event
-                             * and resize themselves to match. Using the ORIGINAL size (not current)
-                             * prevents a feedback loop where each resize shrinks the window further. */
-                            geoWidth = (int)(originalChildW * uiScale);
-                            geoHeight = (int)(originalChildH * uiScale);
-                            if (geoWidth < 1) geoWidth = 1;
-                            if (geoHeight < 1) geoHeight = 1;
-                            source = "root->orig-scaled";
+                        {
+                            auto sz = windowManager_.getSize(drawable);
+                            if (sz.first > 0 && sz.second > 0) {
+                                geoWidth = sz.first;
+                                geoHeight = sz.second;
+                                source = "windowSizes";
+                            } else if (drawable == kRootWindowId && windowManager_.originalChildW() > 0) {
+                                /* Return SCALED original child window size for root/parent window queries.
+                                 * Plugins call XGetWindowAttributes(parentXwindow) in resize_event
+                                 * and resize themselves to match. Using the ORIGINAL size (not current)
+                                 * prevents a feedback loop where each resize shrinks the window further. */
+                                geoWidth = (int)(windowManager_.originalChildW() * uiScale);
+                                geoHeight = (int)(windowManager_.originalChildH() * uiScale);
+                                if (geoWidth < 1) geoWidth = 1;
+                                if (geoHeight < 1) geoHeight = 1;
+                                source = "root->orig-scaled";
+                            }
                         }
                         int geoX = 0, geoY = 0;
-                        auto posIt = windowPositions.find(drawable);
-                        if (posIt != windowPositions.end()) {
-                            geoX = posIt->second.x;
-                            geoY = posIt->second.y;
+                        {
+                            auto pos = windowManager_.getPosition(drawable);
+                            geoX = pos.x;
+                            geoY = pos.y;
                         }
                         LOGI("X11 GetGeometry drawable=0x%x -> (%d,%d) %dx%d (%s)", drawable, geoX, geoY, geoWidth, geoHeight, source);
                         sendReplyGetGeometry(seq, kRootWindowId, geoX, geoY, geoWidth, geoHeight);
@@ -1343,6 +1184,10 @@ struct X11NativeDisplay::Impl {
                     }
                     case GetWindowAttributes: {
                         uint32_t gwaWid = read32(buf, 4);
+                        if (gwaWid != kRootWindowId && !windowManager_.exists(gwaWid)) {
+                            sendError(3 /*BadWindow*/, seq, gwaWid);
+                            break;
+                        }
                         if (reqLogCount <= 100) LOGI("X11 handle GetWindowAttributes wid=0x%x", gwaWid);
                         /* GetWindowAttributes reply: 44 bytes total (32 header + 12 extra = reply-length 3).
                            Fields: backing_store(1), seq(2), length(4), visual(4), class(2),
@@ -1353,7 +1198,7 @@ struct X11NativeDisplay::Impl {
                         bool isUnmapped = false;
                         {
                             std::lock_guard<std::mutex> mapLock(windowMapMutex);
-                            isUnmapped = unmappedWindows.count(gwaWid) > 0;
+                            isUnmapped = windowManager_.isUnmapped(gwaWid);
                         }
                         uint8_t reply[44];
                         memset(reply, 0, 44);
@@ -1450,11 +1295,11 @@ struct X11NativeDisplay::Impl {
                                 srcW = pluginWidth > 0 ? pluginWidth : width;
                                 srcH = pluginHeight > 0 ? pluginHeight : height;
                             } else {
-                                auto pit = pixmaps.find(drawable);
-                                if (pit != pixmaps.end()) {
-                                    srcBuf = pit->second.pixels.data();
-                                    srcW = pit->second.w;
-                                    srcH = pit->second.h;
+                                auto* pm = pixmapStore_.get(drawable);
+                                if (pm) {
+                                    srcBuf = pm->pixels.data();
+                                    srcW = pm->w;
+                                    srcH = pm->h;
                                     useShadow = true;  // Pixmaps also store X11 wire format — no swizzle needed
                                 }
                             }
@@ -1541,18 +1386,14 @@ struct X11NativeDisplay::Impl {
                         int pw = (int)read16(buf, 12);
                         int ph = (int)read16(buf, 14);
                         LOGI("X11 handle CreatePixmap pid=0x%x %dx%d", pid, pw, ph);
-                        PixmapData pd;
-                        pd.w = pw;
-                        pd.h = ph;
-                        pd.pixels.resize((size_t)pw * ph, 0xFF302020);
-                        pixmaps[pid] = std::move(pd);
+                        pixmapStore_.create(pid, pw, ph);
                         break;
                     }
                     /* --- FreePixmap --- */
                     case 54: { /* FreePixmap */
                         uint32_t pid = read32(buf, 4);
                         LOGI("X11 handle FreePixmap pid=0x%x", pid);
-                        pixmaps.erase(pid);
+                        pixmapStore_.destroy(pid);
                         break;
                     }
                     /* --- CopyArea: copy pixels between drawables --- */
@@ -1585,10 +1426,10 @@ struct X11NativeDisplay::Impl {
                             sW = pluginWidth > 0 ? pluginWidth : width;
                             sH = pluginHeight > 0 ? pluginHeight : height;
                         } else {
-                            auto it = pixmaps.find(srcId);
-                            if (it != pixmaps.end()) {
-                                srcPixels = it->second.pixels.data();
-                                sW = it->second.w; sH = it->second.h;
+                            auto* pm = pixmapStore_.get(srcId);
+                            if (pm) {
+                                srcPixels = pm->pixels.data();
+                                sW = pm->w; sH = pm->h;
                             }
                         }
 
@@ -1606,10 +1447,10 @@ struct X11NativeDisplay::Impl {
                             dW = pluginWidth > 0 ? pluginWidth : width;
                             dH = pluginHeight > 0 ? pluginHeight : height;
                         } else {
-                            auto it = pixmaps.find(dstId);
-                            if (it != pixmaps.end()) {
-                                dstPixels = it->second.pixels.data();
-                                dW = it->second.w; dH = it->second.h;
+                            auto* pm = pixmapStore_.get(dstId);
+                            if (pm) {
+                                dstPixels = pm->pixels.data();
+                                dW = pm->w; dH = pm->h;
                             }
                         }
 
@@ -1680,15 +1521,7 @@ struct X11NativeDisplay::Impl {
                             name.assign(reinterpret_cast<const char*>(buf + 8), nameLen);
                         }
 
-                        uint32_t atomId = 0; // None
-                        auto it = atomNameToId.find(name);
-                        if (it != atomNameToId.end()) {
-                            atomId = it->second;
-                        } else if (!onlyIfExists && !name.empty()) {
-                            atomId = nextAtomId++;
-                            atomNameToId[name] = atomId;
-                            atomIdToName[atomId] = name;
-                        }
+                        uint32_t atomId = atoms_.intern(name, onlyIfExists);
 
                         if (reqLogCount <= 50)
                             LOGI("X11 InternAtom '%s' only_if_exists=%d -> atom=%u",
@@ -1704,11 +1537,7 @@ struct X11NativeDisplay::Impl {
                     }
                     case GetAtomName: { /* 17 — reverse lookup */
                         uint32_t atomId = read32(buf, 4);
-                        std::string name;
-                        auto it = atomIdToName.find(atomId);
-                        if (it != atomIdToName.end()) {
-                            name = it->second;
-                        }
+                        std::string name = atoms_.getName(atomId);
 
                         /* Reply: name_length(2) at bytes 8-9, then name string */
                         uint16_t nameLen = (uint16_t)name.size();
@@ -1867,7 +1696,7 @@ struct X11NativeDisplay::Impl {
                             if (valueMask & (1U << bit)) {
                                 if (bit == 11) {  /* CWEventMask */
                                     uint32_t eventMask = read32(buf, attrOffset);
-                                    windowEventMasks[window] = eventMask;
+                                    windowManager_.setEventMask(window, eventMask);
                                     LOGI("X11 ChangeWindowAttributes: window=0x%x event_mask=0x%x", window, eventMask);
                                 }
                                 attrOffset += 4;
@@ -1880,15 +1709,9 @@ struct X11NativeDisplay::Impl {
                         if (!recvAll(clientFd, buf + 4, 4)) break;
                         {
                             uint32_t window = read32(buf, 4);
-                            windowEventMasks.erase(window);
                             {
                                 std::lock_guard<std::mutex> mapLock(windowMapMutex);
-                                windowSizes.erase(window);
-                                windowPositions.erase(window);
-                                unmappedWindows.erase(window);
-                                childWindows.erase(
-                                    std::remove(childWindows.begin(), childWindows.end(), window),
-                                    childWindows.end());
+                                windowManager_.destroyWindow(window);
                             }
                             if (reqLogCount <= 15) LOGI("X11 handle DestroyWindow window=0x%x (cleaned up)", window);
                         }
@@ -1910,7 +1733,7 @@ struct X11NativeDisplay::Impl {
                         uint32_t umWid = read32(buf, 4);
                         {
                             std::lock_guard<std::mutex> mapLock(windowMapMutex);
-                            unmappedWindows.insert(umWid);
+                            windowManager_.unmapWindow(umWid);
                         }
                         /* Send Expose to the top-level plugin window so it repaints
                            over the now-hidden window's stale pixels in the framebuffer.
@@ -1918,12 +1741,11 @@ struct X11NativeDisplay::Impl {
                            to avoid an event flood from recursive widget_hide. */
                         if (!childWindows.empty() && umWid != childWindows[0]) {
                             /* Check if this is a top-level popup (parent is root) */
-                            auto posIt = windowPositions.find(umWid);
-                            if (posIt != windowPositions.end() &&
-                                posIt->second.parent == kRootWindowId) {
+                            auto umPos = windowManager_.getPosition(umWid);
+                            if (umPos.parent == kRootWindowId) {
                                 uint32_t topWin = childWindows[0];
-                                auto szIt = windowSizes.find(topWin);
-                                if (szIt != windowSizes.end()) {
+                                auto topSz = windowManager_.getSize(topWin);
+                                if (topSz.first > 0 && topSz.second > 0) {
                                     uint16_t evtSeq = lastReplySeq_.load(std::memory_order_relaxed);
                                     uint8_t evt[32];
                                     memset(evt, 0, 32);
@@ -1932,8 +1754,8 @@ struct X11NativeDisplay::Impl {
                                     write32(evt, 4, topWin);
                                     write16(evt, 8, 0);
                                     write16(evt, 10, 0);
-                                    write16(evt, 12, (uint16_t)szIt->second.first);
-                                    write16(evt, 14, (uint16_t)szIt->second.second);
+                                    write16(evt, 12, (uint16_t)topSz.first);
+                                    write16(evt, 14, (uint16_t)topSz.second);
                                     write16(evt, 16, 0);
                                     sendAllLocked(clientFd, evt, 32);
                                     LOGI("X11 UnmapWindow 0x%x: sent Expose to main window 0x%x", umWid, topWin);
@@ -1961,32 +1783,20 @@ struct X11NativeDisplay::Impl {
                             std::lock_guard<std::mutex> mapLock(windowMapMutex);
                             if (vmask & 0x0001) {
                                 int newX = (int)(int32_t)read32(buf, valOff); valOff += 4;
-                                auto posIt = windowPositions.find(cfgWid);
-                                if (posIt != windowPositions.end()) {
-                                    if (posIt->second.x != newX) {
-                                        posIt->second.x = newX;
-                                        posChanged = true;
-                                    }
-                                }
+                                if (windowManager_.setPositionX(cfgWid, newX))
+                                    posChanged = true;
                             }
                             if (vmask & 0x0002) {
                                 int newY = (int)(int32_t)read32(buf, valOff); valOff += 4;
-                                auto posIt = windowPositions.find(cfgWid);
-                                if (posIt != windowPositions.end()) {
-                                    if (posIt->second.y != newY) {
-                                        posIt->second.y = newY;
-                                        posChanged = true;
-                                    }
-                                }
+                                if (windowManager_.setPositionY(cfgWid, newY))
+                                    posChanged = true;
                             }
                             /* Capture top-level window info for Expose if position changed */
                             if (posChanged && !childWindows.empty()) {
                                 exposeTopWid = childWindows[0];
-                                auto sizeIt = windowSizes.find(exposeTopWid);
-                                if (sizeIt != windowSizes.end()) {
-                                    exposeTopW = sizeIt->second.first;
-                                    exposeTopH = sizeIt->second.second;
-                                }
+                                auto topSz = windowManager_.getSize(exposeTopWid);
+                                exposeTopW = topSz.first;
+                                exposeTopH = topSz.second;
                             }
                         }
                         int newW = -1, newH = -1;
@@ -1998,22 +1808,21 @@ struct X11NativeDisplay::Impl {
                         bool sizeChanged = false;
                         {
                             std::lock_guard<std::mutex> mapLock(windowMapMutex);
-                            for (auto wid : childWindows) { if (wid == cfgWid) { isChildWin = true; break; } }
+                            isChildWin = windowManager_.exists(cfgWid);
 
                             if (isChildWin && (newW > 0 || newH > 0)) {
                                 /* Compute final dimensions */
-                                auto& stored = windowSizes[cfgWid];
-                                finalW = (newW > 0) ? newW : stored.first;
-                                finalH = (newH > 0) ? newH : stored.second;
+                                auto curSize = windowManager_.getSize(cfgWid);
+                                finalW = (newW > 0) ? newW : curSize.first;
+                                finalH = (newH > 0) ? newH : curSize.second;
 
                                 /* Only act on actual size changes to avoid flicker from repeated
                                  * same-size ConfigureWindow calls (plugins often send these every idle). */
                                 sizeChanged = (cfgWid == childWindows[0])
                                     ? (finalW != pluginWidth || finalH != pluginHeight)
-                                    : (finalW != stored.first || finalH != stored.second);
+                                    : (finalW != curSize.first || finalH != curSize.second);
 
-                                stored.first  = finalW;
-                                stored.second = finalH;
+                                windowManager_.setSize(cfgWid, finalW, finalH);
                             }
                         }
 
