@@ -97,8 +97,11 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import android.app.Activity
 import android.content.Intent
+import android.content.pm.ActivityInfo
 import android.util.Log
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.layout.boundsInWindow
@@ -221,7 +224,6 @@ fun RackScreen(
     onNavigateToSettings: () -> Unit = {},
     onNavigateToRecordings: () -> Unit = {},
     onNavigateToTone3000: (String?, String?, String?, Int, String?) -> Unit = { _, _, _, _, _ -> },
-    onOpenModgui: (Int) -> Unit = {},
     onReplacePlugin: (Int) -> Unit = {},
     viewModel: RackViewModel = viewModel()
 ) {
@@ -272,6 +274,30 @@ fun RackScreen(
     val recordingDurationSec by viewModel.recordingDurationSec.collectAsState()
 
     var showWavDialog by rememberSaveable { mutableStateOf(false) }
+
+    // Fullscreen state
+    var fullscreenPluginIndex by rememberSaveable { mutableStateOf<Int?>(null) }
+    var fullscreenPluginWidth by rememberSaveable { mutableIntStateOf(0) }
+    var fullscreenPluginHeight by rememberSaveable { mutableIntStateOf(0) }
+    val isFullscreenActive = fullscreenPluginIndex != null
+
+    // Orientation handling for fullscreen
+    val activity = context as? Activity
+    LaunchedEffect(fullscreenPluginIndex) {
+        if (fullscreenPluginIndex != null && fullscreenPluginWidth > 0 && fullscreenPluginHeight > 0) {
+            if (fullscreenPluginWidth > fullscreenPluginHeight * 1.3) {
+                activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_USER_LANDSCAPE
+            }
+        } else if (fullscreenPluginIndex == null) {
+            activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+        }
+    }
+    DisposableEffect(Unit) {
+        onDispose { activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT }
+    }
+    BackHandler(enabled = isFullscreenActive) {
+        fullscreenPluginIndex = null
+    }
 
     val scope = rememberCoroutineScope()
     val wavFilePickerLauncher = rememberLauncherForActivityResult(
@@ -324,6 +350,7 @@ fun RackScreen(
         contentWindowInsets = WindowInsets(0, 0, 0, 0),
         snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
+            if (isFullscreenActive) return@Scaffold
             val statusText = if (isEngineRunning) {
                 var s = "Running · %.1f ms · CPU %.0f%%".format(latencyMs, cpuLoad * 100f)
                 if (xRunCount > 0) s += " · XRuns $xRunCount"
@@ -559,6 +586,7 @@ fun RackScreen(
             }
         },
         bottomBar = {
+            if (isFullscreenActive) return@Scaffold
             Column {
                 if (wavLoaded) {
                     WavPlaybackBar(
@@ -680,18 +708,18 @@ fun RackScreen(
         BoxWithConstraints(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(padding)
+                .padding(if (isFullscreenActive) PaddingValues(0.dp) else padding)
         ) {
             val viewportHeight = maxHeight
             val contentHeight = (viewportHeight / listScale).coerceAtLeast(viewportHeight)
             Column(
                 modifier = Modifier
                     .fillMaxSize()
-                    .verticalScroll(scrollState)
+                    .then(if (isFullscreenActive) Modifier else Modifier.verticalScroll(scrollState))
                     .onGloballyPositioned { coords ->
                         viewportTopInRoot.value = coords.boundsInWindow().top
                     }
-                    .pointerInput(Unit) {
+                    .then(if (isFullscreenActive) Modifier else Modifier.pointerInput(Unit) {
                     detectDragGesturesAfterLongPress(
                         onDragStart = { offset ->
                             dragDropState.onDragStart(offset.y)
@@ -709,7 +737,7 @@ fun RackScreen(
                             dragDropState.onDragCancel()
                         }
                     )
-                }
+                })
             ) {
                 Box(
                     modifier = Modifier
@@ -726,6 +754,7 @@ fun RackScreen(
                             .fillMaxWidth()
                             .wrapContentHeight()
                     ) {
+            if (!isFullscreenActive) {
             Spacer(modifier = Modifier.height(16.dp))
             if (!isEngineRunning) {
                 val bannerText = buildAnnotatedString {
@@ -798,18 +827,26 @@ fun RackScreen(
                         .fillMaxWidth()
                         .padding(vertical = 32.dp)
                 )
-            } else {
+            }
+            } // end !isFullscreenActive
+            if (localPlugins.value.isNotEmpty()) {
                 Column(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .then(if (isFullscreenActive) Modifier.fillMaxHeight() else Modifier),
+                    verticalArrangement = if (isFullscreenActive) Arrangement.Top else Arrangement.spacedBy(8.dp)
                 ) {
                     localPlugins.value.forEachIndexed { index, plugin ->
                         key(plugin.instanceId) {
                         val isDragged = dragDropState.draggedIndex == index
                         val nativeIndex = plugin.index
+                        val isThisPluginFullscreen = fullscreenPluginIndex == nativeIndex
+                        val hideThisPlugin = isFullscreenActive && !isThisPluginFullscreen
                         Box(
                             modifier = Modifier
                                 .fillMaxWidth()
+                                .then(if (isThisPluginFullscreen) Modifier.fillMaxHeight() else Modifier)
+                                .then(if (hideThisPlugin) Modifier.height(0.dp) else Modifier)
                                 .onGloballyPositioned { coords ->
                                     if (index < itemPositions.size) {
                                         val b = coords.boundsInWindow()
@@ -823,10 +860,20 @@ fun RackScreen(
                                 viewModel = viewModel,
                                 onRemove = { viewModel.removePlugin(nativeIndex) },
                                 onReplace = { onReplacePlugin(nativeIndex) },
-                                onOpenModgui = onOpenModgui,
+                                isFullscreen = isThisPluginFullscreen,
+                                isAnyPluginFullscreen = isFullscreenActive,
+                                screenHeight = viewportHeight,
+                                onOpenFullscreen = { pluginIdx, _, w, h ->
+                                    fullscreenPluginWidth = w
+                                    fullscreenPluginHeight = h
+                                    fullscreenPluginIndex = pluginIdx
+                                },
+                                onExitFullscreen = {
+                                    fullscreenPluginIndex = null
+                                },
                                 onNavigateToTone3000 = onNavigateToTone3000,
                                 modifier = Modifier
-                                    .fillMaxWidth()
+                                    .then(if (isThisPluginFullscreen) Modifier.fillMaxSize() else Modifier.fillMaxWidth())
                                     .zIndex(if (isDragged) 1f else 0f)
                                     .graphicsLayer {
                                         translationY = if (isDragged) dragDropState.draggedOffset else 0f
@@ -948,7 +995,11 @@ fun PluginCard(
     viewModel: RackViewModel,
     onRemove: () -> Unit,
     onReplace: () -> Unit = {},
-    onOpenModgui: (Int) -> Unit = {},
+    isFullscreen: Boolean = false,
+    isAnyPluginFullscreen: Boolean = false,
+    screenHeight: Dp = 0.dp,
+    onOpenFullscreen: (pluginIndex: Int, uiType: UiType, width: Int, height: Int) -> Unit = { _, _, _, _ -> },
+    onExitFullscreen: () -> Unit = {},
     onNavigateToTone3000: (String?, String?, String?, Int, String?) -> Unit = { _, _, _, _, _ -> },
     modifier: Modifier = Modifier.fillMaxWidth()
 ) {
@@ -983,8 +1034,15 @@ fun PluginCard(
                 var x11UserScale by rememberSaveable { mutableStateOf(Float.NaN) }
                 var modguiUserScale by rememberSaveable { mutableStateOf(Float.NaN) }
 
-                // Top bar: context menu + plugin name + expand/remove
-                Row(
+                // Hoisted dimension state — used by fullscreen button for orientation decision
+                var x11PluginNaturalW by remember { mutableStateOf(0) }
+                var x11PluginNaturalH by remember { mutableStateOf(0) }
+                var x11UIScale by remember { mutableStateOf(1f) }
+                var modguiContentWidth by remember { mutableStateOf(0) }
+                var modguiContentHeight by remember { mutableStateOf(0) }
+
+                // Top bar: context menu + plugin name + expand/remove — hidden in fullscreen
+                if (!isFullscreen) Row(
                     modifier = Modifier
                         .fillMaxWidth()
                         .background(
@@ -1085,10 +1143,14 @@ fun PluginCard(
                             modifier = Modifier.size(20.dp)
                         )
                     }
-                    // Fullscreen
-                    if (pluginInfo.hasModgui || pluginInfo.hasX11Ui) {
+                    // Fullscreen — only for X11 or Modgui modes
+                    if (currentUiMode == UiType.X11 || currentUiMode == UiType.MODGUI) {
                         IconButton(
-                            onClick = { onOpenModgui(pluginIndex) },
+                            onClick = {
+                                val w = if (currentUiMode == UiType.X11) x11PluginNaturalW else modguiContentWidth
+                                val h = if (currentUiMode == UiType.X11) x11PluginNaturalH else modguiContentHeight
+                                onOpenFullscreen(pluginIndex, currentUiMode, w, h)
+                            },
                             modifier = Modifier.size(32.dp)
                         ) {
                             Icon(
@@ -1122,7 +1184,11 @@ fun PluginCard(
                     }
                 }
 
-                val contentModifier = if (expanded) Modifier else Modifier.height(0.dp).alpha(0f)
+                val contentModifier = when {
+                    isFullscreen -> Modifier.fillMaxSize()
+                    expanded -> Modifier
+                    else -> Modifier.height(0.dp).alpha(0f)
+                }
                 Column(modifier = contentModifier) {
 
                 Spacer(modifier = Modifier.height(8.dp))
@@ -1226,25 +1292,30 @@ fun PluginCard(
                 // CRITICAL: Always keep PluginX11UiView in composition to avoid TextureView destruction.
                 // When switching away from X11 mode, we hide it instead of removing it.
                 // This prevents the Android graphics driver from destroying shared mutexes.
-                var x11PluginNaturalW by remember { mutableStateOf(0) }
-                var x11PluginNaturalH by remember { mutableStateOf(0) }
-                var x11UIScale by remember { mutableStateOf(1f) }
                 var x11UiReady by rememberSaveable { mutableStateOf(false) }
                 var x11OnScreen by remember { mutableStateOf(true) }
-                Column(modifier = Modifier.fillMaxWidth()) {
-                    BoxWithConstraints(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
-                        val userScale = if (x11UserScale.isNaN()) 1f else x11UserScale
-                        val effectiveScale = (x11UIScale * userScale).coerceIn(0.3f, 1f)
-                        val x11Height = if (x11PluginNaturalW > 0 && x11PluginNaturalH > 0) {
+                Box(modifier = if (isFullscreen && currentUiMode == UiType.X11) Modifier.fillMaxSize() else Modifier.fillMaxWidth()) {
+                    BoxWithConstraints(
+                        modifier = if (isFullscreen && currentUiMode == UiType.X11) Modifier.fillMaxSize() else Modifier.fillMaxWidth(),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        val userScale = if (isFullscreen) 1f else if (x11UserScale.isNaN()) 1f else x11UserScale
+                        val effectiveScale = if (isFullscreen) 1f else (x11UIScale * userScale).coerceIn(0.3f, 1f)
+                        val x11Height = if (isFullscreen && x11PluginNaturalW > 0 && x11PluginNaturalH > 0) {
+                            // Aspect-fit to screen
+                            val aspect = x11PluginNaturalH.toFloat() / x11PluginNaturalW.toFloat()
+                            val fitHeight = maxWidth * aspect
+                            if (fitHeight > screenHeight) screenHeight else fitHeight
+                        } else if (x11PluginNaturalW > 0 && x11PluginNaturalH > 0) {
                             maxWidth * effectiveScale * (x11PluginNaturalH.toFloat() / x11PluginNaturalW.toFloat())
                         } else {
-                            x11ViewportHeight
+                            if (isFullscreen) screenHeight else x11ViewportHeight
                         }
                         val x11Visible = currentUiMode == UiType.X11
                         val x11ShowContent = x11Visible && x11UiReady
                         Box(
                             modifier = Modifier
-                                .fillMaxWidth(fraction = effectiveScale)
+                                .then(if (isFullscreen) Modifier.fillMaxWidth() else Modifier.fillMaxWidth(fraction = effectiveScale))
                                 .height(if (x11Visible) x11Height else 0.dp)
                                 .alpha(if (x11ShowContent) 1f else 0f)
                                 .testTag("x11_plugin_viewport")
@@ -1255,11 +1326,10 @@ fun PluginCard(
                                 }
                         ) {
                             if (x11DisplayNumber >= 0) {
-                                // Keep X11 rendering when card is off-screen (don't use x11OnScreen for isVisible).
                                 PluginX11UiView(
                                     pluginIndex = pluginIndex,
                                     displayNumber = x11DisplayNumber,
-                                    isVisible = expanded && currentUiMode == UiType.X11,
+                                    isVisible = expanded && currentUiMode == UiType.X11 && (!isAnyPluginFullscreen || isFullscreen),
                                     shouldDestroyOnDispose = true,
                                     modifier = Modifier.fillMaxSize(),
                                     onPluginSizeKnown = { w, h, scale ->
@@ -1273,6 +1343,22 @@ fun PluginCard(
                                     }
                                 )
                             }
+                        }
+                    }
+                    // Fullscreen back button — overlays on top of viewport
+                    if (isFullscreen && currentUiMode == UiType.X11) {
+                        IconButton(
+                            onClick = onExitFullscreen,
+                            modifier = Modifier
+                                .align(Alignment.TopStart)
+                                .padding(16.dp)
+                                .background(Color.Black.copy(alpha = 0.5f), CircleShape)
+                        ) {
+                            Icon(
+                                Icons.Default.Close,
+                                contentDescription = "Exit fullscreen",
+                                tint = Color.White
+                            )
                         }
                     }
                 }
@@ -1294,17 +1380,16 @@ fun PluginCard(
 
                 // Keep modgui always in composition (like X11) so it doesn't re-render on each switch.
                 if (pluginInfo.hasModgui) {
-                    var modguiContentWidth by remember { mutableStateOf(0) }
-                    var modguiContentHeight by remember { mutableStateOf(0) }
                     var modguiReady by rememberSaveable { mutableStateOf(false) }
                     var modguiOnScreen by remember { mutableStateOf(true) }
                     @Suppress("NAME_SHADOWING") val density = LocalDensity.current
                     val modguiModeActive = currentUiMode == UiType.MODGUI
                     val modguiVisible = modguiModeActive && modguiReady
-                    Column(modifier = Modifier.fillMaxWidth()) {
+                    val modguiFullscreen = isFullscreen && modguiModeActive
+                    Box(modifier = if (modguiFullscreen) Modifier.fillMaxSize() else Modifier.fillMaxWidth()) {
                         BoxWithConstraints(
                             modifier = Modifier
-                                .fillMaxWidth()
+                                .then(if (modguiFullscreen) Modifier.fillMaxSize() else Modifier.fillMaxWidth())
                                 .then(if (!modguiModeActive) Modifier.height(0.dp) else Modifier)
                                 .alpha(if (modguiVisible) 1f else 0f)
                                 .onGloballyPositioned { coords ->
@@ -1313,20 +1398,25 @@ fun PluginCard(
                                 },
                             contentAlignment = Alignment.Center
                         ) {
-                            val effectiveScale = (if (modguiUserScale.isNaN()) 1f else modguiUserScale).coerceIn(0.3f, 1f)
-                            val heightDp = if (modguiContentWidth > 0 && modguiContentHeight > 0) {
+                            val effectiveScale = if (modguiFullscreen) 1f else (if (modguiUserScale.isNaN()) 1f else modguiUserScale).coerceIn(0.3f, 1f)
+                            val heightDp = if (modguiFullscreen && modguiContentWidth > 0 && modguiContentHeight > 0) {
+                                // Aspect-fit to screen
+                                val aspect = modguiContentHeight.toFloat() / modguiContentWidth.toFloat()
+                                val fitHeight = maxWidth * aspect
+                                if (fitHeight > screenHeight) screenHeight else fitHeight
+                            } else if (modguiContentWidth > 0 && modguiContentHeight > 0) {
                                 val availableWidthPx = with(density) { maxWidth.toPx() } * effectiveScale
                                 val scale = availableWidthPx / modguiContentWidth.toFloat()
                                 with(density) { (modguiContentHeight * scale).toDp() }
                             } else {
-                                200.dp
+                                if (modguiFullscreen) screenHeight else 200.dp
                             }
                             InlineModguiView(
                                 pluginIndex = pluginIndex,
                                 pluginInfo = pluginInfo,
-                                isVisible = expanded && modguiOnScreen,
+                                isVisible = expanded && modguiOnScreen && (!isAnyPluginFullscreen || isFullscreen),
                                 modifier = Modifier
-                                    .fillMaxWidth(fraction = effectiveScale)
+                                    .then(if (modguiFullscreen) Modifier.fillMaxWidth() else Modifier.fillMaxWidth(fraction = effectiveScale))
                                     .height(heightDp),
                                 onContentSize = { w, h ->
                                     modguiContentWidth = w
@@ -1350,6 +1440,22 @@ fun PluginCard(
                                     }
                                 }
                             )
+                        }
+                        // Fullscreen back button — overlays on top of modgui viewport
+                        if (modguiFullscreen) {
+                            IconButton(
+                                onClick = onExitFullscreen,
+                                modifier = Modifier
+                                    .align(Alignment.TopStart)
+                                    .padding(16.dp)
+                                    .background(Color.Black.copy(alpha = 0.5f), CircleShape)
+                            ) {
+                                Icon(
+                                    Icons.Default.Close,
+                                    contentDescription = "Exit fullscreen",
+                                    tint = Color.White
+                                )
+                            }
                         }
                     }
                 }
@@ -1376,7 +1482,7 @@ fun PluginCard(
                     )
                 }
 
-                when (currentUiMode) {
+                if (!isFullscreen) when (currentUiMode) {
                     UiType.X11 -> {
                         // X11 view is always present above, just show it
                         LaunchedEffect(pluginIndex, pluginInfo) {

@@ -47,8 +47,8 @@ sealed class Screen(val route: String) {
     object Browser : Screen("browser?replaceIndex={replaceIndex}") {
         fun route(replaceIndex: Int = -1) = "browser?replaceIndex=$replaceIndex"
     }
-    object Modgui : Screen("modgui/{pluginIndex}") {
-        fun route(pluginIndex: Int) = "modgui/$pluginIndex"
+    object Modgui : Screen("modgui/{pluginIndex}?w={w}&h={h}") {
+        fun route(pluginIndex: Int, w: Int = 0, h: Int = 0) = "modgui/$pluginIndex?w=$w&h=$h"
     }
     object Settings : Screen("settings")
     object Recordings : Screen("recordings")
@@ -93,9 +93,6 @@ fun AppNavigation(
             onNavigateToTone3000 = { tag, gear, platform, sourcePluginIndex, sourceSlot ->
                 navController.navigate(Screen.Tone3000.route(tag, gear, platform, sourcePluginIndex, sourceSlot))
             },
-            onOpenModgui = { pluginIndex ->
-                navController.navigate(Screen.Modgui.route(pluginIndex))
-            },
             onReplacePlugin = { replaceIndex ->
                 navController.navigate(Screen.Browser.route(replaceIndex))
             },
@@ -115,11 +112,19 @@ fun AppNavigation(
             }
             composable(
                 route = Screen.Modgui.route,
-                arguments = listOf(navArgument("pluginIndex") { type = NavType.IntType })
+                arguments = listOf(
+                    navArgument("pluginIndex") { type = NavType.IntType },
+                    navArgument("w") { type = NavType.IntType; defaultValue = 0 },
+                    navArgument("h") { type = NavType.IntType; defaultValue = 0 }
+                )
             ) { entry ->
                 val pluginIndex = entry.arguments?.getInt("pluginIndex") ?: 0
+                val contentWidth = entry.arguments?.getInt("w") ?: 0
+                val contentHeight = entry.arguments?.getInt("h") ?: 0
                 ModguiScreen(
                     pluginIndex = pluginIndex,
+                    contentWidth = contentWidth,
+                    contentHeight = contentHeight,
                     onNavigateBack = { navController.popBackStack() }
                 )
             }

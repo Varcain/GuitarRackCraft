@@ -54,6 +54,8 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.webkit.WebViewAssetLoader
+import android.app.Activity
+import android.content.pm.ActivityInfo
 import com.varcain.guitarrackcraft.engine.PluginInfo
 import com.varcain.guitarrackcraft.engine.RackManager
 import java.io.File
@@ -128,10 +130,23 @@ class ModguiHostBridge(
 @Composable
 fun ModguiScreen(
     pluginIndex: Int,
+    contentWidth: Int = 0,
+    contentHeight: Int = 0,
     onNavigateBack: () -> Unit
 ) {
     val context = LocalContext.current
     val pluginInfo = remember(pluginIndex) { RackManager.getRackPluginInfo(pluginIndex) }
+
+    // Landscape orientation for wide plugins
+    val activity = context as? Activity
+    LaunchedEffect(contentWidth, contentHeight) {
+        if (contentWidth > 0 && contentHeight > 0 && contentWidth > contentHeight * 1.3) {
+            activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_USER_LANDSCAPE
+        }
+    }
+    DisposableEffect(Unit) {
+        onDispose { activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT }
+    }
 
     if (pluginInfo == null || !pluginInfo.hasModgui) {
         Box(modifier = Modifier.fillMaxSize()) {
