@@ -136,7 +136,14 @@ import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.toMutableStateList
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.AnimationVector1D
+import androidx.compose.animation.core.spring
+import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
+import androidx.compose.ui.input.nestedscroll.NestedScrollSource
+import androidx.compose.ui.input.nestedscroll.nestedScroll
 
 /** Item positions for drag-drop: (top in viewport px, height px) per plugin index. */
 private class ScrollableDragDropState(
@@ -169,15 +176,15 @@ private class ScrollableDragDropState(
         if (dragged >= positions.size) return
         val (draggedTop, draggedHeight) = positions[dragged]
         val offsetPx = draggedOffset.toInt()
-        // Use leading edge (top when moving up, bottom when moving down) so tall items need minimal drag
-        val draggedTopEdge = draggedTop + offsetPx
-        val draggedBottomEdge = draggedTop + draggedHeight + offsetPx
+        // Use center-to-midpoint: swap when dragged center passes neighbor's midpoint.
+        // This prevents oscillation at boundaries (edge-based triggers jitter).
+        val draggedCenter = draggedTop + draggedHeight / 2 + offsetPx
 
         val below = (dragged + 1 until positions.size).firstOrNull()
         val above = (dragged - 1 downTo 0).firstOrNull()
         val targetIndex = when {
-            below != null && draggedBottomEdge > positions[below].first -> below
-            above != null && draggedTopEdge < positions[above].first + positions[above].second -> above
+            below != null && draggedCenter > positions[below].first + positions[below].second / 2 -> below
+            above != null && draggedCenter < positions[above].first + positions[above].second / 2 -> above
             else -> null
         }
         if (targetIndex != null && targetIndex != dragged) {
@@ -677,11 +684,23 @@ fun RackScreen(
         val scrollState = rememberScrollState()
         val viewportTopInRoot = remember { mutableStateOf(0f) }
         val itemPositions = remember { mutableStateListOf<Pair<Int, Int>>() }
+        val swapOffsets = remember { mutableStateMapOf<Long, Float>() }
+        val swapAnimTriggers = remember { mutableStateMapOf<Long, Int>() }
         val dragDropState = rememberScrollableDragDropState(
             itemPositions = { itemPositions.toList() },
             onMove = { from, to ->
                 val list = localPlugins.value
                 if (from in list.indices && to in list.indices) {
+                    val displaced = list[to]
+                    val positions = itemPositions.toList()
+                    if (from < positions.size && to < positions.size) {
+                        val displacement = (positions[to].first - positions[from].first).toFloat()
+                        if (displacement != 0f) {
+                            swapOffsets[displaced.instanceId] = displacement
+                            swapAnimTriggers[displaced.instanceId] =
+                                (swapAnimTriggers[displaced.instanceId] ?: 0) + 1
+                        }
+                    }
                     val item = list.removeAt(from)
                     list.add(to, item)
                 }
@@ -691,6 +710,8 @@ fun RackScreen(
         LaunchedEffect(rackPlugins, dragDropState.draggedIndex) {
             if (dragDropState.draggedIndex == null) {
                 localPlugins.value = rackPlugins.toMutableStateList()
+                swapOffsets.clear()
+                swapAnimTriggers.clear()
             }
         }
         // Keep positions list size in sync with plugin count (so onGloballyPositioned can set itemPositions[index])
@@ -708,6 +729,15 @@ fun RackScreen(
             label = "rackZoom"
         )
 
+        // Block scroll dispatching while a drag is active
+        val dragScrollBlocker = remember {
+            object : NestedScrollConnection {
+                override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
+                    return if (dragDropState.draggedIndex != null) available else Offset.Zero
+                }
+            }
+        }
+
         BoxWithConstraints(
             modifier = Modifier
                 .fillMaxSize()
@@ -718,6 +748,7 @@ fun RackScreen(
             Column(
                 modifier = Modifier
                     .fillMaxSize()
+                    .then(if (isFullscreenActive) Modifier else Modifier.nestedScroll(dragScrollBlocker))
                     .then(if (isFullscreenActive) Modifier else Modifier.verticalScroll(scrollState))
                     .onGloballyPositioned { coords ->
                         viewportTopInRoot.value = coords.boundsInWindow().top
@@ -845,6 +876,27 @@ fun RackScreen(
                         val nativeIndex = plugin.index
                         val isThisPluginFullscreen = fullscreenPluginIndex == nativeIndex
                         val hideThisPlugin = isFullscreenActive && !isThisPluginFullscreen
+
+                        // Displacement animation for non-dragged items during reorder
+                        val offsetAnim = remember { Animatable(0f) }
+                        val swapTrigger = swapAnimTriggers[plugin.instanceId] ?: 0
+                        LaunchedEffect(swapTrigger) {
+                            if (swapTrigger > 0) {
+                                val target = swapOffsets[plugin.instanceId] ?: 0f
+                                if (target != 0f) {
+                                    offsetAnim.snapTo(target)
+                                    swapOffsets.remove(plugin.instanceId)
+                                    offsetAnim.animateTo(
+                                        0f,
+                                        spring(dampingRatio = 0.8f, stiffness = 800f)
+                                    )
+                                }
+                            }
+                        }
+                        val rawDisplacement = swapOffsets[plugin.instanceId] ?: 0f
+                        val displacementOffset =
+                            if (rawDisplacement != 0f) rawDisplacement else offsetAnim.value
+
                         Box(
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -853,7 +905,10 @@ fun RackScreen(
                                 .onGloballyPositioned { coords ->
                                     if (index < itemPositions.size) {
                                         val b = coords.boundsInWindow()
-                                        itemPositions[index] = ((b.top - viewportTopInRoot.value).toInt() to b.height.toInt())
+                                        // Use content-space coordinates (add scrollState.value) to match
+                                        // the pointerInput coordinate space which is inner to verticalScroll
+                                        val viewportRelative = (b.top - viewportTopInRoot.value).toInt()
+                                        itemPositions[index] = (viewportRelative + scrollState.value) to b.height.toInt()
                                     }
                                 }
                         ) {
@@ -879,7 +934,8 @@ fun RackScreen(
                                     .then(if (isThisPluginFullscreen) Modifier.fillMaxSize() else Modifier.fillMaxWidth())
                                     .zIndex(if (isDragged) 1f else 0f)
                                     .graphicsLayer {
-                                        translationY = if (isDragged) dragDropState.draggedOffset else 0f
+                                        translationY = if (isDragged) dragDropState.draggedOffset
+                                            else displacementOffset
                                         scaleX = if (isDragged) 1.05f else 1f
                                         scaleY = if (isDragged) 1.05f else 1f
                                         shadowElevation = if (isDragged) 16f else 0f
