@@ -70,6 +70,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalLifecycleOwner
@@ -77,12 +78,14 @@ import androidx.compose.ui.platform.LocalView
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.Placeholder
@@ -926,6 +929,45 @@ private fun defaultScaleForAspectRatio(width: Int, height: Int): Float =
 private val x11ViewportHeight = 360.dp
 
 @Composable
+private fun ResizeHandle(
+    currentScale: Float,
+    onScaleChange: (Float) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val scaleState = rememberUpdatedState(currentScale)
+    val callbackState = rememberUpdatedState(onScaleChange)
+    Box(
+        modifier = modifier
+            .width(48.dp)
+            .height(20.dp)
+            .pointerInput(Unit) {
+                detectDragGestures { change, dragAmount ->
+                    change.consume()
+                    val scaleDelta = dragAmount.y / (300.dp.toPx())
+                    val newScale = (scaleState.value + scaleDelta).coerceIn(0.3f, 1f)
+                    callbackState.value(newScale)
+                }
+            },
+        contentAlignment = Alignment.Center
+    ) {
+        Canvas(modifier = Modifier.width(24.dp).height(10.dp)) {
+            val strokeWidth = 1.5.dp.toPx()
+            val color = Color.Gray.copy(alpha = 0.7f)
+            val gap = size.height / 4f
+            for (i in 0..2) {
+                val y = gap + i * gap
+                drawLine(
+                    color = color,
+                    start = Offset(0f, y),
+                    end = Offset(size.width, y),
+                    strokeWidth = strokeWidth
+                )
+            }
+        }
+    }
+}
+
+@Composable
 private fun VuMeter(
     modifier: Modifier = Modifier,
     label: String,
@@ -1107,7 +1149,6 @@ fun PluginCard(
                                     modifier = Modifier.padding(horizontal = 12.dp),
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
-                                    Icon(Icons.Default.Fullscreen, contentDescription = null, modifier = Modifier.size(20.dp))
                                     Slider(
                                         value = scaleVal,
                                         onValueChange = { v ->
@@ -1362,6 +1403,14 @@ fun PluginCard(
                         }
                     }
                 }
+                // Resize handle — below X11 viewport, hidden in fullscreen
+                if (!isFullscreen && currentUiMode == UiType.X11 && x11UiReady) {
+                    ResizeHandle(
+                        currentScale = if (x11UserScale.isNaN()) 1f else x11UserScale,
+                        onScaleChange = { x11UserScale = it },
+                        modifier = Modifier.align(Alignment.CenterHorizontally)
+                    )
+                }
 
                 // Model picker shared state — declared before modgui block so it can be referenced there
                 val modelConfig = remember(pluginInfo.id) { getModelPluginConfig(pluginInfo.id) }
@@ -1457,6 +1506,14 @@ fun PluginCard(
                                 )
                             }
                         }
+                    }
+                    // Resize handle — below Modgui viewport, hidden in fullscreen
+                    if (!modguiFullscreen && modguiModeActive && modguiReady) {
+                        ResizeHandle(
+                            currentScale = if (modguiUserScale.isNaN()) 1f else modguiUserScale,
+                            onScaleChange = { modguiUserScale = it },
+                            modifier = Modifier.align(Alignment.CenterHorizontally)
+                        )
                     }
                 }
 
