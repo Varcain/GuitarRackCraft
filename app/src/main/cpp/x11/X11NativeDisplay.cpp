@@ -1276,11 +1276,11 @@ struct X11NativeDisplay::Impl {
 
                         int getImageSrcW = 0, getImageSrcH = 0;
                         bool getImageUsedShadow = false, getImageFullyCovered = false;
+                        bool isWindow = false;
                         {
                             std::lock_guard<std::mutex> lock(bufferMutex);
                             const uint32_t* srcBuf = nullptr;
                             int srcW = 0, srcH = 0;
-                            bool isWindow = false;
                             for (auto wid : childWindows) {
                                 if (wid == drawable) { isWindow = true; break; }
                             }
@@ -1365,6 +1365,25 @@ struct X11NativeDisplay::Impl {
                                 std::memset(replyBuf.data() + 32, 0, imgWords * 4);
                             }
                         } /* bufferMutex released — PutImage can proceed while we send */
+
+                        /* Compensate for integer rounding error accumulation in alpha
+                         * blending. Cairo's pixman uses integer division by 255 which
+                         * truncates, systematically losing ~0.5 LSB per blend cycle.
+                         * Over many GetImage→composite→PutImage frames, this causes
+                         * progressive darkening and dot patterns in GxPlugins.
+                         *
+                         * Workaround: bias each R,G,B channel up by +1 (saturating at
+                         * 255) when returning pixels via GetImage. This approximately
+                         * cancels the truncation loss, stabilizing pixel values across
+                         * repeated blend cycles. The real fix would be implementing the
+                         * RENDER extension for server-side compositing. */
+                        if (isWindow && gw > 0 && gh > 0) {
+                            uint32_t* dst32 = reinterpret_cast<uint32_t*>(replyBuf.data() + 32);
+                            size_t totalPixels = (size_t)gw * gh;
+                            for (size_t i = 0; i < totalPixels; i++) {
+                                dst32[i] |= 0x00010101u;
+                            }
+                        }
 
                         auto copyDoneTime = std::chrono::steady_clock::now();
                         drainTouchQueue();
