@@ -60,6 +60,10 @@ public:
     struct Rect { int x1, y1, x2, y2; };
     std::vector<Rect> getMappedChildRectsOf(uint32_t parent) const;
 
+    // Return absolute clip rects for mapped sibling windows above wid in stacking order.
+    // "Above" means later in childWindows_. Only considers siblings with the same parent.
+    std::vector<Rect> getMappedSiblingRectsAbove(uint32_t wid) const;
+
     std::pair<int, int> getAbsolutePos(uint32_t wid) const;
     HitResult hitTest(int x, int y) const;
 

@@ -217,6 +217,48 @@ std::vector<X11WindowManager::Rect> X11WindowManager::getMappedChildRectsOf(uint
     return rects;
 }
 
+std::vector<X11WindowManager::Rect> X11WindowManager::getMappedSiblingRectsAbove(uint32_t wid) const {
+    std::vector<Rect> rects;
+
+    // Find wid's parent
+    auto posIt = windowPositions_.find(wid);
+    if (posIt == windowPositions_.end()) return rects;
+    uint32_t parent = posIt->second.parent;
+
+    // Find wid's index in childWindows_
+    bool found = false;
+    size_t widIndex = 0;
+    for (size_t i = 0; i < childWindows_.size(); i++) {
+        if (childWindows_[i] == wid) {
+            widIndex = i;
+            found = true;
+            break;
+        }
+    }
+    if (!found) return rects;
+
+    // Collect rects for mapped siblings above wid (higher stacking = later index)
+    for (size_t i = widIndex + 1; i < childWindows_.size(); i++) {
+        uint32_t sibWid = childWindows_[i];
+        if (unmappedWindows_.count(sibWid)) continue;
+
+        auto sibPosIt = windowPositions_.find(sibWid);
+        if (sibPosIt == windowPositions_.end()) continue;
+        if (sibPosIt->second.parent != parent) continue;
+
+        auto sizeIt = windowSizes_.find(sibWid);
+        if (sizeIt == windowSizes_.end()) continue;
+
+        auto absPos = getAbsolutePos(sibWid);
+        rects.push_back({
+            absPos.first, absPos.second,
+            absPos.first + sizeIt->second.first,
+            absPos.second + sizeIt->second.second
+        });
+    }
+    return rects;
+}
+
 void X11WindowManager::clear() {
     childWindows_.clear();
     windowSizes_.clear();
