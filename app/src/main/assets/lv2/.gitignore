@@ -1,0 +1,12 @@
+# Ignore build-generated files (TTL, HTML, CSS, .so, etc.)
+*
+
+# Track this file
+!.gitignore
+
+# Allow recursion into subdirectories
+!*/
+
+# Track screenshot and thumbnail assets
+!screenshot-*.png
+!thumbnail-*.png

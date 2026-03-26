@@ -109,6 +109,7 @@ lint/tmp/
 # Build-generated assets (rebuilt by scripts/build_all.sh)
 app/src/main/assets/*
 !app/src/main/assets/modgui_runtime.js
+!app/src/main/assets/lv2/
 app/src/main/cpp/libs/
 app/src/main/jniLibs/
 

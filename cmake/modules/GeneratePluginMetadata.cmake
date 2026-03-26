@@ -145,8 +145,11 @@ foreach(_bundle IN LISTS _bundles)
     list(APPEND ALL_AUTHORS "${_plugin_name}|GxPlugins")
     list(APPEND ALL_CATEGORIES "${_plugin_name}|${_category}")
     
-    # Thumbnail
+    # Thumbnail — check source bundle root, then assets for generated screenshots
     file(GLOB _pngs "${_bundle}/*.png")
+    if(NOT _pngs)
+        file(GLOB _pngs "${ASSETS_BASE_DIR}/${_bundle_name}/screenshot-*.png")
+    endif()
     if(_pngs)
         list(GET _pngs 0 _png)
         get_filename_component(_png_name "${_png}" NAME)
@@ -174,9 +177,12 @@ if(IS_DIRECTORY "${TRUNK_LV2_DIR}")
         extract_from_ttl("${_bundle}" _ttl_results)
         has_binary_in_assets("${ASSETS_BASE_DIR}/${_bundle_name}" _has_binary)
         
-        # Check for thumbnail
+        # Check for thumbnail — source modgui, then assets for generated screenshots
         set(_thumb "")
         file(GLOB _modgui_pngs "${_bundle}/modgui/screenshot-*.png" "${_bundle}/modgui/thumbnail-*.png")
+        if(NOT _modgui_pngs)
+            file(GLOB _modgui_pngs "${ASSETS_BASE_DIR}/${_bundle_name}/screenshot-*.png")
+        endif()
         if(_modgui_pngs)
             list(GET _modgui_pngs 0 _png)
             get_filename_component(_png_name "${_png}" NAME)
@@ -233,13 +239,22 @@ function(scan_external_assets dir_name author)
         message(STATUS "  NO BINARY found in ${_assets_dir}")
     endif()
 
-    # Check for thumbnail in modgui
+    # Check for thumbnail — modgui dir first, then assets root for generated screenshots
     set(_thumb "")
     file(GLOB _modgui_pngs "${_assets_dir}/modgui/screenshot-*.png" "${_assets_dir}/modgui/thumbnail-*.png")
     if(_modgui_pngs)
         list(GET _modgui_pngs 0 _png)
         get_filename_component(_png_name "${_png}" NAME)
-        set(_thumb "${dir_name}.lv2/${_png_name}")
+        set(_thumb "${dir_name}.lv2/modgui/${_png_name}")
+    else()
+        file(GLOB _modgui_pngs "${_assets_dir}/screenshot-*.png")
+        if(_modgui_pngs)
+            list(GET _modgui_pngs 0 _png)
+            get_filename_component(_png_name "${_png}" NAME)
+            set(_thumb "${dir_name}.lv2/${_png_name}")
+        endif()
+    endif()
+    if(_thumb)
         message(STATUS "  Found thumbnail: ${_thumb}")
     endif()
 
