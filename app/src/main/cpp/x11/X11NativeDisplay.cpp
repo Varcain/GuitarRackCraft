@@ -914,6 +914,17 @@ struct X11NativeDisplay::Impl {
                                 for (auto& r : rects) {
                                     childClip.push_back({r.x1, r.y1, r.x2, r.y2});
                                 }
+                                /* Also clip against mapped sibling windows above this
+                                 * window in the stacking order. On a real X11 server,
+                                 * higher siblings obscure lower ones. Without this,
+                                 * a lower sibling's PutImage overwrites higher sibling
+                                 * pixels in overlap regions. */
+                                if (drawable != kRootWindowId) {
+                                    auto sibRects = windowManager_.getMappedSiblingRectsAbove(drawable);
+                                    for (auto& r : sibRects) {
+                                        childClip.push_back({r.x1, r.y1, r.x2, r.y2});
+                                    }
+                                }
                             }
 
                             uint32_t* dstBuf = nullptr;
