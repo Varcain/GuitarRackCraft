@@ -16,7 +16,11 @@
 # along with Guitar RackCraft. If not, see <https://www.gnu.org/licenses/>.
 
 # =============================================================================
-# cmake/modules/GeneratePluginMetadata.cmake — Refactored from generate_plugin_metadata.py
+# cmake/modules/GeneratePluginMetadata.cmake
+#
+# Collects plugin names, categories, thumbnails, and authors from source TTLs.
+# Descriptions are read from plugin_descriptions.json (maintained manually via
+# tools/update_descriptions.sh).
 # =============================================================================
 
 cmake_policy(SET CMP0007 NEW)
@@ -31,11 +35,31 @@ set(TRUNK_LV2_DIR "${THIRD_PARTY}/guitarix/trunk/src/LV2")
 set(ASSETS_BASE_DIR "${ASSETS_DIR}/GxPlugins.lv2")
 
 # We will collect everything in CMake variables first, then build JSON at the end.
-set(ALL_DESCRIPTIONS "") # List of "name|desc"
 set(ALL_THUMBNAILS "")   # List of "name|path"
-set(ALL_AUTHORS "")     # List of "name|author"
+set(ALL_AUTHORS "")      # List of "name|author"
 set(ALL_CATEGORIES "")   # List of "name|cat"
 set(AVAILABLE_PLUGINS "") # List of names
+set(ALL_PLUGIN_NAMES "")  # List of names (for description lookup)
+
+# --- Load descriptions from plugin_descriptions.json ---
+set(DESCRIPTIONS_FILE "${PROJECT_ROOT}/plugin_descriptions.json")
+if(EXISTS "${DESCRIPTIONS_FILE}")
+    file(READ "${DESCRIPTIONS_FILE}" DESCRIPTIONS_JSON)
+    message(STATUS "Loaded plugin descriptions from ${DESCRIPTIONS_FILE}")
+else()
+    set(DESCRIPTIONS_JSON "{}")
+    message(WARNING "plugin_descriptions.json not found — descriptions will be empty")
+endif()
+
+# --- Helper: Look up description for a plugin name ---
+function(lookup_description plugin_name out_desc)
+    set(_desc "")
+    string(JSON _desc ERROR_VARIABLE _err GET "${DESCRIPTIONS_JSON}" "${plugin_name}")
+    if(_err OR "${_desc}" STREQUAL "NOTFOUND" OR "${_desc}" STREQUAL "${plugin_name}-NOTFOUND")
+        set(_desc "")
+    endif()
+    set(${out_desc} "${_desc}" PARENT_SCOPE)
+endfunction()
 
 # --- Helper: Extract name and class from TTL ---
 function(extract_from_ttl plugin_dir out_results)
@@ -46,53 +70,39 @@ function(extract_from_ttl plugin_dir out_results)
         if(_ttl_name MATCHES "^(manifest|modgui|modguis)\\.ttl(\\.in)?$")
             continue()
         endif()
-        
+
         file(READ "${_ttl}" _content)
         # Match doap:name "Name"
         string(REGEX MATCHALL "doap:name[ \t]+\"([^\"]+)\"" _names "${_content}")
         foreach(_name_match IN LISTS _names)
             string(REGEX REPLACE "doap:name[ \t]+\"([^\"]+)\"" "\\1" _name "${_name_match}")
-            
+
             # Match lv2:Subclass (e.g. lv2:DistortionPlugin)
             string(REGEX MATCH "lv2:([A-Za-z0-9]+Plugin)" _class_match "${_content}")
             set(_class "Plugin")
             if(_class_match)
                 string(REGEX REPLACE "lv2:([A-Za-z0-9]+Plugin)" "\\1" _class "${_class_match}")
             endif()
-            
+
             list(APPEND _found "${_name}|${_class}")
         endforeach()
     endforeach()
     set(${out_results} "${_found}" PARENT_SCOPE)
 endfunction()
 
-# --- Helper: Parse README description ---
-function(parse_readme readme_path out_name out_desc)
+# --- Helper: Parse README for plugin name (description no longer needed here) ---
+function(parse_readme_name readme_path out_name)
     file(READ "${readme_path}" _content)
     string(REPLACE "\r" "" _content "${_content}")
     string(REGEX REPLACE "\n+" "\n" _lines "${_content}")
     string(REPLACE "\n" ";" _lines "${_lines}")
-    
+
     list(GET _lines 0 _header)
     if(_header MATCHES "^#[ \t]*([^ \t]+)\\.lv2")
         string(REGEX REPLACE "^#[ \t]*([^ \t]+)\\.lv2" "\\1" _name "${_header}")
         set(${out_name} "${_name}" PARENT_SCOPE)
-        
-        # Extract description
-        set(_desc_lines "")
-        list(REMOVE_AT _lines 0)
-        foreach(_line IN LISTS _lines)
-            string(STRIP "${_line}" _line)
-            if(NOT _line OR _line MATCHES "^#" OR _line MATCHES "^!\\[")
-                break()
-            endif()
-            list(APPEND _desc_lines "${_line}")
-        endforeach()
-        string(REPLACE ";" " " _desc "${_desc_lines}")
-        set(${out_desc} "${_desc}" PARENT_SCOPE)
     else()
         set(${out_name} "" PARENT_SCOPE)
-        set(${out_desc} "" PARENT_SCOPE)
     endif()
 endfunction()
 
@@ -119,18 +129,16 @@ foreach(_bundle IN LISTS _bundles)
     endif()
     get_filename_component(_bundle_name "${_bundle}" NAME)
     string(REGEX REPLACE "\\.lv2$" "" _plugin_name_from_dir "${_bundle_name}")
-    
+
     set(_plugin_name "${_plugin_name_from_dir}")
-    set(_description "")
-    
+
     if(EXISTS "${_bundle}/README.md")
-        parse_readme("${_bundle}/README.md" _parsed_name _parsed_desc)
+        parse_readme_name("${_bundle}/README.md" _parsed_name)
         if(_parsed_name)
             set(_plugin_name "${_parsed_name}")
-            set(_description "${_parsed_desc}")
         endif()
     endif()
-    
+
     # Extract category
     set(_category "Plugin")
     if(IS_DIRECTORY "${_bundle}/plugin")
@@ -140,11 +148,11 @@ foreach(_bundle IN LISTS _bundles)
             string(REGEX REPLACE "^.*\\|" "" _category "${_first}")
         endif()
     endif()
-    
-    list(APPEND ALL_DESCRIPTIONS "${_plugin_name}|${_description}")
+
+    list(APPEND ALL_PLUGIN_NAMES "${_plugin_name}")
     list(APPEND ALL_AUTHORS "${_plugin_name}|GxPlugins")
     list(APPEND ALL_CATEGORIES "${_plugin_name}|${_category}")
-    
+
     # Thumbnail — check source bundle root, then assets for generated screenshots
     file(GLOB _pngs "${_bundle}/*.png")
     if(NOT _pngs)
@@ -156,7 +164,7 @@ foreach(_bundle IN LISTS _bundles)
         file(COPY "${_png}" DESTINATION "${ASSETS_BASE_DIR}/${_bundle_name}")
         list(APPEND ALL_THUMBNAILS "${_plugin_name}|GxPlugins.lv2/${_bundle_name}/${_png_name}")
     endif()
-    
+
     # Binary check
     has_binary_in_assets("${ASSETS_BASE_DIR}/${_bundle_name}" _has_binary)
     if(_has_binary)
@@ -173,10 +181,10 @@ if(IS_DIRECTORY "${TRUNK_LV2_DIR}")
             continue()
         endif()
         get_filename_component(_bundle_name "${_bundle}" NAME)
-        
+
         extract_from_ttl("${_bundle}" _ttl_results)
         has_binary_in_assets("${ASSETS_BASE_DIR}/${_bundle_name}" _has_binary)
-        
+
         # Check for thumbnail — source modgui, then assets for generated screenshots
         set(_thumb "")
         file(GLOB _modgui_pngs "${_bundle}/modgui/screenshot-*.png" "${_bundle}/modgui/thumbnail-*.png")
@@ -189,16 +197,16 @@ if(IS_DIRECTORY "${TRUNK_LV2_DIR}")
             file(COPY "${_png}" DESTINATION "${ASSETS_BASE_DIR}/${_bundle_name}")
             set(_thumb "GxPlugins.lv2/${_bundle_name}/${_png_name}")
         endif()
-        
+
         if(NOT _ttl_results)
             string(REGEX REPLACE "\\.lv2$" "" _name "${_bundle_name}")
             set(_ttl_results "${_name}|Plugin")
         endif()
-        
+
         foreach(_res IN LISTS _ttl_results)
             string(REGEX REPLACE "\\|.*$" "" _plugin_name "${_res}")
             string(REGEX REPLACE "^.*\\|" "" _category "${_res}")
-            
+
             # Avoid duplicates if already added by GxPlugins
             set(_already_added FALSE)
             foreach(_existing IN LISTS ALL_AUTHORS)
@@ -210,7 +218,7 @@ if(IS_DIRECTORY "${TRUNK_LV2_DIR}")
             endforeach()
 
             if(NOT _already_added)
-                list(APPEND ALL_DESCRIPTIONS "${_plugin_name}|")
+                list(APPEND ALL_PLUGIN_NAMES "${_plugin_name}")
                 list(APPEND ALL_AUTHORS "${_plugin_name}|Guitarix")
                 list(APPEND ALL_CATEGORIES "${_plugin_name}|${_category}")
                 if(_thumb)
@@ -234,7 +242,7 @@ function(scan_external_assets dir_name author)
     message(STATUS "Scanning external assets: ${dir_name} at ${_assets_dir}")
     extract_from_ttl("${_assets_dir}" _ttl_results)
     has_binary_in_assets("${_assets_dir}" _has_binary)
-    
+
     if(NOT _has_binary)
         message(STATUS "  NO BINARY found in ${_assets_dir}")
     endif()
@@ -261,7 +269,7 @@ function(scan_external_assets dir_name author)
     foreach(_res IN LISTS _ttl_results)
         string(REGEX REPLACE "\\|.*$" "" _plugin_name "${_res}")
         string(REGEX REPLACE "^.*\\|" "" _category "${_res}")
-        
+
         set(_already_added FALSE)
         foreach(_existing IN LISTS ALL_AUTHORS)
             string(REGEX REPLACE "\\|.*$" "" _existing_name "${_existing}")
@@ -273,7 +281,7 @@ function(scan_external_assets dir_name author)
 
         if(NOT _already_added)
             message(STATUS "  Adding plugin: ${_plugin_name}")
-            list(APPEND ALL_DESCRIPTIONS "${_plugin_name}|")
+            list(APPEND ALL_PLUGIN_NAMES "${_plugin_name}")
             list(APPEND ALL_AUTHORS "${_plugin_name}|${author}")
             list(APPEND ALL_CATEGORIES "${_plugin_name}|${_category}")
             if(_thumb)
@@ -284,7 +292,7 @@ function(scan_external_assets dir_name author)
             endif()
         endif()
     endforeach()
-    set(ALL_DESCRIPTIONS "${ALL_DESCRIPTIONS}" PARENT_SCOPE)
+    set(ALL_PLUGIN_NAMES "${ALL_PLUGIN_NAMES}" PARENT_SCOPE)
     set(ALL_AUTHORS "${ALL_AUTHORS}" PARENT_SCOPE)
     set(ALL_CATEGORIES "${ALL_CATEGORIES}" PARENT_SCOPE)
     set(AVAILABLE_PLUGINS "${AVAILABLE_PLUGINS}" PARENT_SCOPE)
@@ -307,6 +315,13 @@ scan_external_assets("PowerAmpImpulses" "brummer10")
 scan_external_assets("FatFrog" "brummer10")
 scan_external_assets("Neuralrack" "brummer10")
 scan_external_assets("doubletracker" "Varcain")
+
+# --- Build descriptions list from plugin_descriptions.json ---
+set(ALL_DESCRIPTIONS "")
+foreach(_name IN LISTS ALL_PLUGIN_NAMES)
+    lookup_description("${_name}" _desc)
+    list(APPEND ALL_DESCRIPTIONS "${_name}|${_desc}")
+endforeach()
 
 # --- Helper: Populate a JSON object field from "key|value" list ---
 function(json_set_map JSON_VAR FIELD)
