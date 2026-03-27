@@ -73,6 +73,8 @@ if(PKG_CONFIG_FOUND)
     endif()
 endif()
 
+enable_testing()
+
 # CTest integration
 include(GoogleTest)
 gtest_discover_tests(x11_unit_tests)
