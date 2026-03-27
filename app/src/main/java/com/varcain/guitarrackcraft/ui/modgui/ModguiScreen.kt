@@ -638,7 +638,7 @@ private fun buildAssetLoader(
                         .clearfix:before, .clearfix:after { display: table; content: " "; }
                         .clearfix:after { clear: both; }
                         .mod-pedal { display: inline-block; z-index: 100; }
-                        .mod-pedal .mod-drag-handle { position: absolute; top: 0; left: 0; right: 0; bottom: 0; z-index: 20; }
+                        .mod-pedal .mod-drag-handle { position: absolute; top: 0; left: 0; right: 0; bottom: 0; z-index: 20; pointer-events: none; }
                         .mod-pedal .mod-pedal-input { position: absolute; top: 106px; left: -88px; width: 88px; }
                         .mod-pedal .mod-pedal-output { position: absolute; top: 106px; right: -87px; width: 87px; }
                         .mod-pedal .mod-control-group { z-index: 20; }
