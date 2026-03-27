@@ -25,6 +25,80 @@
         el._modMeta = meta;
         el._modValue = value;
 
+        // Enumerated select (custom-select): populate dropdown from scalePoints
+        var isCustomSelect = el.getAttribute('mod-widget') === 'custom-select';
+        if (isCustomSelect && meta.scalePoints && meta.scalePoints.length > 0) {
+            var selected = el.querySelector('.mod-enumerated-selected');
+            var list = el.querySelector('.mod-enumerated-list');
+            // Find label for current value
+            function labelForValue(v) {
+                var best = meta.scalePoints[0];
+                for (var i = 0; i < meta.scalePoints.length; i++) {
+                    if (Math.abs(meta.scalePoints[i].value - v) < 0.001) return meta.scalePoints[i].label;
+                    if (Math.abs(meta.scalePoints[i].value - v) < Math.abs(best.value - v)) best = meta.scalePoints[i];
+                }
+                return best.label;
+            }
+            if (selected) selected.textContent = labelForValue(value);
+            // Populate list
+            if (list) {
+                list.innerHTML = '';
+                meta.scalePoints.forEach(function(sp) {
+                    var div = document.createElement('div');
+                    div.textContent = sp.label;
+                    div.addEventListener('click', function(e) {
+                        e.stopPropagation();
+                        el._modValue = sp.value;
+                        if (selected) selected.textContent = sp.label;
+                        list.style.display = 'none';
+                        el.style.overflow = '';
+                        AndroidHost.setParameter(symbol, sp.value);
+                    });
+                    list.appendChild(div);
+                });
+            }
+            // Toggle list on click — expand toward where there is more room
+            if (selected && list) {
+                selected.style.cursor = 'pointer';
+                list.style.position = 'absolute';
+                list.style.left = '0';
+                selected.addEventListener('click', function(e) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    if (list.style.display === 'block') {
+                        list.style.display = 'none';
+                        el.style.overflow = '';
+                        return;
+                    }
+                    // Allow list to overflow the container
+                    el.style.overflow = 'visible';
+                    list.style.display = 'block';
+                    // Measure room above vs below in CSS pixels (accounting for transform scale)
+                    var selRect = selected.getBoundingClientRect();
+                    var scale = selRect.height / (selected.offsetHeight || 1);
+                    if (scale < 0.01) scale = 1;
+                    var vpH = document.documentElement.clientHeight;
+                    var roomBelow = (vpH - selRect.bottom) / scale;
+                    var roomAbove = selRect.top / scale;
+                    if (roomAbove > roomBelow) {
+                        list.style.bottom = selected.offsetHeight + 'px';
+                        list.style.top = 'auto';
+                        list.style.maxHeight = Math.min(180, roomAbove) + 'px';
+                    } else {
+                        list.style.top = selected.offsetHeight + 'px';
+                        list.style.bottom = 'auto';
+                        list.style.maxHeight = Math.min(180, roomBelow) + 'px';
+                    }
+                });
+            }
+            // Refresh handler
+            el._modIsSelect = true;
+            el._modUpdateSelect = function() {
+                if (selected) selected.textContent = labelForValue(el._modValue);
+            };
+            return; // skip knob/toggle handling
+        }
+
         // Detect toggle from CSS class (mod-on-off-image, mod-switch-image)
         // even if the LV2 port doesn't have lv2:toggled property.
         // Some plugins use lv2:integer + lv2:enumeration with 0/1 range instead.
@@ -123,7 +197,9 @@
             var newVal = AndroidHost.getParameter(el._modSymbol);
             if (Math.abs(newVal - el._modValue) > 0.0001) {
                 el._modValue = newVal;
-                if (el._modIsToggle) {
+                if (el._modIsSelect && el._modUpdateSelect) {
+                    el._modUpdateSelect();
+                } else if (el._modIsToggle) {
                     updateToggleVisual(el);
                 } else {
                     updateKnobVisual(el);
@@ -144,14 +220,14 @@
         var enabled = bypassPort ? AndroidHost.getParameter(bypassPort.symbol) > 0.5 : true;
         el.style.cursor = 'pointer';
         el.style.touchAction = 'none';
-        var light = document.querySelector('[mod-role="bypass-light"]');
+        var lights = document.querySelectorAll('[mod-role="bypass-light"]');
         function updateBypassVisual() {
             el.classList.toggle('on', enabled);
             el.classList.toggle('off', !enabled);
-            if (light) {
+            lights.forEach(function(light) {
                 light.classList.toggle('on', enabled);
                 light.classList.toggle('off', !enabled);
-            }
+            });
         }
         updateBypassVisual();
         el.addEventListener('click', function() {
@@ -270,8 +346,12 @@
     });
     // Close list when clicking outside
     document.addEventListener('click', function() {
-        document.querySelectorAll('.mod-enumerated-list').forEach(function(el) {
-            el.style.display = 'none';
+        document.querySelectorAll('.mod-enumerated-list').forEach(function(listEl) {
+            listEl.style.display = 'none';
+        });
+        // Restore overflow on enumerated containers
+        document.querySelectorAll('.mod-enumerated').forEach(function(enumEl) {
+            enumEl.style.overflow = '';
         });
     });
     // Allow scrolling inside the model list by preventing parent from stealing touches

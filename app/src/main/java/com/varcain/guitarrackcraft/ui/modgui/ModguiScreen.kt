@@ -436,6 +436,7 @@ private fun buildAssetLoader(
                         "png" -> "image/png"
                         "jpg", "jpeg" -> "image/jpeg"
                         "gif" -> "image/gif"
+                        "webp" -> "image/webp"
                         "svg" -> "image/svg+xml"
                         "css" -> "text/css"
                         else -> "application/octet-stream"
@@ -452,6 +453,7 @@ private fun buildAssetLoader(
                         "png" -> "image/png"
                         "jpg", "jpeg" -> "image/jpeg"
                         "gif" -> "image/gif"
+                        "webp" -> "image/webp"
                         "svg" -> "image/svg+xml"
                         "css" -> "text/css"
                         else -> "application/octet-stream"
@@ -473,6 +475,7 @@ private fun buildAssetLoader(
                 "png" -> "image/png"
                 "jpg", "jpeg" -> "image/jpeg"
                 "gif" -> "image/gif"
+                "webp" -> "image/webp"
                 "svg" -> "image/svg+xml"
                 else -> "application/octet-stream"
             }
@@ -674,7 +677,12 @@ private fun buildAssetLoader(
 
 private fun buildPortsJson(pluginInfo: PluginInfo): String {
     val entries = pluginInfo.controlPorts.joinToString(",") { p ->
-        """{"symbol":"${p.symbol.replace("\"", "\\\"")}","min":${p.minValue},"max":${p.maxValue},"default":${p.defaultValue},"toggle":${p.isToggle}}"""
+        val sp = if (p.scalePoints.isNotEmpty()) {
+            p.scalePoints.joinToString(",", "[", "]") { s ->
+                """{"label":"${s.label.replace("\"", "\\\"")}","value":${s.value}}"""
+            }
+        } else "[]"
+        """{"symbol":"${p.symbol.replace("\"", "\\\"")}","min":${p.minValue},"max":${p.maxValue},"default":${p.defaultValue},"toggle":${p.isToggle},"scalePoints":$sp}"""
     }
     return "[$entries]"
 }
