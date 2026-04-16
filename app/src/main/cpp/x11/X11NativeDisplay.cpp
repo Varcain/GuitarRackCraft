@@ -565,13 +565,20 @@ struct X11NativeDisplay::Impl {
                 // Hit-test and grab the child window
                 HitResult hit = hitTestChildWindow(t.x, t.y);
                 grabWindow = hit.wid;
-                // Send synthetic MotionNotify before ButtonPress so that
-                // widgets like combobox popups set prelight_item from the
-                // touch position (on desktop, mouse hover does this).
-                // state=0 means no buttons are pressed, avoiding drag logic.
-                sendEvent(MotionNotify, hit.wid, hit.localX, hit.localY, 0, seq, 0);
+                // ButtonPress must precede the synthetic MotionNotify. xputty's main
+                // loop coalesces consecutive MotionNotify events via
+                // XCheckTypedWindowEvent, which scans past an intervening ButtonPress;
+                // if the synthetic comes first, the next drag MotionNotify gets merged
+                // with it and dispatched before ButtonPress — knob widgets then run
+                // adj_set_motion_state with uninitialized pos_y/start_value and snap
+                // the value to minimum.
                 pointerButton1Down.store(true, std::memory_order_relaxed);
                 sendEvent(ButtonPress, hit.wid, hit.localX, hit.localY, 1, seq);
+                // Synthetic MotionNotify (state=0, no buttons) so combobox popups set
+                // prelight_item from the touch position (on desktop, mouse hover does
+                // this). state=0 skips xputty's adj_set_motion_state drag math but
+                // still fires motion_callback.
+                sendEvent(MotionNotify, hit.wid, hit.localX, hit.localY, 0, seq, 0);
             } else if (t.action == 1) {
                 // Flush any pending drag before ButtonRelease
                 if (hasPendingDrag) {
