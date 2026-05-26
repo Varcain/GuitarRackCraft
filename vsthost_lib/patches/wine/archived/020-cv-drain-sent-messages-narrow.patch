@@ -1,0 +1,194 @@
+diff --git a/dlls/ntdll/sync.c b/dlls/ntdll/sync.c
+index 522ce0a2..8dec90e0 100644
+--- a/dlls/ntdll/sync.c
++++ b/dlls/ntdll/sync.c
+@@ -792,18 +792,129 @@ NTSTATUS WINAPI RtlSleepConditionVariableCS( RTL_CONDITION_VARIABLE *variable, R
+  * NOTES
+  *  the behaviour is undefined if the thread doesn't own the lock.
+  */
++/* vstpoc patch (020-narrow): wine on Android Bionic has a circular
++ * SendMessage deadlock when JUCE/TH-U calls SleepConditionVariable from
++ * inside a WindowProc dispatched on thread A, while thread B sends an
++ * inter-thread message back to thread A. Both threads block.
++ *
++ * Fix: poll the CV wait at 200ms intervals when timeout is infinite. After
++ * each poll, call NtUserPeekMessage which dispatches any queued inter-thread
++ * sent messages (those land on QS_SENDMESSAGE bit and are drained by
++ * process_sent_messages, invoked from peek's wait_message_reply path).
++ *
++ * This is the narrowed variant: in RtlWaitOnAddress below, we drain ONLY on
++ * STATUS_TIMEOUT (not STATUS_ALERTED). The original drain-on-ALERTED branch
++ * triggered TH-U's drag-drop crash at TH-U+0x1802DF0C3 by dispatching
++ * cross-thread sends re-entrantly inside the receiver's mid-flight
++ * WindowProc. Patch 025 (server-side cycle detector) now handles the
++ * focus-message popup deadlock the ALERTED drain was originally added for. */
++typedef int VSTPOC_MSG_t[16]; /* opaque, large enough for MSG */
++typedef BOOL (WINAPI *PFN_NtUserPeekMessage)(VSTPOC_MSG_t *msg, HWND hwnd, UINT first, UINT last, UINT flags);
++
++/* vstpoc patch 020 (per-thread windowproc-depth gate, 2026-05-23):
++ * Patch 020's drain dispatches QS_SENDMESSAGE re-entrantly inside the
++ * RtlWaitOnAddress caller's call stack. When the caller is JUCE init code
++ * (NOT inside a WindowProc), re-entrant dispatch is safe and unblocks
++ * stuck cross-thread senders → TH-U renders.
++ *
++ * When the caller is INSIDE a WindowProc (e.g. TH-U's WM_LBUTTONUP
++ * drag-drop handler doing its own thread sync), re-entrant dispatch
++ * delivers an unexpected message into TH-U's mid-flight C++ state and
++ * causes a NULL-pointer deref at TH-U+0x1802DF0C3 (the array destructor).
++ *
++ * The fix: read wine's existing per-thread recursion_count from
++ * ntuser_thread_info (already bumped in dlls/win32u/message.c
++ * dispatch_win_proc_params around every KeUserModeCallback). Drain only
++ * when recursion_count == 0 (not in any windowproc).
++ *
++ * We avoid including ntuser.h (would pull in win32u-specific deps into
++ * ntdll). Instead read TEB->Win32ClientInfo and use a partial struct
++ * mirror of `ntuser_thread_info` up to the field we need. */
++struct vstpoc_partial_thread_info
++{
++    UINT64               _pad_driver_data;
++    DWORD                _pad_message_time;
++    DWORD                _pad_message_pos;
++    UINT64               _pad_message_extra;
++    DWORD                _pad_msg_source[2];   /* INPUT_MESSAGE_SOURCE = 2 DWORDs */
++    WORD                 recursion_count;
++    /* … further fields follow; we only read recursion_count */
++};
++
++static int vstpoc_in_windowproc(void)
++{
++    /* TEB->Win32ClientInfo is the per-thread state populated by win32u on
++     * its first call. NULL means no GUI state yet → effectively depth 0. */
++    struct vstpoc_partial_thread_info *ti =
++        (struct vstpoc_partial_thread_info *)NtCurrentTeb()->Win32ClientInfo;
++    if (!ti) return 0;
++    return ti->recursion_count > 0;
++}
++
++static PFN_NtUserPeekMessage vstpoc_get_peek_msg(void)
++{
++    static PFN_NtUserPeekMessage cached;
++    static BOOL tried;
++    if (!tried) {
++        UNICODE_STRING name;
++        ANSI_STRING func_name;
++        HMODULE win32u = NULL;
++        tried = TRUE;
++        RtlInitUnicodeString(&name, L"win32u.dll");
++        if (LdrGetDllHandle(NULL, 0, &name, &win32u) < 0) return NULL;
++        RtlInitAnsiString(&func_name, "NtUserPeekMessage");
++        if (LdrGetProcedureAddress(win32u, &func_name, 0, (void **)&cached) < 0)
++            cached = NULL;
++    }
++    return cached;
++}
++
+ NTSTATUS WINAPI RtlSleepConditionVariableSRW( RTL_CONDITION_VARIABLE *variable, RTL_SRWLOCK *lock,
+                                               const LARGE_INTEGER *timeout, ULONG flags )
+ {
+     int value = *(int *)&variable->Ptr;
+     NTSTATUS status;
++    LARGE_INTEGER vstpoc_poll = { .QuadPart = -2000000LL }; /* 200ms */
++    BOOL vstpoc_is_infinite = !timeout;
++    const LARGE_INTEGER *eff_timeout = vstpoc_is_infinite ? &vstpoc_poll : timeout;
+ 
+     if (flags & RTL_CONDITION_VARIABLE_LOCKMODE_SHARED)
+         RtlReleaseSRWLockShared( lock );
+     else
+         RtlReleaseSRWLockExclusive( lock );
+ 
+-    status = RtlWaitOnAddress( &variable->Ptr, &value, sizeof(value), timeout );
++    for (;;) {
++        status = RtlWaitOnAddress( &variable->Ptr, &value, sizeof(value), eff_timeout );
++        if (status != STATUS_TIMEOUT) break;
++        if (vstpoc_is_infinite) {
++            /* On infinite wait timeout: drain pending sent messages so a
++             * cross-thread SendMessage deadlock can resolve. PM_NOREMOVE
++             * dispatches QS_SENDMESSAGE as a side effect without consuming
++             * posted messages.
++             *
++             * NOTE: NO windowproc-depth gate here. SleepConditionVariable
++             * is called from JUCE's deferred handlers INSIDE a WindowProc
++             * dispatch — that's the entire reason patch 020 exists.
++             * Skipping the drain when in-windowproc would re-introduce the
++             * deadlock this drain was added to fix (thread 0024 stuck on
++             * infinite SRW wait while a cross-thread sender blocked
++             * because 0024 didn't drain).
++             *
++             * Re-entrancy concerns are limited to the RtlWaitOnAddress
++             * drain below, where short-timeout poll loops (≤500ms)
++             * dispatch unexpectedly into TH-U's worker thread state. The
++             * SRW path is infinite-timeout only — already in a wait, so
++             * the dispatch is the desired side-effect. */
++            PFN_NtUserPeekMessage peek = vstpoc_get_peek_msg();
++            if (peek) {
++                VSTPOC_MSG_t dummy;
++                peek(&dummy, NULL, 0, 0, 0);
++            }
++            value = *(int *)&variable->Ptr;
++            continue;
++        }
++        break;
++    }
+ 
+     if (flags & RTL_CONDITION_VARIABLE_LOCKMODE_SHARED)
+         RtlAcquireSRWLockShared( lock );
+@@ -875,6 +986,26 @@ static BOOL compare_addr( const void *addr, const void *cmp, SIZE_T size )
+ 
+ /***********************************************************************
+  *           RtlWaitOnAddress   (NTDLL.@)
++ *
++ * vstpoc (020-narrow): JUCE uses RtlWaitOnAddress with a short timeout to
++ * wait for state changes from a sibling thread (typically the MessageManager
++ * or a worker). This creates a cross-thread SendMessage deadlock when:
++ *   - Tid A is inside a WindowProc or init path → calls RtlWaitOnAddress(X, 200ms)
++ *   - Tid B (sibling) wants to send_inter_thread_message to tid A's hwnd
++ *     before it can signal X (e.g. WM_WINE_SETWINDOWPOS to apply window changes)
++ *   - Tid B blocks waiting for tid A's WindowProc to drain the send
++ *   - Tid A can't drain because it's blocked on RtlWaitOnAddress
++ *
++ * Without intervention, the timeout fires endlessly and rendering stalls.
++ * Fix: on STATUS_TIMEOUT for a short-ish wait, drain any pending inter-thread
++ * sent messages via NtUserPeekMessage. This unblocks tid B, which can then
++ * signal X, which lets tid A proceed.
++ *
++ * IMPORTANT: drain ONLY on STATUS_TIMEOUT, never on STATUS_ALERTED. When the
++ * wait was alerted, the alerter has already published the state change — the
++ * caller will see the new value on its next compare. Re-entrantly dispatching
++ * cross-thread sends here lands an unexpected message on tid A's mid-flight
++ * windowproc state and corrupts plugin-internal data (TH-U drag-drop crash).
+  */
+ NTSTATUS WINAPI RtlWaitOnAddress( const void *addr, const void *cmp, SIZE_T size,
+                                   const LARGE_INTEGER *timeout )
+@@ -882,6 +1013,11 @@ NTSTATUS WINAPI RtlWaitOnAddress( const void *addr, const void *cmp, SIZE_T size
+     struct futex_queue *queue = get_futex_queue( addr );
+     struct futex_entry entry;
+     NTSTATUS ret;
++    /* vstpoc: treat any timeout <= 500ms as polling. Infinite or long
++     * timeouts take the normal path to avoid disturbing audio or other
++     * timing-sensitive code paths. */
++    BOOL vstpoc_short_timeout = (timeout && timeout->QuadPart < 0 &&
++                                  timeout->QuadPart > -5000000LL); /* > -500ms */
+ 
+     TRACE("addr %p cmp %p size %#Ix timeout %s\n", addr, cmp, size, debugstr_timeout( timeout ));
+ 
+@@ -918,6 +1054,19 @@ NTSTATUS WINAPI RtlWaitOnAddress( const void *addr, const void *cmp, SIZE_T size
+         spin_unlock( &queue->lock );
+     }
+ 
++    /* vstpoc: on a short-timeout wait that timed out, drain pending sent
++     * messages — but ONLY when not inside a WindowProc dispatch. Inside a
++     * windowproc, re-entrant dispatch corrupts plugin state (see TLS depth
++     * counter comment above). STATUS_ALERTED path also NOT included. */
++    if (vstpoc_short_timeout && ret == STATUS_TIMEOUT && !vstpoc_in_windowproc())
++    {
++        PFN_NtUserPeekMessage peek = vstpoc_get_peek_msg();
++        if (peek) {
++            VSTPOC_MSG_t dummy;
++            peek(&dummy, NULL, 0, 0, 0);
++        }
++    }
++
+     TRACE("returning %#lx\n", ret);
+ 
+     if (ret == STATUS_ALERTED) ret = STATUS_SUCCESS;

@@ -1,0 +1,34 @@
+diff --git a/loader/main.c b/loader/main.c
+index f8b113f..712873a 100644
+--- a/loader/main.c
++++ b/loader/main.c
+@@ -177,11 +177,27 @@ int main( int argc, char *argv[] )
+ 
+     init_reserved_areas();
+ 
++    /* WINELOADER_NTDLL: explicit absolute path to ntdll.so. Added for the
++     * Android Bionic case where the wine binary lives in nativeLibraryDir
++     * under a renamed `libwine_NNNN.so` filename (Android W^X requires
++     * exec-allowed files to live there and follow the lib*.so naming
++     * convention). Wine's default search ("ntdll.so" next to the binary)
++     * can't see the real file because it's renamed too. The launcher
++     * sets WINELOADER_NTDLL to the renamed-but-symlinked location. */
++    {
++        const char *override = getenv( "WINELOADER_NTDLL" );
++        if (override && *override && (handle = dlopen( override, RTLD_NOW )))
++            goto found;
++    }
++
+     if ((handle = try_dlopen( get_self_exe() )) ||
+         (handle = try_dlopen( argv[0] )))
+     {
+-        void (*init_func)(int, char **) = dlsym( handle, "__wine_main" );
+-        if (init_func) init_func( argc, argv );
++found:
++        {
++            void (*init_func)(int, char **) = dlsym( handle, "__wine_main" );
++            if (init_func) init_func( argc, argv );
++        }
+         fprintf( stderr, "wine: __wine_main function not found in ntdll.so\n" );
+         exit(1);
+     }

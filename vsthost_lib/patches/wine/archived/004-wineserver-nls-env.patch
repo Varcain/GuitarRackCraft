@@ -1,0 +1,25 @@
+diff --git a/server/unicode.c b/server/unicode.c
+index bb39b55..adc1db1 100644
+--- a/server/unicode.c
++++ b/server/unicode.c
+@@ -279,6 +279,20 @@ static char *get_nls_dir(void)
+ {
+     char *p, *dir, *ret;
+ 
++    /* Android Bionic case: the path derivation in wineserver, like its
++     * counterpart in the wine loader, walks `/proc/self/exe` realpath
++     * which resolves to nativeLibraryDir on this app. Letting WINEDATADIR
++     * override lets the launcher point us at the real <wineRoot>/share/wine
++     * directory where WineSetup extracts the NLS tarball. */
++    {
++        const char *env_data = getenv( "WINEDATADIR" );
++        if (env_data && *env_data)
++        {
++            char *p_nls = NULL;
++            if (asprintf( &p_nls, "%s/nls", env_data ) > 0) return p_nls;
++        }
++    }
++
+ #if defined(__linux__) || defined(__FreeBSD_kernel__) || defined(__NetBSD__)
+     dir = realpath( "/proc/self/exe", NULL );
+ #elif defined (__FreeBSD__) || defined(__DragonFly__)

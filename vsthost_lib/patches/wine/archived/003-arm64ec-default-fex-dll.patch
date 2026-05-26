@@ -1,0 +1,17 @@
+diff --git a/dlls/ntdll/loader.c b/dlls/ntdll/loader.c
+index 6b089c9..8016d15 100644
+--- a/dlls/ntdll/loader.c
++++ b/dlls/ntdll/loader.c
+@@ -4223,7 +4223,11 @@ static void load_arm64ec_module(void)
+     ULONG buffer[16];
+     KEY_VALUE_PARTIAL_INFORMATION *info = (KEY_VALUE_PARTIAL_INFORMATION *)buffer;
+     UNICODE_STRING nameW = RTL_CONSTANT_STRING( L"\\Registry\\Machine\\Software\\Microsoft\\Wow64\\amd64" );
+-    WCHAR module[64] = L"C:\\windows\\system32\\xtajit64.dll";
++    /* Default to libarm64ecfex.dll (FEX-Emu's ARM64EC PE DLL) instead of
++     * Microsoft's xtajit64.dll, which we don't ship. The registry value
++     * still overrides if present (Hangover/Winlator default to setting
++     * `\Wow64\amd64` to "libarm64ecfex.dll" — same effect). */
++    WCHAR module[64] = L"C:\\windows\\system32\\libarm64ecfex.dll";
+     OBJECT_ATTRIBUTES attr;
+     WINE_MODREF *wm;
+     NTSTATUS status;

@@ -1,0 +1,40 @@
+diff --git a/server/queue.c b/server/queue.c
+index c408a46e..759b0328 100644
+--- a/server/queue.c
++++ b/server/queue.c
+@@ -2018,7 +2018,6 @@ static user_handle_t find_hardware_message_window( struct desktop *desktop, stru
+         }
+         break;
+     case QS_MOUSEMOVE:
+-    case QS_MOUSEBUTTON:
+         if (!input || !(win = input_shm->capture))
+         {
+             if (is_window_visible( msg->win ) && !is_window_transparent( msg->win )) win = msg->win;
+@@ -2026,6 +2025,27 @@ static user_handle_t find_hardware_message_window( struct desktop *desktop, stru
+             *thread = window_thread_from_point( win, msg->x, msg->y );
+         }
+         break;
++    case QS_MOUSEBUTTON:
++        /* vstpoc patch 035 narrowed: when this thread has SetCapture on its
++         * own window but msg->win (the geometric target our X server picked)
++         * is a DIFFERENT visible window — typically a popup HWND on a
++         * different thread — prefer msg->win so the popup's WindowProc sees
++         * its own click. Critical: leave *thread = NULL so caller derives
++         * via get_window_thread; setting *thread = window_thread_from_point
++         * explicitly causes a 2 600+ message storm. */
++        if (input && input_shm->capture &&
++            msg->win && msg->win != input_shm->capture &&
++            is_window_visible( msg->win ) && !is_window_transparent( msg->win ))
++        {
++            win = msg->win;
++        }
++        else if (!input || !(win = input_shm->capture))
++        {
++            if (is_window_visible( msg->win ) && !is_window_transparent( msg->win )) win = msg->win;
++            else win = shallow_window_from_point( desktop, msg->x, msg->y );
++            *thread = window_thread_from_point( win, msg->x, msg->y );
++        }
++        break;
+     }
+ 
+     if (!*thread)

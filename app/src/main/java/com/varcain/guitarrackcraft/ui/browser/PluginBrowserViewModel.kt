@@ -222,9 +222,35 @@ class PluginBrowserViewModel(application: Application) : AndroidViewModel(applic
                     }
                 }
 
+                // Runtime overlay: imported VSTs (full flavor) live in
+                // filesDir/vst_plugins/registry.json and aren't in the static
+                // plugin_metadata.json. Stamp each displayName with author
+                // "Varcain". DO NOT append to `available` — the native engine
+                // already enumerates VSTs via the registered VstFactory, and
+                // adding to `available` flips the filter from "show all" to
+                // "show only listed", which hides every LV2 plugin.
+                runCatching {
+                    val regFile = java.io.File(appContext.filesDir, "vst_plugins/registry.json")
+                    if (regFile.exists()) {
+                        val body = regFile.readText()
+                        val arr = JSONObject(body).optJSONArray("plugins")
+                        if (arr != null) {
+                            for (i in 0 until arr.length()) {
+                                val obj = arr.optJSONObject(i) ?: continue
+                                val name = obj.optString("displayName").orEmpty()
+                                if (name.isNotEmpty()) {
+                                    authors[name] = "Varcain"
+                                }
+                            }
+                            android.util.Log.i("PluginBrowser",
+                                "Tagged ${arr.length()} imported VST(s) under author 'Varcain'")
+                        }
+                    }
+                }
+
                 pluginMetadata = PluginMetadata(descriptions, thumbnails, authors, categories)
                 availablePlugins = available
-                
+
                 android.util.Log.i("PluginBrowser", "Loaded ${available.size} available plugins with binaries")
             }
         } catch (e: Exception) {

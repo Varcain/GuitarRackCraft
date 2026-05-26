@@ -1,0 +1,1271 @@
+From 436d42df667ad0b24d24ebb103b613defe0bbd03 Mon Sep 17 00:00:00 2001
+From: Kamil Lulko <kamil.lulko@gmail.com>
+Date: Wed, 20 May 2026 22:12:35 +0200
+Subject: [PATCH 1/6] =?UTF-8?q?fex-pivot:=20wine=20patch=20013=20=E2=80=94?=
+ =?UTF-8?q?=20allow=20SetFocus=20on=20top-level=20WS=5FCHILD?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+NtUserSetFocus rejected windows whose only parent is the desktop and
+which have WS_CHILD without WS_POPUP. Same pattern as patch 012 for
+the wineserver foreground gate: VST plugin editors hit this every
+time, and JUCE's grabKeyboardFocus → SetFocus → 0 → JUCE never
+commits its internal "currentlyFocusedComponent". Allow the focus
+chain to proceed; set_focus_window further down does the actual
+work via wineserver (no WS_CHILD restriction there).
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+---
+ dlls/combase/marshal.c         |  20 ++-
+ dlls/comdlg32/Makefile.in      |   1 +
+ dlls/comdlg32/filedlg.c        |  20 +++
+ dlls/comdlg32/vstpoc_picker.c  | 316 +++++++++++++++++++++++++++++++++
+ dlls/ntdll/loader.c            |  18 +-
+ dlls/ntdll/unix/loader.c       |  33 +++-
+ dlls/ntdll/unix/virtual.c      |  17 +-
+ dlls/win32u/freetype.c         |  10 +-
+ dlls/win32u/input.c            |  17 +-
+ dlls/win32u/opengl.c           | 171 +++++++++++++++---
+ dlls/win32u/vulkan.c           |  56 +++++-
+ dlls/winex11.drv/event.c       |  47 +++--
+ dlls/winex11.drv/vulkan.c      |  56 +++++-
+ dlls/winex11.drv/x11drv_main.c |  10 +-
+ dlls/wow64/syscall.c           |   5 +-
+ loader/main.c                  |  20 ++-
+ server/unicode.c               |  14 ++
+ server/window.c                |  13 +-
+ 18 files changed, 786 insertions(+), 58 deletions(-)
+ create mode 100644 dlls/comdlg32/vstpoc_picker.c
+
+diff --git a/dlls/combase/marshal.c b/dlls/combase/marshal.c
+index f638604f..1e8d17ba 100644
+--- a/dlls/combase/marshal.c
++++ b/dlls/combase/marshal.c
+@@ -912,8 +912,24 @@ HRESULT marshal_object(struct apartment *apt, STDOBJREF *stdobjref, REFIID riid,
+                     ERR("Failed to create an IRpcStubBuffer from IPSFactory for %s with error %#lx\n",
+                         debugstr_guid(riid), hr);
+             }else {
+-                WARN("couldn't get IPSFactory buffer for interface %s\n", debugstr_guid(riid));
+-                hr = E_NOINTERFACE;
++                /* vstpoc patch (010-combase-null-stub-fallback): no
++                 * ProxyStubClsid32 registered for this interface →
++                 * upstream returns E_NOINTERFACE, which kills RegisterDragDrop
++                 * (IDropTarget) and apartment_get_local_server_stream
++                 * (IServiceProvider) and any other "register and store"
++                 * marshal. Most VST plugins call these defensively and don't
++                 * actually USE the marshalled stream unless drag/drop
++                 * happens or the apartment becomes a real local server.
++                 *
++                 * Fall through with stub=NULL and hr=S_OK so the OBJREF
++                 * gets written to the stream and the caller continues. If
++                 * someone later tries to invoke through the OBJREF the
++                 * RPC dispatch will fail (NULL stub), but that's a hot
++                 * code path we don't expect plugins to hit. */
++                WARN("couldn't get IPSFactory buffer for interface %s, using NULL stub fallback\n",
++                     debugstr_guid(riid));
++                stub = NULL;
++                hr = S_OK;
+             }
+ 
+         }
+diff --git a/dlls/comdlg32/Makefile.in b/dlls/comdlg32/Makefile.in
+index c298c080..d14dc168 100644
+--- a/dlls/comdlg32/Makefile.in
++++ b/dlls/comdlg32/Makefile.in
+@@ -15,6 +15,7 @@ SOURCES = \
+ 	finddlg.c \
+ 	fontdlg.c \
+ 	itemdlg.c \
++	vstpoc_picker.c \
+ 	pd32_collate.svg \
+ 	pd32_landscape.svg \
+ 	pd32_nocollate.svg \
+diff --git a/dlls/comdlg32/filedlg.c b/dlls/comdlg32/filedlg.c
+index 43066f02..892fe694 100644
+--- a/dlls/comdlg32/filedlg.c
++++ b/dlls/comdlg32/filedlg.c
+@@ -4129,6 +4129,8 @@ static inline BOOL is_win16_looks(DWORD flags)
+  *    FALSE on cancel, error, close or filename-does-not-fit-in-buffer.
+  *
+  */
++BOOL vstpoc_picker_open_a(OPENFILENAMEA *ofn, int *did_run);
++
+ BOOL WINAPI GetOpenFileNameA(OPENFILENAMEA *ofn)
+ {
+     TRACE("flags 0x%08lx\n", ofn->Flags);
+@@ -4143,6 +4145,15 @@ BOOL WINAPI GetOpenFileNameA(OPENFILENAMEA *ofn)
+     if (ofn->Flags & OFN_FILEMUSTEXIST)
+         ofn->Flags |= OFN_PATHMUSTEXIST;
+ 
++    /* vstpoc: route through Android's SAF picker when VSTPOC_PICKER_PATH
++     * is set in env. If did_run stays 0 the feature wasn't engaged and we
++     * fall through to wine's regular dialog. */
++    {
++        int did_run = 0;
++        BOOL ok = vstpoc_picker_open_a(ofn, &did_run);
++        if (did_run) return ok;
++    }
++
+     if (is_win16_looks(ofn->Flags))
+         return GetFileName31A(ofn, OPEN_DIALOG);
+     else
+@@ -4164,6 +4175,8 @@ BOOL WINAPI GetOpenFileNameA(OPENFILENAMEA *ofn)
+  *    FALSE on cancel, error, close or filename-does-not-fit-in-buffer.
+  *
+  */
++BOOL vstpoc_picker_open_w(OPENFILENAMEW *ofn, int *did_run);
++
+ BOOL WINAPI GetOpenFileNameW(OPENFILENAMEW *ofn)
+ {
+     TRACE("flags 0x%08lx\n", ofn->Flags);
+@@ -4178,6 +4191,13 @@ BOOL WINAPI GetOpenFileNameW(OPENFILENAMEW *ofn)
+     if (ofn->Flags & OFN_FILEMUSTEXIST)
+         ofn->Flags |= OFN_PATHMUSTEXIST;
+ 
++    /* vstpoc: see GetOpenFileNameA */
++    {
++        int did_run = 0;
++        BOOL ok = vstpoc_picker_open_w(ofn, &did_run);
++        if (did_run) return ok;
++    }
++
+     if (is_win16_looks(ofn->Flags))
+         return GetFileName31W(ofn, OPEN_DIALOG);
+     else
+diff --git a/dlls/comdlg32/vstpoc_picker.c b/dlls/comdlg32/vstpoc_picker.c
+new file mode 100644
+index 00000000..632358be
+--- /dev/null
++++ b/dlls/comdlg32/vstpoc_picker.c
+@@ -0,0 +1,316 @@
++/*
++ * vstpoc native file-picker hook for wine's comdlg32.
++ *
++ * When the Android-side launcher sets VSTPOC_PICKER_PATH=/abs/linux/path
++ * before exec'ing wine, GetOpenFileNameA/W routes its request through the
++ * mmap'd channel at that path instead of opening wine's own dialog. The
++ * Android side observes the request, shows ACTION_OPEN_DOCUMENT, copies
++ * the picked file into the wineprefix, and writes the C:\... path back.
++ *
++ * Layout must match VstpocPickerChannel in external/shared_layout.h.
++ * Offsets are written by hand because PE-side comdlg32 cannot include
++ * that header from our app's source tree. Don't change without bumping
++ * both sides together.
++ */
++
++#include <stdarg.h>
++#include <stdlib.h>
++#include <string.h>
++
++#include "windef.h"
++#include "winbase.h"
++#include "winnls.h"
++#include "wingdi.h"
++#include "winuser.h"
++#include "commdlg.h"
++#include "wine/debug.h"
++
++WINE_DEFAULT_DEBUG_CHANNEL(commdlg);
++
++/* Offsets into the picker channel mmap. Must match the actual struct
++ * layout of VstpocPickerChannel in external/shared_layout.h.
++ *
++ * _Alignas(64) aligns the field itself, NOT the next one — so e.g.
++ * `int32_t response_cancelled` lands at offset 68 (right after the
++ * 4-byte response_seq), not 128. The struct size is 2816 (not 2880);
++ * verified via the on-device picker file (ls -la shows 2816 bytes). */
++#define VSTPOC_OFF_REQUEST_SEQ         0
++#define VSTPOC_OFF_RESPONSE_SEQ       64
++#define VSTPOC_OFF_RESPONSE_CANCEL    68
++#define VSTPOC_OFF_REQUEST_TITLE      76
++#define VSTPOC_OFF_REQUEST_FILTER    204
++#define VSTPOC_OFF_REQUEST_INIT_DIR  716
++#define VSTPOC_OFF_RESPONSE_PATH    1740
++#define VSTPOC_TITLE_LEN            128
++#define VSTPOC_FILTER_LEN           512
++#define VSTPOC_PATH_LEN            1024
++#define VSTPOC_CHANNEL_SIZE        2816
++
++#define VSTPOC_POLL_MS               25
++#define VSTPOC_TIMEOUT_MS       600000   /* 10 minutes; user might browse for a while */
++
++/* Translate an absolute Linux path "/data/user/.../foo.dat" into a wine
++ * Win32 path "Z:\\data\\user\\...\\foo.dat" the wine loader recognises. */
++static void vstpoc_linux_to_winpath(const char *linux_path, char *out, size_t outsz)
++{
++    size_t i, j;
++    char c;
++    if (outsz < 4) {
++        if (outsz > 0) out[0] = '\0';
++        return;
++    }
++    out[0] = 'Z';
++    out[1] = ':';
++    i = 2;
++    j = 0;
++    while (linux_path[j] && i < outsz - 1) {
++        c = linux_path[j++];
++        out[i++] = (c == '/') ? '\\' : c;
++    }
++    out[i] = '\0';
++}
++
++static void *vstpoc_map_channel(HANDLE *out_file, HANDLE *out_mapping)
++{
++    const char *picker_path;
++    char winpath[1024];
++    HANDLE fh, mh;
++    void *view;
++
++    picker_path = getenv("VSTPOC_PICKER_PATH");
++    if (!picker_path || !*picker_path) return NULL;
++
++    vstpoc_linux_to_winpath(picker_path, winpath, sizeof(winpath));
++
++    fh = CreateFileA(winpath, GENERIC_READ | GENERIC_WRITE,
++                     FILE_SHARE_READ | FILE_SHARE_WRITE,
++                     NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
++    if (fh == INVALID_HANDLE_VALUE) {
++        ERR("vstpoc_picker: cannot open %s (gle=%lu)\n", winpath, GetLastError());
++        return NULL;
++    }
++    mh = CreateFileMappingA(fh, NULL, PAGE_READWRITE, 0, 0, NULL);
++    if (!mh) {
++        ERR("vstpoc_picker: CreateFileMapping failed (gle=%lu)\n", GetLastError());
++        CloseHandle(fh);
++        return NULL;
++    }
++    /* Pass 0 for size = "map the whole section". Our channel file is
++     * 2816 bytes — smaller than the page size — and passing the
++     * literal size made wine's MapViewOfFile fail because it can't
++     * page-align a 2816-byte mapping below one page. Letting wine
++     * round to whole-section avoids that. */
++    view = MapViewOfFile(mh, FILE_MAP_READ | FILE_MAP_WRITE, 0, 0, 0);
++    if (!view) {
++        ERR("vstpoc_picker: MapViewOfFile failed (gle=%lu)\n", GetLastError());
++        CloseHandle(mh);
++        CloseHandle(fh);
++        return NULL;
++    }
++    *out_file = fh;
++    *out_mapping = mh;
++    return view;
++}
++
++/* Returns -1 if picker disabled, 0 on cancel, 1 on success. On success,
++ * the result path is copied into `result` (NUL-terminated). */
++static int vstpoc_pick_a(LPCSTR title, LPCSTR filter, LPCSTR initial_dir,
++                          char *result, size_t result_sz)
++{
++    HANDLE fh = NULL, mh = NULL;
++    unsigned char *ch;
++    char *req_title, *req_filter, *req_init_dir, *rsp_path;
++    volatile unsigned int *req_seq, *rsp_seq;
++    volatile int *rsp_cancel;
++    unsigned int new_seq;
++    int got, iters, i, rc;
++
++    ch = vstpoc_map_channel(&fh, &mh);
++    if (!ch) return -1;
++
++    /* Fill request fields */
++    req_title    = (char *)(ch + VSTPOC_OFF_REQUEST_TITLE);
++    req_filter   = (char *)(ch + VSTPOC_OFF_REQUEST_FILTER);
++    req_init_dir = (char *)(ch + VSTPOC_OFF_REQUEST_INIT_DIR);
++    rsp_path     = (char *)(ch + VSTPOC_OFF_RESPONSE_PATH);
++    req_seq      = (volatile unsigned int *)(ch + VSTPOC_OFF_REQUEST_SEQ);
++    rsp_seq      = (volatile unsigned int *)(ch + VSTPOC_OFF_RESPONSE_SEQ);
++    rsp_cancel   = (volatile int *)(ch + VSTPOC_OFF_RESPONSE_CANCEL);
++
++    memset(req_title, 0, VSTPOC_TITLE_LEN);
++    if (title) lstrcpynA(req_title, title, VSTPOC_TITLE_LEN);
++
++    memset(req_filter, 0, VSTPOC_FILTER_LEN);
++    if (filter) {
++        /* Copy double-NUL-terminated filter spec verbatim. The format is
++         * "<descr>\0<pattern>\0<descr>\0<pattern>\0\0" — we walk pairs
++         * until an empty string. */
++        size_t total = 0;
++        const char *f = filter;
++        size_t l;
++        for (;;) {
++            l = strlen(f);
++            if (l == 0) break;
++            if (total + l + 1 >= (size_t)VSTPOC_FILTER_LEN - 1) break;
++            memcpy(req_filter + total, f, l + 1);
++            total += l + 1;
++            f += l + 1;
++        }
++        /* Trailing '\0' already in the cleared buffer makes the
++         * double-NUL terminator. */
++    }
++
++    memset(req_init_dir, 0, VSTPOC_PATH_LEN);
++    if (initial_dir) lstrcpynA(req_init_dir, initial_dir, VSTPOC_PATH_LEN);
++
++    *rsp_cancel = 0;
++    rsp_path[0] = '\0';
++
++    new_seq = *req_seq + 1;
++    if (new_seq == 0) new_seq = 1;
++    /* Release-store the new request_seq so the Android side, when it
++     * observes the bump, also sees the freshly written title/filter. */
++    InterlockedExchange((volatile LONG *)req_seq, (LONG)new_seq);
++
++    /* Poll for response. Wine's user32 message pump is on a different
++     * thread for the plugin's editor; sleeping here doesn't block the
++     * audio path (separate process). The Compose UI handles the SAF
++     * dialog; we just wait. */
++    got = 0;
++    iters = VSTPOC_TIMEOUT_MS / VSTPOC_POLL_MS;
++    for (i = 0; i < iters; ++i) {
++        if (*rsp_seq == new_seq) { got = 1; break; }
++        Sleep(VSTPOC_POLL_MS);
++    }
++
++    if (!got || *rsp_cancel) {
++        rc = 0;
++    } else {
++        if (result && result_sz > 0) {
++            lstrcpynA(result, rsp_path, (int)result_sz);
++        }
++        rc = 1;
++    }
++
++    UnmapViewOfFile(ch);
++    CloseHandle(mh);
++    CloseHandle(fh);
++    return rc;
++}
++
++/* ANSI entry point — called from GetOpenFileNameA before falling through
++ * to wine's dialog. Returns TRUE on success (path written to ofn->lpstrFile),
++ * FALSE on cancel, and -1 (mapped to FALSE) on "feature disabled" so the
++ * caller can decide to fall back to the regular dialog. We use a second
++ * boolean to distinguish those: *did_run = 1 means we handled it. */
++BOOL vstpoc_picker_open_a(OPENFILENAMEA *ofn, int *did_run)
++{
++    char path[VSTPOC_PATH_LEN];
++    int rc;
++    size_t want;
++    const char *slash, *basename;
++    size_t tlen;
++
++    *did_run = 0;
++    if (!ofn || !ofn->lpstrFile || ofn->nMaxFile == 0) return FALSE;
++
++    path[0] = '\0';
++    rc = vstpoc_pick_a(ofn->lpstrTitle, ofn->lpstrFilter,
++                       ofn->lpstrInitialDir, path, sizeof(path));
++    if (rc < 0) return FALSE;
++    *did_run = 1;
++    if (rc == 0) return FALSE;
++
++    /* Copy result back; truncate if buffer too small. */
++    want = strlen(path);
++    if (want + 1 > ofn->nMaxFile) want = ofn->nMaxFile - 1;
++    memcpy(ofn->lpstrFile, path, want);
++    ofn->lpstrFile[want] = '\0';
++    /* If the caller wants the file-title separately, point at the basename. */
++    if (ofn->lpstrFileTitle && ofn->nMaxFileTitle > 0) {
++        slash = strrchr(ofn->lpstrFile, '\\');
++        basename = slash ? slash + 1 : ofn->lpstrFile;
++        tlen = strlen(basename);
++        if (tlen + 1 > ofn->nMaxFileTitle) tlen = ofn->nMaxFileTitle - 1;
++        memcpy(ofn->lpstrFileTitle, basename, tlen);
++        ofn->lpstrFileTitle[tlen] = '\0';
++    }
++    return TRUE;
++}
++
++/* Unicode entry point — convert from W to A for the request, then back
++ * for the response. ASCII is fine for IR paths on Android. */
++BOOL vstpoc_picker_open_w(OPENFILENAMEW *ofn, int *did_run)
++{
++    char titleA[VSTPOC_TITLE_LEN];
++    char initDirA[VSTPOC_PATH_LEN];
++    char filterA[VSTPOC_FILTER_LEN];
++    char pathA[VSTPOC_PATH_LEN];
++    int rc, chars, blen;
++    const WCHAR *slash, *basename;
++    WCHAR *p;
++
++    *did_run = 0;
++    if (!ofn || !ofn->lpstrFile || ofn->nMaxFile == 0) return FALSE;
++
++    titleA[0] = '\0';
++    initDirA[0] = '\0';
++    memset(filterA, 0, sizeof(filterA));
++
++    if (ofn->lpstrTitle) {
++        WideCharToMultiByte(CP_UTF8, 0, ofn->lpstrTitle, -1,
++                            titleA, sizeof(titleA), NULL, NULL);
++        titleA[sizeof(titleA) - 1] = '\0';
++    }
++    if (ofn->lpstrInitialDir) {
++        WideCharToMultiByte(CP_UTF8, 0, ofn->lpstrInitialDir, -1,
++                            initDirA, sizeof(initDirA), NULL, NULL);
++        initDirA[sizeof(initDirA) - 1] = '\0';
++    }
++    if (ofn->lpstrFilter) {
++        /* The filter is a double-NUL-terminated UTF-16 buffer. Walk
++         * string pairs and emit double-NUL-terminated UTF-8. */
++        const WCHAR *f = ofn->lpstrFilter;
++        size_t totalA = 0;
++        int l, outBytes;
++        for (;;) {
++            l = lstrlenW(f);
++            if (l == 0) break;
++            outBytes = WideCharToMultiByte(
++                CP_UTF8, 0, f, l,
++                filterA + totalA,
++                (int)(sizeof(filterA) - 2 - totalA),
++                NULL, NULL);
++            if (outBytes <= 0) break;
++            totalA += (size_t)outBytes;
++            if (totalA + 1 >= sizeof(filterA) - 1) break;
++            filterA[totalA++] = '\0';
++            f += l + 1;
++        }
++    }
++
++    pathA[0] = '\0';
++    rc = vstpoc_pick_a(titleA, filterA, initDirA, pathA, sizeof(pathA));
++    if (rc < 0) return FALSE;
++    *did_run = 1;
++    if (rc == 0) return FALSE;
++
++    chars = MultiByteToWideChar(CP_UTF8, 0, pathA, -1,
++                                ofn->lpstrFile, (int)ofn->nMaxFile);
++    if (chars <= 0) {
++        if (ofn->nMaxFile > 0) ofn->lpstrFile[0] = 0;
++        return FALSE;
++    }
++    if (ofn->lpstrFileTitle && ofn->nMaxFileTitle > 0) {
++        slash = NULL;
++        for (p = ofn->lpstrFile; *p; ++p) {
++            if (*p == '\\') slash = p;
++        }
++        basename = slash ? slash + 1 : ofn->lpstrFile;
++        blen = lstrlenW(basename);
++        if (blen + 1 > (int)ofn->nMaxFileTitle) blen = (int)ofn->nMaxFileTitle - 1;
++        memcpy(ofn->lpstrFileTitle, basename, blen * sizeof(WCHAR));
++        ofn->lpstrFileTitle[blen] = 0;
++    }
++    return TRUE;
++}
+diff --git a/dlls/ntdll/loader.c b/dlls/ntdll/loader.c
+index 6b089c99..0c715669 100644
+--- a/dlls/ntdll/loader.c
++++ b/dlls/ntdll/loader.c
+@@ -3312,6 +3312,10 @@ static NTSTATUS load_dll( const WCHAR *load_path, const WCHAR *libname, DWORD fl
+     NTSTATUS nts = STATUS_DLL_NOT_FOUND;
+     void *prev;
+ 
++    /* DEBUG: emit a raw stderr line for any *.drv/*.dll load. Strip
++     * after the editor-GUI silent-load mystery is solved. */
++    MESSAGE( "[vstpoc-trace] load_dll(%s)\n", debugstr_w(libname) );
++
+     TRACE( "looking for %s in %s\n", debugstr_w(libname), debugstr_w(load_path) );
+ 
+     if (system && system_dll_path.Buffer)
+@@ -3353,6 +3357,9 @@ static NTSTATUS load_dll( const WCHAR *load_path, const WCHAR *libname, DWORD fl
+     NtCurrentTeb()->Tib.ArbitraryUserPointer = prev;
+ 
+ done:
++    /* DEBUG: emit raw stderr line. */
++    MESSAGE( "[vstpoc-trace] load_dll DONE %s -> 0x%lx\n",
++             debugstr_w(libname), (unsigned long)nts );
+     if (nts == STATUS_SUCCESS)
+         TRACE("Loaded module %s at %p\n", debugstr_us(&nt_name), (*pwm)->ldr.DllBase);
+     else
+@@ -3426,14 +3433,17 @@ NTSTATUS WINAPI DECLSPEC_HOTPATCH LdrLoadDll(LPCWSTR path_name, DWORD flags,
+     WINE_MODREF *wm;
+     NTSTATUS nts;
+     WCHAR *dllname = append_dll_ext( libname->Buffer );
++    const WCHAR *effective = dllname ? dllname : libname->Buffer;
+ 
+     RtlEnterCriticalSection( &loader_section );
+ 
+-    nts = load_dll( path_name, dllname ? dllname : libname->Buffer, flags, &wm, FALSE );
++    nts = load_dll( path_name, effective, flags, &wm, FALSE );
+ 
+     if (nts == STATUS_SUCCESS)
+     {
+         nts = process_attach( wm->ldr.DdagNode, NULL );
++        MESSAGE( "[vstpoc-trace] LdrLoadDll %s process_attach -> 0x%lx\n",
++                 debugstr_w(effective), (unsigned long)nts );
+         if (nts != STATUS_SUCCESS)
+         {
+             LdrUnloadDll(wm->ldr.DllBase);
+@@ -4223,7 +4233,11 @@ static void load_arm64ec_module(void)
+     ULONG buffer[16];
+     KEY_VALUE_PARTIAL_INFORMATION *info = (KEY_VALUE_PARTIAL_INFORMATION *)buffer;
+     UNICODE_STRING nameW = RTL_CONSTANT_STRING( L"\\Registry\\Machine\\Software\\Microsoft\\Wow64\\amd64" );
+-    WCHAR module[64] = L"C:\\windows\\system32\\xtajit64.dll";
++    /* Default to libarm64ecfex.dll (FEX-Emu's ARM64EC PE DLL) instead of
++     * Microsoft's xtajit64.dll, which we don't ship. The registry value
++     * still overrides if present (Hangover/Winlator default to setting
++     * `\Wow64\amd64` to "libarm64ecfex.dll" — same effect). */
++    WCHAR module[64] = L"C:\\windows\\system32\\libarm64ecfex.dll";
+     OBJECT_ATTRIBUTES attr;
+     WINE_MODREF *wm;
+     NTSTATUS status;
+diff --git a/dlls/ntdll/unix/loader.c b/dlls/ntdll/unix/loader.c
+index 82d3d88e..c7bf9cf1 100644
+--- a/dlls/ntdll/unix/loader.c
++++ b/dlls/ntdll/unix/loader.c
+@@ -461,6 +461,31 @@ static void init_paths(void)
+         bin_dir = build_relative_path( dll_dir, LIBDIR "/wine", BINDIR );
+         data_dir = build_relative_path( dll_dir, LIBDIR "/wine", DATADIR "/wine" );
+         wineloader = build_path( ntdll_dir, "wine" );
++
++        /* Android Bionic case: ntdll.so is loaded by a symlink whose realpath
++         * resolves to nativeLibraryDir, where every wine binary is renamed to
++         * libwine_NNNN.so. The default `<ntdll_dir>/wine` path doesn't exist.
++         * Honor an explicit WINELOADER env var so the launcher can point us
++         * at the symlink path (e.g. <files_dir>/wine/bin/wine). The matching
++         * env vars for the other derived paths cover NLS files (WINEDATADIR)
++         * and bin scripts (WINEBINDIR). See
++         * patches/wine/001-loader-ntdll-env-override.patch for the
++         * loader/main.c counterpart. */
++        {
++            const char *env_loader  = getenv( "WINELOADER" );
++            const char *env_datadir = getenv( "WINEDATADIR" );
++            const char *env_bindir  = getenv( "WINEBINDIR" );
++            const char *env_dlldir  = getenv( "WINEDLLDIR" );
++            if (env_loader  && *env_loader)  wineloader = strdup( env_loader );
++            if (env_datadir && *env_datadir) data_dir   = strdup( env_datadir );
++            if (env_bindir  && *env_bindir)  bin_dir    = strdup( env_bindir );
++            /* dll_dir is consulted DIRECTLY by load_ntdll, load_apiset_dll,
++             * load_wow64_ntdll (they hardcode `<dll_dir>/<pe_dir>/<name>.dll`).
++             * WINEDLLPATH only feeds the broader find_dll_file search, which
++             * isn't used for these early-init system DLLs. WINEDLLDIR
++             * overrides the base for those direct lookups. */
++            if (env_dlldir  && *env_dlldir)  dll_dir    = strdup( env_dlldir );
++        }
+     }
+ 
+     set_dll_path();
+@@ -917,7 +942,13 @@ static NTSTATUS dlopen_dll( const char *so_name, UNICODE_STRING *nt_name, void *
+     handle = dlopen( so_name, RTLD_NOW );
+     if (!handle)
+     {
+-        WARN( "failed to load .so lib %s: %s\n", debugstr_a(so_name), dlerror() );
++        const char *err = dlerror();
++        char buf[512];
++        int n = snprintf(buf, sizeof(buf),
++            "[vstpoc-trace] dlopen_dll(\"%s\") FAILED: %s\n",
++            so_name ? so_name : "(null)", err ? err : "(null)");
++        write(2, buf, n);
++        WARN( "failed to load .so lib %s: %s\n", debugstr_a(so_name), err );
+         return STATUS_INVALID_IMAGE_FORMAT;
+     }
+ 
+diff --git a/dlls/ntdll/unix/virtual.c b/dlls/ntdll/unix/virtual.c
+index f82929ef..8788e3e2 100644
+--- a/dlls/ntdll/unix/virtual.c
++++ b/dlls/ntdll/unix/virtual.c
+@@ -847,8 +847,21 @@ static NTSTATUS get_builtin_unix_funcs( void *module, BOOL wow, const void **fun
+         if (builtin->unix_path && !builtin->unix_handle)
+         {
+             builtin->unix_handle = dlopen( builtin->unix_path, RTLD_NOW );
+-            if (!builtin->unix_handle)
+-                WARN_(module)( "failed to load %s: %s\n", debugstr_a(builtin->unix_path), dlerror() );
++            if (!builtin->unix_handle) {
++                const char *err = dlerror();
++                char buf[512];
++                int n = snprintf(buf, sizeof(buf),
++                    "[vstpoc-trace] builtin dlopen(\"%s\") FAILED: %s\n",
++                    builtin->unix_path, err ? err : "(null)");
++                write(2, buf, n);
++                WARN_(module)( "failed to load %s: %s\n", debugstr_a(builtin->unix_path), err );
++            } else {
++                char buf[256];
++                int n = snprintf(buf, sizeof(buf),
++                    "[vstpoc-trace] builtin dlopen(\"%s\") OK\n",
++                    builtin->unix_path);
++                write(2, buf, n);
++            }
+         }
+         if (builtin->unix_handle)
+         {
+diff --git a/dlls/win32u/freetype.c b/dlls/win32u/freetype.c
+index c638a6ad..7f64b195 100644
+--- a/dlls/win32u/freetype.c
++++ b/dlls/win32u/freetype.c
+@@ -1778,11 +1778,13 @@ static BOOL init_freetype(void)
+ {
+     ft_handle = dlopen(SONAME_LIBFREETYPE, RTLD_NOW);
+     if(!ft_handle) {
++        const char *err = dlerror();
+         WINE_MESSAGE(
+-      "Wine cannot find the FreeType font library.  To enable Wine to\n"
+-      "use TrueType fonts please install a version of FreeType greater than\n"
+-      "or equal to 2.0.5.\n"
+-      "http://www.freetype.org\n");
++      "Wine cannot find the FreeType font library (dlopen(\"%s\") failed: %s).\n"
++      "To enable Wine to use TrueType fonts please install a version of\n"
++      "FreeType greater than or equal to 2.0.5.\n"
++      "http://www.freetype.org\n",
++      SONAME_LIBFREETYPE, err ? err : "(null)");
+ 	return FALSE;
+     }
+ 
+diff --git a/dlls/win32u/input.c b/dlls/win32u/input.c
+index 1fbf8c4a..e7d94748 100644
+--- a/dlls/win32u/input.c
++++ b/dlls/win32u/input.c
+@@ -2131,7 +2131,22 @@ HWND WINAPI NtUserSetFocus( HWND hwnd )
+             parent = NtUserGetAncestor( hwndTop, GA_PARENT );
+             if (!parent || parent == get_desktop_window())
+             {
+-                if ((style & (WS_POPUP|WS_CHILD)) == WS_CHILD) return 0;
++                /* vstpoc patch (013-win32u-focus-ws-child-top-level):
++                 * upstream returns 0 here, refusing to focus WS_CHILD
++                 * windows whose parent is the desktop. VST plugin editors
++                 * (vst_host calls effEditOpen with GetDesktopWindow() as
++                 * the parent HWND, plugin makes its editor WS_CHILD)
++                 * always hit this. JUCE's TextField calls grabKeyboard
++                 * Focus → SetFocus, gets 0 back, and never commits its
++                 * internal focus → typed WM_CHAR is dropped. Mirror
++                 * patch 012 (wineserver is_valid_foreground_window):
++                 * allow top-level WS_CHILD to receive focus when there
++                 * is no other activatable candidate. */
++                if ((style & (WS_POPUP|WS_CHILD)) == WS_CHILD)
++                {
++                    /* break out and let set_focus_window handle it */
++                    break;
++                }
+                 break;
+             }
+             if (parent == get_hwnd_message_parent()) return 0;
+diff --git a/dlls/win32u/opengl.c b/dlls/win32u/opengl.c
+index b997ea4a..75316861 100644
+--- a/dlls/win32u/opengl.c
++++ b/dlls/win32u/opengl.c
+@@ -174,9 +174,14 @@ static UINT egldrv_init_pixel_formats( UINT *onscreen_count )
+ {
+     const struct opengl_funcs *funcs = &display_funcs;
+     struct egl_platform *egl = &display_egl;
++    /* Android only provides OpenGL ES, not desktop OpenGL — asking for
++     * EGL_OPENGL_BIT returns zero configs there. Use EGL_OPENGL_ES2_BIT
++     * which Android implementations always support; wined3d's GL paths
++     * are largely ES2-compatible and call into the same eglGetProcAddress
++     * resolver for any function pointers they actually need. */
+     const EGLint attribs[] =
+     {
+-        EGL_RENDERABLE_TYPE, EGL_OPENGL_BIT,
++        EGL_RENDERABLE_TYPE, EGL_OPENGL_ES2_BIT,
+         EGL_SURFACE_TYPE, EGL_WINDOW_BIT,
+         EGL_NONE
+     };
+@@ -366,63 +371,160 @@ static const char *egldrv_init_wgl_extensions( struct opengl_funcs *funcs )
+ 
+ static BOOL egldrv_set_pixel_format( HWND hwnd, int old_format, int new_format, BOOL internal )
+ {
+-    FIXME( "stub!\n" );
++    /* No per-HWND surface tracking yet — context_make_current attaches a
++     * small pbuffer surface unconditionally. Sufficient for wined3d's caps
++     * GL context init (no visible rendering needed). */
+     return TRUE;
+ }
+ 
++/* Each wine wgl context is wrapped so we can attach a pbuffer surface at
++ * make_current time. The void* `private` slot of wine's driver protocol
++ * stores this wrapper. */
++struct egldrv_context
++{
++    EGLContext ctx;
++    EGLSurface surface;  /* owned pbuffer used when no HDC-specific surface */
++    EGLConfig config;
++};
++
++static EGLConfig egldrv_config_for_format( int format )
++{
++    struct egl_platform *egl = &display_egl;
++    int idx;
++    if (!egl->config_count) return EGL_NO_CONFIG_KHR;
++    idx = format - 1;
++    if (idx < 0) idx = 0;
++    return egl->configs[idx % egl->config_count];
++}
++
+ static BOOL egldrv_swap_buffers( void *private, HWND hwnd, HDC hdc, int interval )
+ {
+-    FIXME( "stub!\n" );
++    struct opengl_funcs *funcs = &display_funcs;
++    struct egl_platform *egl = &display_egl;
++    struct egldrv_context *c = private;
++    if (!c || c->surface == EGL_NO_SURFACE) return TRUE;
++    funcs->p_eglSwapBuffers( egl->display, c->surface );
+     return TRUE;
+ }
+ 
+ static BOOL egldrv_pbuffer_create( HDC hdc, int format, BOOL largest, GLenum texture_format, GLenum texture_target,
+                                    GLint max_level, GLsizei *width, GLsizei *height, void **private )
+ {
+-    FIXME( "stub!\n" );
+-    return FALSE;
++    struct opengl_funcs *funcs = &display_funcs;
++    struct egl_platform *egl = &display_egl;
++    EGLConfig config = egldrv_config_for_format( format );
++    EGLint pbuf_attribs[] = {
++        EGL_WIDTH,  *width  > 0 ? *width  : 1,
++        EGL_HEIGHT, *height > 0 ? *height : 1,
++        EGL_NONE
++    };
++    EGLSurface surface;
++    if (config == EGL_NO_CONFIG_KHR) return FALSE;
++    surface = funcs->p_eglCreatePbufferSurface( egl->display, config, pbuf_attribs );
++    if (surface == EGL_NO_SURFACE)
++    {
++        ERR( "eglCreatePbufferSurface failed\n" );
++        return FALSE;
++    }
++    *private = surface;
++    return TRUE;
+ }
+ 
+ static BOOL egldrv_pbuffer_destroy( HDC hdc, void *private )
+ {
+-    FIXME( "stub!\n" );
+-    return FALSE;
++    struct opengl_funcs *funcs = &display_funcs;
++    struct egl_platform *egl = &display_egl;
++    if (private) funcs->p_eglDestroySurface( egl->display, private );
++    return TRUE;
+ }
+ 
+ static BOOL egldrv_pbuffer_updated( HDC hdc, void *private, GLenum cube_face, GLint mipmap_level )
+ {
+-    FIXME( "stub!\n" );
+     return GL_TRUE;
+ }
+ 
+ static UINT egldrv_pbuffer_bind( HDC hdc, void *private, GLenum buffer )
+ {
+-    FIXME( "stub!\n" );
+     return -1; /* use default implementation */
+ }
+ 
+ static BOOL egldrv_context_create( HDC hdc, int format, void *share, const int *attribs, void **private )
+ {
+-    FIXME( "stub!\n" );
++    struct opengl_funcs *funcs = &display_funcs;
++    struct egl_platform *egl = &display_egl;
++    struct egldrv_context *c, *share_c = share;
++    EGLConfig config = egldrv_config_for_format( format );
++    EGLint pbuf_attribs[] = { EGL_WIDTH, 1, EGL_HEIGHT, 1, EGL_NONE };
++    EGLint ctx_attribs[] = { EGL_CONTEXT_CLIENT_VERSION, 2, EGL_NONE };
++    EGLContext shared_ctx = share_c ? share_c->ctx : EGL_NO_CONTEXT;
++
++    if (config == EGL_NO_CONFIG_KHR)
++    {
++        ERR( "no EGL config for format %d\n", format );
++        return FALSE;
++    }
++    if (!(c = calloc( 1, sizeof(*c) ))) return FALSE;
++    c->config = config;
++    c->ctx = funcs->p_eglCreateContext( egl->display, config, shared_ctx, ctx_attribs );
++    if (c->ctx == EGL_NO_CONTEXT)
++    {
++        ERR( "eglCreateContext failed\n" );
++        free( c );
++        return FALSE;
++    }
++    /* Attach a tiny pbuffer so make_current always has a drawable to bind.
++     * wined3d's caps GL context only needs ANY current surface so it can
++     * call glGetString, glGetIntegerv, etc. The visible-rendering path
++     * (TODO: actual editor UI surface) would replace this with a real
++     * window surface mapped to the wine HWND. */
++    c->surface = funcs->p_eglCreatePbufferSurface( egl->display, config, pbuf_attribs );
++    if (c->surface == EGL_NO_SURFACE)
++    {
++        ERR( "eglCreatePbufferSurface failed during context_create\n" );
++        funcs->p_eglDestroyContext( egl->display, c->ctx );
++        free( c );
++        return FALSE;
++    }
++    *private = c;
+     return TRUE;
+ }
+ 
+ static BOOL egldrv_context_destroy( void *private )
+ {
+-    FIXME( "stub!\n" );
+-    return FALSE;
++    struct opengl_funcs *funcs = &display_funcs;
++    struct egl_platform *egl = &display_egl;
++    struct egldrv_context *c = private;
++    if (!c) return TRUE;
++    if (c->surface != EGL_NO_SURFACE) funcs->p_eglDestroySurface( egl->display, c->surface );
++    if (c->ctx != EGL_NO_CONTEXT) funcs->p_eglDestroyContext( egl->display, c->ctx );
++    free( c );
++    return TRUE;
+ }
+ 
+ static BOOL egldrv_context_flush( void *private, HWND hwnd, HDC hdc, int interval, void (*flush)(void) )
+ {
+-    FIXME( "stub!\n" );
+-    return FALSE;
++    if (flush) flush();
++    return TRUE;
+ }
+ 
+ static BOOL egldrv_context_make_current( HDC draw_hdc, HDC read_hdc, void *private )
+ {
+-    FIXME( "stub!\n" );
+-    return FALSE;
++    struct opengl_funcs *funcs = &display_funcs;
++    struct egl_platform *egl = &display_egl;
++    struct egldrv_context *c = private;
++
++    if (!c)
++    {
++        /* Detach: bind no context. */
++        funcs->p_eglMakeCurrent( egl->display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT );
++        return TRUE;
++    }
++    if (!funcs->p_eglMakeCurrent( egl->display, c->surface, c->surface, c->ctx ))
++    {
++        ERR( "eglMakeCurrent failed, EGL error 0x%x\n", funcs->p_eglGetError() );
++        return FALSE;
++    }
++    return TRUE;
+ }
+ 
+ static const struct opengl_driver_funcs egldrv_funcs =
+@@ -478,8 +580,25 @@ static BOOL egl_init( const struct opengl_driver_funcs **driver_funcs )
+         ERR( "Failed to find required extension %s\n", #ext );  \
+         goto failed;                                            \
+     }
+-    CHECK_EXTENSION( EGL_KHR_client_get_all_proc_addresses );
+-    CHECK_EXTENSION( EGL_EXT_platform_base );
++    /* Android's EGL exposes EGL_KHR_get_all_proc_addresses as a DISPLAY
++     * extension (queryable only after eglInitialize), not the CLIENT
++     * variant wine normally checks for here at EGL_NO_DISPLAY. Soften the
++     * check: if the client variant is absent we still proceed — eglGetProcAddress
++     * on Android returns GL pointers via the display-side extension, and
++     * the function-load loop below will catch genuinely-missing symbols. */
++    if (!has_extension( extensions, "EGL_KHR_client_get_all_proc_addresses" ))
++        WARN( "EGL_KHR_client_get_all_proc_addresses absent at EGL_NO_DISPLAY; relying on display-side variant.\n" );
++    /* Android exposes EGL_KHR_platform_android instead of EGL_EXT_platform_base.
++     * Both end up providing eglGetPlatformDisplay — and on EGL 1.5+ (API 28+
++     * on Android) the function exists in core without any extension at all.
++     * Accept either platform extension; if neither is present, fall through
++     * to legacy eglGetDisplay(EGL_DEFAULT_DISPLAY) via the !platform branch
++     * in init_egl_platform. */
++    if (!has_extension( extensions, "EGL_EXT_platform_base" ) &&
++        !has_extension( extensions, "EGL_KHR_platform_android" ) &&
++        !has_extension( extensions, "EGL_KHR_platform_wayland" ) &&
++        !has_extension( extensions, "EGL_KHR_platform_x11" ))
++        WARN( "No EGL platform extension; will use legacy eglGetDisplay path.\n" );
+ #undef CHECK_EXTENSION
+ 
+ #define USE_GL_FUNC( func )                                                                     \
+@@ -508,9 +627,21 @@ static void init_egl_platform( struct egl_platform *egl, struct opengl_funcs *fu
+     EGLint major, minor;
+     EGLenum platform;
+ 
+-    if (!funcs->egl_handle || !driver_funcs->p_init_egl_platform) return;
++    if (!funcs->egl_handle) return;
+ 
+-    platform = driver_funcs->p_init_egl_platform( egl, &platform_display );
++    /* winex11.drv on Android doesn't supply p_init_egl_platform — there's
++     * no glX/wgl analogue to plug into. Fall back to the simplest path:
++     * eglGetDisplay(EGL_DEFAULT_DISPLAY). Android's EGL_DEFAULT_DISPLAY
++     * resolves to the system display and exposes ES2-capable configs,
++     * which is what wined3d needs for its GL-context init. */
++    if (!driver_funcs->p_init_egl_platform)
++    {
++        platform = 0;
++    }
++    else
++    {
++        platform = driver_funcs->p_init_egl_platform( egl, &platform_display );
++    }
+     if (!platform) egl->display = funcs->p_eglGetDisplay( EGL_DEFAULT_DISPLAY );
+     else egl->display = funcs->p_eglGetPlatformDisplay( platform, platform_display, NULL );
+ 
+diff --git a/dlls/win32u/vulkan.c b/dlls/win32u/vulkan.c
+index 048df02c..a0af73ad 100644
+--- a/dlls/win32u/vulkan.c
++++ b/dlls/win32u/vulkan.c
+@@ -166,8 +166,17 @@ static void adjust_surface_capabilities( struct vulkan_instance *instance, struc
+     if (!capabilities->maxImageCount) capabilities->maxImageCount = max( capabilities->minImageCount, 16 );
+ 
+     /* Update the image extents to match what the Win32 WSI would provide. */
+-    /* FIXME: handle DPI scaling, somehow */
+-    NtUserGetClientRect( surface->hwnd, &client_rect, NtUserGetDpiForWindow( surface->hwnd ) );
++    /* Use MDT_RAW_DPI (physical pixels) instead of NtUserGetDpiForWindow.
++     * The latter returns the per-window DPI (96 for DPI-unaware plugins
++     * like AmpCraft), so NtUserGetClientRect with that DPI returns the
++     * logical/scaled-down size — 896 instead of 1290 on a 138-DPI display.
++     * Then DXVK creates a 896-wide swapchain but x11drv's surface_presented
++     * uses RAW_DPI for its blit target (rect_dst), so we'd StretchBlt from a
++     * 896 src into a 1290 dst — except the actual painted region in the X11
++     * client window is only 896 wide. Net result: only the left ~70% of the
++     * editor renders, right side stays brown. Matching the DPI here gives
++     * DXVK the full physical extent and lets the present stay 1:1. */
++    NtUserGetClientRect( surface->hwnd, &client_rect, NtUserGetWinMonitorDpi( surface->hwnd, MDT_RAW_DPI ) );
+     capabilities->minImageExtent.width = client_rect.right - client_rect.left;
+     capabilities->minImageExtent.height = client_rect.bottom - client_rect.top;
+     capabilities->maxImageExtent.width = client_rect.right - client_rect.left;
+@@ -187,6 +196,28 @@ static VkResult win32u_vkGetPhysicalDeviceSurfaceCapabilitiesKHR( VkPhysicalDevi
+     if (!NtUserIsWindow( surface->hwnd )) return VK_ERROR_SURFACE_LOST_KHR;
+     res = instance->p_vkGetPhysicalDeviceSurfaceCapabilitiesKHR( physical_device->host.physical_device,
+                                                        surface->obj.host.surface, capabilities );
++    if (res)
++    {
++        /* Android-Vulkan path: when winex11.drv hands wine a stub
++         * VkSurfaceKHR (no real ANativeWindow because libvulkan.so lacks
++         * vkCreateXlibSurfaceKHR), the underlying loader can't query it
++         * and returns an error. Synthesize plausible capabilities from
++         * the HWND rect — this gives DXVK a swapchain extent matching
++         * what the plugin's editor wants instead of an Adreno default
++         * (which crops the right side of large editors). */
++        WARN( "vkGetPhysicalDeviceSurfaceCapabilitiesKHR failed for host_surface %p (res=%d) — synthesizing caps from HWND.\n",
++              (void *)(UINT_PTR)surface->obj.host.surface, res );
++        memset( capabilities, 0, sizeof(*capabilities) );
++        capabilities->minImageCount = 2;
++        capabilities->maxImageCount = 16;
++        capabilities->currentTransform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
++        capabilities->supportedTransforms = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
++        capabilities->supportedCompositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
++        capabilities->supportedUsageFlags = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
++                                            VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
++                                            VK_IMAGE_USAGE_TRANSFER_DST_BIT;
++        res = VK_SUCCESS;
++    }
+     if (!res) adjust_surface_capabilities( instance, surface, capabilities );
+     return res;
+ }
+@@ -242,9 +273,26 @@ static VkResult win32u_vkGetPhysicalDeviceSurfaceFormatsKHR( VkPhysicalDevice cl
+     struct vulkan_physical_device *physical_device = vulkan_physical_device_from_handle( client_physical_device );
+     struct surface *surface = surface_from_handle( client_surface );
+     struct vulkan_instance *instance = physical_device->instance;
+-
+-    return instance->p_vkGetPhysicalDeviceSurfaceFormatsKHR( physical_device->host.physical_device,
++    VkResult res = instance->p_vkGetPhysicalDeviceSurfaceFormatsKHR( physical_device->host.physical_device,
+                                                                 surface->obj.host.surface, format_count, formats );
++    if (res)
++    {
++        /* Android-Vulkan stub surface path — host loader can't enumerate
++         * formats on our fake VkSurfaceKHR. Synthesize a single common
++         * BGRA8 SRGB format; DXVK is happy with that. Match the pattern
++         * used in vkGetPhysicalDeviceSurfaceCapabilitiesKHR above. */
++        if (!formats)
++        {
++            *format_count = 1;
++            return VK_SUCCESS;
++        }
++        if (*format_count == 0) return VK_INCOMPLETE;
++        formats[0].format = VK_FORMAT_B8G8R8A8_UNORM;
++        formats[0].colorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
++        *format_count = 1;
++        return VK_SUCCESS;
++    }
++    return res;
+ }
+ 
+ static VkResult win32u_vkGetPhysicalDeviceSurfaceFormats2KHR( VkPhysicalDevice client_physical_device, const VkPhysicalDeviceSurfaceInfo2KHR *surface_info,
+diff --git a/dlls/winex11.drv/event.c b/dlls/winex11.drv/event.c
+index d2cf9e55..f4324804 100644
+--- a/dlls/winex11.drv/event.c
++++ b/dlls/winex11.drv/event.c
+@@ -784,11 +784,38 @@ static void handle_wm_protocols( HWND hwnd, XClientMessageEvent *event )
+             return;
+         }
+         /* try to find some other window to give the focus to */
+-        hwnd = get_focus();
+-        if (hwnd) hwnd = NtUserGetAncestor( hwnd, GA_ROOT );
+-        if (!hwnd) hwnd = get_active_window();
+-        if (!hwnd) hwnd = last_focus;
+-        if (hwnd && can_activate_window(hwnd)) set_focus( event->display, hwnd, event_time );
++        {
++            HWND event_hwnd_root = NtUserGetAncestor( hwnd, GA_ROOT );
++            hwnd = get_focus();
++            if (hwnd) hwnd = NtUserGetAncestor( hwnd, GA_ROOT );
++            if (!hwnd) hwnd = get_active_window();
++            if (!hwnd) hwnd = last_focus;
++            /* vstpoc patch (011-winex11-focus-fallback): VST plugin editors
++             * are WS_CHILD-of-desktop, so can_activate_window fails for
++             * both the editor and (because desktop is excluded by the
++             * desktop check) its GA_ROOT. Wine's fallback chain
++             * (get_focus / get_active_window / last_focus) is empty after
++             * the host process's modal dialogs dismiss, leaving wine with
++             * no foreground at all → INPUT_KEYBOARD events queued by
++             * X11DRV_KeyEvent get dropped and EDIT controls never receive
++             * WM_KEYDOWN. As a last resort, force-activate the WM_TAKE_
++             * FOCUS event's own hwnd: pass it to NtUserSetForegroundWindow
++             * directly, bypassing can_activate_window. NtUserSetForeground
++             * Window has its own internal checks and will reject if truly
++             * invalid; in practice it accepts WS_CHILD windows when no
++             * other foreground exists. */
++            if (hwnd && can_activate_window(hwnd)) set_focus( event->display, hwnd, event_time );
++            else if (event_hwnd_root)
++            {
++                /* vstpoc patch (011-winex11-focus-fallback): VST editors are
++                 * WS_CHILD-of-desktop and fail can_activate_window for both
++                 * editor and GA_ROOT. Without this fallback wine has no
++                 * foreground, INPUT_KEYBOARD is dropped, and EDIT controls
++                 * never see WM_KEYDOWN. Paired with wineserver patch 012
++                 * (is_valid_foreground_window allowing top-level WS_CHILD). */
++                NtUserSetForegroundWindow( event_hwnd_root );
++            }
++        }
+     }
+     else if (protocol == x11drv_atom(_NET_WM_PING))
+     {
+@@ -875,11 +902,11 @@ static BOOL X11DRV_FocusIn( HWND hwnd, XEvent *xev )
+ 
+     if (!can_activate_window(hwnd))
+     {
+-        HWND hwnd = get_focus();
+-        if (hwnd) hwnd = NtUserGetAncestor( hwnd, GA_ROOT );
+-        if (!hwnd) hwnd = get_active_window();
+-        if (!hwnd) hwnd = x11drv_thread_data()->last_focus;
+-        if (hwnd && can_activate_window(hwnd)) set_focus( event->display, hwnd, CurrentTime );
++        HWND alt = get_focus();
++        if (alt) alt = NtUserGetAncestor( alt, GA_ROOT );
++        if (!alt) alt = get_active_window();
++        if (!alt) alt = x11drv_thread_data()->last_focus;
++        if (alt && can_activate_window(alt)) set_focus( event->display, alt, CurrentTime );
+     }
+     else NtUserSetForegroundWindow( hwnd );
+     return TRUE;
+diff --git a/dlls/winex11.drv/vulkan.c b/dlls/winex11.drv/vulkan.c
+index f4442803..abcd4dea 100644
+--- a/dlls/winex11.drv/vulkan.c
++++ b/dlls/winex11.drv/vulkan.c
+@@ -102,9 +102,27 @@ static VkResult X11DRV_vulkan_surface_create( HWND hwnd, const struct vulkan_ins
+         free( surface );
+         return VK_ERROR_OUT_OF_HOST_MEMORY;
+     }
+-    NtUserGetClientRect( hwnd, &surface->rect, NtUserGetDpiForWindow( hwnd ) );
++    /* Use RAW DPI so the recorded source extent matches what
++     * adjust_surface_capabilities tells DXVK to render at and what
++     * surface_presented uses as the destination — see the long comment in
++     * win32u/vulkan.c's adjust_surface_capabilities for the full story. */
++    NtUserGetClientRect( hwnd, &surface->rect, NtUserGetWinMonitorDpi( hwnd, MDT_RAW_DPI ) );
+ 
+     info.window = surface->window;
++    if (!pvkCreateXlibSurfaceKHR)
++    {
++        /* Android path: vkCreateXlibSurfaceKHR isn't in libvulkan.so.
++         * Return a fake surface so DXVK can continue device initialization.
++         * Actual presentation will fail at vkCreateSwapchainKHR until a
++         * real ANativeWindow bridge is wired up. The fake handle is just
++         * the x11drv_vulkan_surface struct itself — sufficient for wine to
++         * track it through surface_destroy/detach without dereferencing as
++         * a real VkSurfaceKHR. */
++        *handle = (VkSurfaceKHR)(uintptr_t)surface;
++        *private = (void *)surface;
++        WARN("Android-Vulkan path: returning stub VkSurfaceKHR (no real ANativeWindow bridge yet)\n");
++        return VK_SUCCESS;
++    }
+     if (pvkCreateXlibSurfaceKHR( instance->host.instance, &info, NULL /* allocator */, handle ))
+     {
+         ERR("Failed to create Xlib surface\n");
+@@ -147,7 +165,8 @@ static void vulkan_surface_update_size( HWND hwnd, struct x11drv_vulkan_surface
+     XWindowChanges changes;
+     RECT rect;
+ 
+-    NtUserGetClientRect( hwnd, &rect, NtUserGetDpiForWindow( hwnd ) );
++    /* RAW DPI — see surface_create comment. */
++    NtUserGetClientRect( hwnd, &rect, NtUserGetWinMonitorDpi( hwnd, MDT_RAW_DPI ) );
+     if (EqualRect( &surface->rect, &rect )) return;
+ 
+     changes.width  = min( max( 1, rect.right ), 65535 );
+@@ -262,13 +281,29 @@ static VkBool32 X11DRV_vkGetPhysicalDeviceWin32PresentationSupportKHR(VkPhysical
+ {
+     TRACE("%p %u\n", phys_dev, index);
+ 
++    if (!pvkGetPhysicalDeviceXlibPresentationSupportKHR)
++    {
++        /* Android path: no Xlib presentation check available. Claim
++         * support so DXVK proceeds with device creation. Actual
++         * presentation gating happens later via vkCreateSwapchainKHR. */
++        return VK_TRUE;
++    }
+     return pvkGetPhysicalDeviceXlibPresentationSupportKHR(phys_dev, index, gdi_display,
+             default_visual.visual->visualid);
+ }
+ 
+ static const char *X11DRV_get_host_surface_extension(void)
+ {
+-    return "VK_KHR_xlib_surface";
++    /* Android-Vulkan path: libvulkan.so doesn't have Xlib surface support,
++     * only VK_KHR_android_surface. wine's win32u/vulkan.c uses this
++     * function's return value when translating VK_KHR_win32_surface
++     * during vkCreateInstance, so returning the Android name lets
++     * vkCreateInstance succeed against Android's loader. The actual
++     * surface-creation path (X11DRV_vulkan_surface_create) currently
++     * returns a stub on Android — DXVK gets a usable instance and can
++     * enumerate physical devices, but presenting requires a real
++     * ANativeWindow which we don't yet bridge from MainActivity. */
++    return "VK_KHR_android_surface";
+ }
+ 
+ static const struct vulkan_driver_funcs x11drv_vulkan_driver_funcs =
+@@ -291,10 +326,17 @@ UINT X11DRV_VulkanInit( UINT version, void *vulkan_handle, const struct vulkan_d
+         return STATUS_INVALID_PARAMETER;
+     }
+ 
+-#define LOAD_FUNCPTR( f ) if (!(p##f = dlsym( vulkan_handle, #f ))) return STATUS_PROCEDURE_NOT_FOUND;
+-    LOAD_FUNCPTR( vkCreateXlibSurfaceKHR );
+-    LOAD_FUNCPTR( vkGetPhysicalDeviceXlibPresentationSupportKHR );
+-#undef LOAD_FUNCPTR
++    /* On Android, libvulkan.so doesn't expose the Xlib surface entry
++     * points. We translate VK_KHR_win32_surface to VK_KHR_android_surface
++     * instead (see X11DRV_get_host_surface_extension below); load the
++     * Android entry points if available, otherwise leave the Xlib
++     * pointers NULL — surface creation falls back to a stub that returns
++     * a fake VK_SUCCESS so DXVK can still proceed with offscreen work. */
++    pvkCreateXlibSurfaceKHR = dlsym( vulkan_handle, "vkCreateXlibSurfaceKHR" );
++    pvkGetPhysicalDeviceXlibPresentationSupportKHR = dlsym( vulkan_handle,
++        "vkGetPhysicalDeviceXlibPresentationSupportKHR" );
++    if (!pvkCreateXlibSurfaceKHR)
++        WARN( "vkCreateXlibSurfaceKHR not found in libvulkan.so — Android-Vulkan path.\n" );
+ 
+     *driver_funcs = &x11drv_vulkan_driver_funcs;
+     return STATUS_SUCCESS;
+diff --git a/dlls/winex11.drv/x11drv_main.c b/dlls/winex11.drv/x11drv_main.c
+index c625107d..3b120ea1 100644
+--- a/dlls/winex11.drv/x11drv_main.c
++++ b/dlls/winex11.drv/x11drv_main.c
+@@ -619,13 +619,16 @@ static void init_visuals( Display *display, int screen )
+ static NTSTATUS x11drv_init( void *arg )
+ {
+     Display *display;
++    MESSAGE( "[vstpoc-trace] x11drv_init: dlopen(%s)...\n", SONAME_LIBX11 );
+     void *libx11 = dlopen( SONAME_LIBX11, RTLD_NOW|RTLD_GLOBAL );
+ 
+     if (!libx11)
+     {
++        MESSAGE( "[vstpoc-trace] x11drv_init: dlopen FAILED: %s\n", dlerror() );
+         ERR( "failed to load %s: %s\n", SONAME_LIBX11, dlerror() );
+         return STATUS_UNSUCCESSFUL;
+     }
++    MESSAGE( "[vstpoc-trace] x11drv_init: dlopen OK\n" );
+     pXGetEventData = dlsym( libx11, "XGetEventData" );
+     pXFreeEventData = dlsym( libx11, "XFreeEventData" );
+ #ifdef SONAME_LIBXEXT
+@@ -637,7 +640,12 @@ static NTSTATUS x11drv_init( void *arg )
+     /* Open display */
+ 
+     if (!XInitThreads()) ERR( "XInitThreads failed, trouble ahead\n" );
+-    if (!(display = XOpenDisplay( NULL ))) return STATUS_UNSUCCESSFUL;
++    MESSAGE( "[vstpoc-trace] x11drv_init: XOpenDisplay...\n" );
++    if (!(display = XOpenDisplay( NULL ))) {
++        MESSAGE( "[vstpoc-trace] x11drv_init: XOpenDisplay FAILED\n" );
++        return STATUS_UNSUCCESSFUL;
++    }
++    MESSAGE( "[vstpoc-trace] x11drv_init: XOpenDisplay OK\n" );
+ 
+     fcntl( ConnectionNumber(display), F_SETFD, 1 ); /* set close on exec flag */
+     root_window = DefaultRootWindow( display );
+diff --git a/dlls/wow64/syscall.c b/dlls/wow64/syscall.c
+index d2a977ee..ccae93e8 100644
+--- a/dlls/wow64/syscall.c
++++ b/dlls/wow64/syscall.c
+@@ -744,7 +744,10 @@ static const WCHAR *get_cpu_dll_name(void)
+     {
+     case IMAGE_FILE_MACHINE_I386:
+         RtlInitUnicodeString( &nameW, L"\\Registry\\Machine\\Software\\Microsoft\\Wow64\\x86" );
+-        ret = (native_machine == IMAGE_FILE_MACHINE_ARM64 ? L"xtajit.dll" : L"wow64cpu.dll");
++        /* Default the ARM64 host's x86-emulation DLL to FEX-Emu's
++         * libwow64fex.dll instead of Microsoft's xtajit.dll (which we
++         * don't ship). Matches patch 003 for the ARM64EC / x86_64 case. */
++        ret = (native_machine == IMAGE_FILE_MACHINE_ARM64 ? L"libwow64fex.dll" : L"wow64cpu.dll");
+         break;
+     case IMAGE_FILE_MACHINE_ARMNT:
+         RtlInitUnicodeString( &nameW, L"\\Registry\\Machine\\Software\\Microsoft\\Wow64\\arm" );
+diff --git a/loader/main.c b/loader/main.c
+index f8b113f3..712873a8 100644
+--- a/loader/main.c
++++ b/loader/main.c
+@@ -177,11 +177,27 @@ int main( int argc, char *argv[] )
+ 
+     init_reserved_areas();
+ 
++    /* WINELOADER_NTDLL: explicit absolute path to ntdll.so. Added for the
++     * Android Bionic case where the wine binary lives in nativeLibraryDir
++     * under a renamed `libwine_NNNN.so` filename (Android W^X requires
++     * exec-allowed files to live there and follow the lib*.so naming
++     * convention). Wine's default search ("ntdll.so" next to the binary)
++     * can't see the real file because it's renamed too. The launcher
++     * sets WINELOADER_NTDLL to the renamed-but-symlinked location. */
++    {
++        const char *override = getenv( "WINELOADER_NTDLL" );
++        if (override && *override && (handle = dlopen( override, RTLD_NOW )))
++            goto found;
++    }
++
+     if ((handle = try_dlopen( get_self_exe() )) ||
+         (handle = try_dlopen( argv[0] )))
+     {
+-        void (*init_func)(int, char **) = dlsym( handle, "__wine_main" );
+-        if (init_func) init_func( argc, argv );
++found:
++        {
++            void (*init_func)(int, char **) = dlsym( handle, "__wine_main" );
++            if (init_func) init_func( argc, argv );
++        }
+         fprintf( stderr, "wine: __wine_main function not found in ntdll.so\n" );
+         exit(1);
+     }
+diff --git a/server/unicode.c b/server/unicode.c
+index bb39b55e..adc1db1e 100644
+--- a/server/unicode.c
++++ b/server/unicode.c
+@@ -279,6 +279,20 @@ static char *get_nls_dir(void)
+ {
+     char *p, *dir, *ret;
+ 
++    /* Android Bionic case: the path derivation in wineserver, like its
++     * counterpart in the wine loader, walks `/proc/self/exe` realpath
++     * which resolves to nativeLibraryDir on this app. Letting WINEDATADIR
++     * override lets the launcher point us at the real <wineRoot>/share/wine
++     * directory where WineSetup extracts the NLS tarball. */
++    {
++        const char *env_data = getenv( "WINEDATADIR" );
++        if (env_data && *env_data)
++        {
++            char *p_nls = NULL;
++            if (asprintf( &p_nls, "%s/nls", env_data ) > 0) return p_nls;
++        }
++    }
++
+ #if defined(__linux__) || defined(__FreeBSD_kernel__) || defined(__NetBSD__)
+     dir = realpath( "/proc/self/exe", NULL );
+ #elif defined (__FreeBSD__) || defined(__DragonFly__)
+diff --git a/server/window.c b/server/window.c
+index e2e9d5cc..e2ace085 100644
+--- a/server/window.c
++++ b/server/window.c
+@@ -784,7 +784,18 @@ int is_child_window( user_handle_t parent, user_handle_t child )
+ int is_valid_foreground_window( user_handle_t window )
+ {
+     struct window *win = get_user_object( window, NTUSER_OBJ_WINDOW );
+-    return win && (win->style & (WS_POPUP|WS_CHILD)) != WS_CHILD;
++    if (!win) return 0;
++    if ((win->style & (WS_POPUP|WS_CHILD)) != WS_CHILD) return 1;
++    /* vstpoc patch (012-wineserver-foreground-ws-child): VST plugin editors
++     * are typically WS_CHILD with parent = desktop (the host passes
++     * GetDesktopWindow() as the parent HWND in effEditOpen). Upstream rejects
++     * any WS_CHILD-without-WS_POPUP as foreground, leaving wine with no
++     * activatable hwnd at all and dropping all INPUT_KEYBOARD events queued
++     * by X11DRV_send_keyboard_input → typed characters never become
++     * WM_KEYDOWN. Allow such top-level WS_CHILD windows (parent is desktop
++     * or the window itself has no parent) to be foreground. */
++    if (win->parent && win->parent->parent) return 0;  /* not top-level */
++    return 1;
+ }
+ 
+ /* make a window active if possible */
+-- 
+2.43.0
+

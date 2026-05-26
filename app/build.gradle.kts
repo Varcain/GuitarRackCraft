@@ -94,11 +94,31 @@ android {
     productFlavors {
         create("full") {
             dimension = "distribution"
+            // Wine PE relocation needs pre-Android-10 SELinux execmod on
+            // app_data_file (denied at targetSdk >= 29). The full flavor
+            // bundles :vsthost_lib (~1 GB of wine + FEX) and stays at 28
+            // for that reason; sideload-only distribution (F-Droid, direct
+            // APK). See plan: prepare-plan-for-integrating-toasty-knuth.md
+            // and memory: feedback_targetsdk35_blocked.md.
+            targetSdk = 28
             buildConfigField("boolean", "USE_ASSET_PACKS", "false")
+            buildConfigField("boolean", "HAS_VST_HOST",   "true")
+            externalNativeBuild {
+                cmake {
+                    // Toggle the VstFactory registration block in
+                    // app/src/main/cpp/jni/NativeBridge.cpp.
+                    arguments += "-DHAS_VST_HOST=1"
+                }
+            }
         }
         create("playstore") {
             dimension = "distribution"
+            // Play Store eligible (current floor: targetSdk=35 as of
+            // Aug 2025). No :vsthost_lib dependency, no wine, "Manage VST"
+            // overflow entry hidden via BuildConfig.HAS_VST_HOST=false.
+            targetSdk = 35
             buildConfigField("boolean", "USE_ASSET_PACKS", "true")
+            buildConfigField("boolean", "HAS_VST_HOST",   "false")
         }
     }
 
@@ -120,6 +140,9 @@ android {
     buildFeatures {
         compose = true
         buildConfig = true
+        // Consume :vsthost_lib's prefab package (full flavor only — playstore
+        // never depends on :vsthost_lib so find_package returns NOTFOUND there).
+        prefab = true
     }
 
     composeOptions {
@@ -185,6 +208,10 @@ android {
 
 dependencies {
     // X11 plugin UIs: native EGL + ANativeWindow (see app/src/main/cpp/x11/)
+
+    // VST hosting (wine + FEX, ~1 GB) — only in the `full` flavor, never in
+    // `playstore`. See plan: prepare-plan-for-integrating-toasty-knuth.md.
+    "fullImplementation"(project(":vsthost_lib"))
 
     // Core Android
     implementation("androidx.core:core-ktx:1.12.0")

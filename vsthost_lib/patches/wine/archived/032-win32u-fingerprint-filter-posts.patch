@@ -1,0 +1,203 @@
+diff --git a/dlls/win32u/message.c b/dlls/win32u/message.c
+index d49587aa..dd74a8a2 100644
+--- a/dlls/win32u/message.c
++++ b/dlls/win32u/message.c
+@@ -35,6 +35,8 @@
+ #include "dde.h"
+ #include "immdev.h"
+ #include "wine/debug.h"
++/* vstpoc patch 032: NtQueryVirtualMemory for safe-read of plugin lparam. */
++#include "winternl.h"
+ 
+ WINE_DEFAULT_DEBUG_CHANNEL(msg);
+ WINE_DECLARE_DEBUG_CHANNEL(key);
+@@ -4484,6 +4486,178 @@ static BOOL send_message_callback( HWND hwnd, UINT msg, WPARAM wparam, LPARAM lp
+     return process_message( &info, NULL, ansi );
+ }
+ 
++/* vstpoc patch 032: content-aware fingerprint filter for WM_USER+N posts.
++ *
++ * Background: TH-U (JUCE 7) enters a self-feeding callback chain via
++ * MessageManager::callAsync(λ) on popup interaction. Each call posts
++ * WM_USER+123 with lparam = pointer to a juce::CallbackMessage object
++ * (which holds the std::function). The handler runs the lambda; the
++ * lambda calls callAsync(λ) again; infinite. JUCE uses the SAME
++ * mechanism for legitimate popup-layout posts so we cannot filter by
++ * (hwnd, msg) alone (patch 030 tried — broke popups).
++ *
++ * Insight: the lparam points into the plugin's heap. We can safe-read
++ * the first 16 bytes (vtable pointer + std::function header) as a
++ * cheap fingerprint of "which lambda this post represents". The same
++ * lambda re-posted has the same fingerprint; different lambdas have
++ * different fingerprints. Suppress posts whose fingerprint fires more
++ * than VSTPOC_FP_THRESHOLD times in VSTPOC_FP_WINDOW_MS ms — that is
++ * the runaway. Legitimate distinct lambdas pass through.
++ *
++ * Per-thread state via __thread; SEH-guarded read so a non-pointer
++ * lparam can't crash us. Env-gated WINE_VSTPOC_FINGERPRINT_FILTER. */
++
++#define VSTPOC_FP_RING       512    /* per-thread sliding window capacity */
++#define VSTPOC_FP_WINDOW_NS  (100ULL * 1000 * 1000)  /* 100 ms */
++#define VSTPOC_FP_THRESHOLD  50     /* posts of same fingerprint in window */
++
++struct vstpoc_fp_entry
++{
++    ULONGLONG hash;
++    LONGLONG  ts;       /* 100ns ticks */
++};
++
++static __thread struct vstpoc_fp_entry vstpoc_fp_ring[VSTPOC_FP_RING];
++static __thread int vstpoc_fp_idx;
++static __thread int vstpoc_fp_checked;
++static __thread int vstpoc_fp_enabled;
++
++static int vstpoc_fp_filter_enabled(void)
++{
++    if (!vstpoc_fp_checked)
++    {
++        const char *e = getenv("WINE_VSTPOC_FINGERPRINT_FILTER");
++        vstpoc_fp_enabled = (e && *e && *e != '0');
++        vstpoc_fp_checked = 1;
++    }
++    return vstpoc_fp_enabled;
++}
++
++/* Read up to 16 bytes at addr into out. Returns 0 on success. Uses
++ * NtQueryVirtualMemory to verify the page is committed and readable
++ * before copying — Unix-side wine builds can't use __try/__except.
++ * False negatives possible (the page passes the check but is unmapped
++ * concurrently) but extremely unlikely for the JUCE CallbackMessage
++ * heap pages we'll be reading. */
++static int vstpoc_safe_read16(const void *addr, BYTE out[16])
++{
++    MEMORY_BASIC_INFORMATION mbi;
++    SIZE_T result_len = 0;
++
++    if (!addr) return -1;
++    if ((ULONG_PTR)addr < 0x10000) return -1;  /* reject low addresses */
++
++    if (NtQueryVirtualMemory( GetCurrentProcess(), addr, MemoryBasicInformation,
++                              &mbi, sizeof(mbi), &result_len ) != STATUS_SUCCESS)
++        return -1;
++
++    if (mbi.State != MEM_COMMIT) return -1;
++    if (mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD)) return -1;
++    /* Ensure the 16-byte read doesn't cross out of the queried region. */
++    if ((ULONG_PTR)addr + 16 > (ULONG_PTR)mbi.BaseAddress + mbi.RegionSize) return -1;
++
++    memcpy(out, addr, 16);
++    return 0;
++}
++
++/* FNV-1a 64-bit over 16 bytes. Skip bytes [0..7] (vtable pointer)
++ * since vtable is heap-relocatable address that varies per process
++ * but is constant within a process for the same class. We want the
++ * std::function contents (bytes 8..15) which encode the lambda. */
++static ULONGLONG vstpoc_fnv1a(const BYTE buf[16])
++{
++    ULONGLONG h = 0xcbf29ce484222325ULL;
++    int i;
++    /* Include all 16 bytes — vtable+8b function content distinguishes class+lambda. */
++    for (i = 0; i < 16; i++)
++    {
++        h ^= buf[i];
++        h *= 0x100000001b3ULL;
++    }
++    return h;
++}
++
++static LONGLONG vstpoc_now_100ns(void)
++{
++    LARGE_INTEGER c;
++    /* QueryPerformanceCounter is high-resolution; ticks/freq gives seconds. */
++    NtQueryPerformanceCounter(&c, NULL);
++    /* Cheap conversion: assume QPC freq ≈ 10MHz on Android (typical), so
++     * a tick ≈ 100ns. Even if off by 2× it doesn't matter — we're using
++     * a 100ms window so as long as ts deltas are monotonic & approximately
++     * linear, the filter works. */
++    return c.QuadPart;
++}
++
++/* Returns TRUE if this post should be suppressed. */
++static BOOL vstpoc_should_suppress_post(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
++{
++    BYTE buf[16];
++    ULONGLONG hash;
++    LONGLONG now, window_start;
++    int i, matches;
++    int read_ok = 0;
++
++    if (!vstpoc_fp_filter_enabled()) return FALSE;
++    if (msg < 0x400) return FALSE;             /* only WM_USER+N */
++
++    /* Base fingerprint = hwnd | msg | wparam. JUCE's AsyncUpdater pattern
++     * (self-feeding handleAsyncUpdate → triggerAsyncUpdate → post again)
++     * has lparam=wparam=0, so any per-lparam differentiation is moot. The
++     * threshold-in-window (50 in 100ms = 500/sec) is the discriminator:
++     * popup creation has burst rates below that; runaway sustains 1000+/sec. */
++    memset(buf, 0, 16);
++    *(HWND*)&buf[0]   = hwnd;
++    *(UINT*)&buf[8]   = msg;
++    *(WPARAM*)&buf[12] = (WPARAM)(wparam & 0xffffffff);
++
++    /* If lparam looks like a pointer to a JUCE CallbackMessage, also fold
++     * in 16 bytes of its content — different lambdas remain distinguishable
++     * (each gets its own fingerprint), only same-lambda-repeated triggers
++     * the threshold. */
++    if (lparam && !vstpoc_safe_read16((const void*)(ULONG_PTR)lparam, buf))
++    {
++        /* buf now holds the heap content; XOR in the hwnd|msg base too so
++         * that different windows posting same lambda are distinguished. */
++        *(ULONGLONG*)&buf[0]  ^= (ULONGLONG)(ULONG_PTR)hwnd;
++        *(ULONGLONG*)&buf[8]  ^= ((ULONGLONG)msg << 32) | (ULONGLONG)wparam;
++        read_ok = 1;
++    }
++    (void)read_ok;
++
++    hash = vstpoc_fnv1a(buf);
++    now = vstpoc_now_100ns();
++    window_start = now - (LONGLONG)(VSTPOC_FP_WINDOW_NS / 100);
++
++    /* Count matches in window — scan the entire ring (size 512, cheap). */
++    matches = 0;
++    for (i = 0; i < VSTPOC_FP_RING; i++)
++    {
++        if (vstpoc_fp_ring[i].hash == hash && vstpoc_fp_ring[i].ts >= window_start)
++        {
++            if (++matches >= VSTPOC_FP_THRESHOLD)
++            {
++                static __thread ULONGLONG last_warn_hash = 0;
++                if (last_warn_hash != hash)
++                {
++                    ERR("vstpoc 032: suppressing repeated WM_%x (fingerprint 0x%016llx "
++                        "fired %d+ times in %dms)\n",
++                        msg, (unsigned long long)hash, VSTPOC_FP_THRESHOLD,
++                        (int)(VSTPOC_FP_WINDOW_NS / 1000000));
++                    last_warn_hash = hash;
++                }
++                return TRUE;
++            }
++        }
++    }
++
++    /* Record this post in the ring. */
++    vstpoc_fp_ring[vstpoc_fp_idx].hash = hash;
++    vstpoc_fp_ring[vstpoc_fp_idx].ts   = now;
++    vstpoc_fp_idx = (vstpoc_fp_idx + 1) % VSTPOC_FP_RING;
++    return FALSE;
++}
++
+ /***********************************************************************
+  *           NtUserPostMessage  (win32u.@)
+  */
+@@ -4497,6 +4671,10 @@ BOOL WINAPI NtUserPostMessage( HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam
+         return FALSE;
+     }
+ 
++    /* vstpoc patch 032: drop runaway WM_USER+N posts (lying TRUE so caller
++     * doesn't react to a "failed" post — JUCE checks the return). */
++    if (vstpoc_should_suppress_post( hwnd, msg, wparam, lparam )) return TRUE;
++
+     TRACE( "hwnd %p msg %x (%s) wp %lx lp %lx\n",
+            hwnd, msg, debugstr_msg_name(msg, hwnd), (long)wparam, lparam );
+ 

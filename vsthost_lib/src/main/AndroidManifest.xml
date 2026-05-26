@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+
+    <!-- Required for the in-process X11 server to bind a TCP loopback
+         socket on 127.0.0.1:6000+N. Without this, socket(AF_INET, ...)
+         fails with EPERM and wine never sees a display to connect to. -->
+    <uses-permission android:name="android.permission.INTERNET" />
+
+    <!-- Required to browse the user's IR collection. SAF on OnePlus/ColorOS
+         blocks Download and most of its subtrees; the Files-app provider hides
+         headerless WAVs in any folder we can pick. MANAGE_EXTERNAL_STORAGE
+         bypasses both: list and read /sdcard/... directly. User has to grant
+         via Settings (one-time). -->
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
+    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE"
+        tools:ignore="ScopedStorage" />
+
+</manifest>

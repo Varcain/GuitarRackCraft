@@ -1,0 +1,36 @@
+diff --git a/dlls/ntdll/unix/loader.c b/dlls/ntdll/unix/loader.c
+index 82d3d88..151d130 100644
+--- a/dlls/ntdll/unix/loader.c
++++ b/dlls/ntdll/unix/loader.c
+@@ -461,6 +461,31 @@ static void init_paths(void)
+         bin_dir = build_relative_path( dll_dir, LIBDIR "/wine", BINDIR );
+         data_dir = build_relative_path( dll_dir, LIBDIR "/wine", DATADIR "/wine" );
+         wineloader = build_path( ntdll_dir, "wine" );
++
++        /* Android Bionic case: ntdll.so is loaded by a symlink whose realpath
++         * resolves to nativeLibraryDir, where every wine binary is renamed to
++         * libwine_NNNN.so. The default `<ntdll_dir>/wine` path doesn't exist.
++         * Honor an explicit WINELOADER env var so the launcher can point us
++         * at the symlink path (e.g. <files_dir>/wine/bin/wine). The matching
++         * env vars for the other derived paths cover NLS files (WINEDATADIR)
++         * and bin scripts (WINEBINDIR). See
++         * patches/wine/001-loader-ntdll-env-override.patch for the
++         * loader/main.c counterpart. */
++        {
++            const char *env_loader  = getenv( "WINELOADER" );
++            const char *env_datadir = getenv( "WINEDATADIR" );
++            const char *env_bindir  = getenv( "WINEBINDIR" );
++            const char *env_dlldir  = getenv( "WINEDLLDIR" );
++            if (env_loader  && *env_loader)  wineloader = strdup( env_loader );
++            if (env_datadir && *env_datadir) data_dir   = strdup( env_datadir );
++            if (env_bindir  && *env_bindir)  bin_dir    = strdup( env_bindir );
++            /* dll_dir is consulted DIRECTLY by load_ntdll, load_apiset_dll,
++             * load_wow64_ntdll (they hardcode `<dll_dir>/<pe_dir>/<name>.dll`).
++             * WINEDLLPATH only feeds the broader find_dll_file search, which
++             * isn't used for these early-init system DLLs. WINEDLLDIR
++             * overrides the base for those direct lookups. */
++            if (env_dlldir  && *env_dlldir)  dll_dir    = strdup( env_dlldir );
++        }
+     }
+ 
+     set_dll_path();

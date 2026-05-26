@@ -104,6 +104,22 @@ class NativeEngine private constructor() {
      */
     external fun nativeInit(): Boolean
 
+    /** Re-runs each PluginFactory's initialize() and rebuilds the registry's
+     *  plugin cache. Used by the Manage VST UI (full flavor) so an imported
+     *  VST appears in the browser without restarting the audio engine. */
+    external fun nativeRefreshPluginRegistry(): Boolean
+
+    /** X11 display slot the plugin at the given rack position renders to,
+     *  or -1 if the position is invalid or the plugin doesn't use X11.
+     *  VST plugins (full flavor only) return their wine display number; LV2
+     *  plugins return -1. */
+    external fun nativeGetRackPluginX11Display(position: Int): Int
+
+    /** Editor size of the plugin at the given rack position, encoded as
+     *  one Long: high 32 bits = width, low 32 bits = height. 0 if no
+     *  editor or size unknown yet. */
+    external fun nativeGetRackPluginEditorSize(position: Int): Long
+
     /**
      * Start the audio engine.
      * @param sampleRate Desired sample rate (will use device default if not supported)

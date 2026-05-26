@@ -43,7 +43,14 @@ struct StateProperty {
 
 /** Complete snapshot of a plugin's state (control ports + extension properties). */
 struct PluginState {
+    /** Bare plugin identifier — for LV2 the full LV2 URI, for VST2/VST3 the
+     *  factory-assigned UUID. NOT prefixed with the format; PresetManager
+     *  combines this with the `format` field below to build "FORMAT:id". */
     std::string pluginUri;
+    /** Plugin format ("LV2", "VST2", "VST3", …). Populated by PluginChain
+     *  from getInfo().format after each saveState() so the preset writer
+     *  can persist it alongside the URI. */
+    std::string format;
     std::vector<std::pair<uint32_t, float>> controlPortValues;
     std::vector<StateProperty> properties;
 };
@@ -177,6 +184,26 @@ public:
      * @return Vector of atom events; empty if none pending.
      */
     virtual std::vector<OutputAtomEvent> drainOutputAtoms() { return {}; }
+
+    /**
+     * X11 display slot this plugin renders to, or -1 if it doesn't render
+     * via the in-process X11 server. VST plugins hosted by :vsthost_lib's
+     * WineVstPlugin return their assigned displayNumber (each instance
+     * gets a unique one from VstFactory). The rack UI uses this to launch
+     * VstEditorActivity bound to the right surface.
+     */
+    virtual int getX11DisplayNumber() const { return -1; }
+
+    /**
+     * Width/height of the plugin's editor in plugin-native pixels, 0/0 if
+     * the plugin has no editor or its size isn't known yet. VST plugins
+     * fill this from the wine subprocess after effEditGetRect succeeds;
+     * the editor activity uses it to call nativeSetX11PluginSize so the
+     * X server framebuffer letterboxes the editor correctly inside the
+     * Android SurfaceView.
+     */
+    virtual int32_t getEditorWidth()  const { return 0; }
+    virtual int32_t getEditorHeight() const { return 0; }
 };
 
 } // namespace guitarrackcraft

@@ -1,0 +1,96 @@
+diff --git a/dlls/winex11.drv/vulkan.c b/dlls/winex11.drv/vulkan.c
+index f444280..abcd4de 100644
+--- a/dlls/winex11.drv/vulkan.c
++++ b/dlls/winex11.drv/vulkan.c
+@@ -102,9 +102,27 @@ static VkResult X11DRV_vulkan_surface_create( HWND hwnd, const struct vulkan_ins
+         free( surface );
+         return VK_ERROR_OUT_OF_HOST_MEMORY;
+     }
+-    NtUserGetClientRect( hwnd, &surface->rect, NtUserGetDpiForWindow( hwnd ) );
++    /* Use RAW DPI so the recorded source extent matches what
++     * adjust_surface_capabilities tells DXVK to render at and what
++     * surface_presented uses as the destination — see the long comment in
++     * win32u/vulkan.c's adjust_surface_capabilities for the full story. */
++    NtUserGetClientRect( hwnd, &surface->rect, NtUserGetWinMonitorDpi( hwnd, MDT_RAW_DPI ) );
+ 
+     info.window = surface->window;
++    if (!pvkCreateXlibSurfaceKHR)
++    {
++        /* Android path: vkCreateXlibSurfaceKHR isn't in libvulkan.so.
++         * Return a fake surface so DXVK can continue device initialization.
++         * Actual presentation will fail at vkCreateSwapchainKHR until a
++         * real ANativeWindow bridge is wired up. The fake handle is just
++         * the x11drv_vulkan_surface struct itself — sufficient for wine to
++         * track it through surface_destroy/detach without dereferencing as
++         * a real VkSurfaceKHR. */
++        *handle = (VkSurfaceKHR)(uintptr_t)surface;
++        *private = (void *)surface;
++        WARN("Android-Vulkan path: returning stub VkSurfaceKHR (no real ANativeWindow bridge yet)\n");
++        return VK_SUCCESS;
++    }
+     if (pvkCreateXlibSurfaceKHR( instance->host.instance, &info, NULL /* allocator */, handle ))
+     {
+         ERR("Failed to create Xlib surface\n");
+@@ -147,7 +165,8 @@ static void vulkan_surface_update_size( HWND hwnd, struct x11drv_vulkan_surface
+     XWindowChanges changes;
+     RECT rect;
+ 
+-    NtUserGetClientRect( hwnd, &rect, NtUserGetDpiForWindow( hwnd ) );
++    /* RAW DPI — see surface_create comment. */
++    NtUserGetClientRect( hwnd, &rect, NtUserGetWinMonitorDpi( hwnd, MDT_RAW_DPI ) );
+     if (EqualRect( &surface->rect, &rect )) return;
+ 
+     changes.width  = min( max( 1, rect.right ), 65535 );
+@@ -262,13 +281,29 @@ static VkBool32 X11DRV_vkGetPhysicalDeviceWin32PresentationSupportKHR(VkPhysical
+ {
+     TRACE("%p %u\n", phys_dev, index);
+ 
++    if (!pvkGetPhysicalDeviceXlibPresentationSupportKHR)
++    {
++        /* Android path: no Xlib presentation check available. Claim
++         * support so DXVK proceeds with device creation. Actual
++         * presentation gating happens later via vkCreateSwapchainKHR. */
++        return VK_TRUE;
++    }
+     return pvkGetPhysicalDeviceXlibPresentationSupportKHR(phys_dev, index, gdi_display,
+             default_visual.visual->visualid);
+ }
+ 
+ static const char *X11DRV_get_host_surface_extension(void)
+ {
+-    return "VK_KHR_xlib_surface";
++    /* Android-Vulkan path: libvulkan.so doesn't have Xlib surface support,
++     * only VK_KHR_android_surface. wine's win32u/vulkan.c uses this
++     * function's return value when translating VK_KHR_win32_surface
++     * during vkCreateInstance, so returning the Android name lets
++     * vkCreateInstance succeed against Android's loader. The actual
++     * surface-creation path (X11DRV_vulkan_surface_create) currently
++     * returns a stub on Android — DXVK gets a usable instance and can
++     * enumerate physical devices, but presenting requires a real
++     * ANativeWindow which we don't yet bridge from MainActivity. */
++    return "VK_KHR_android_surface";
+ }
+ 
+ static const struct vulkan_driver_funcs x11drv_vulkan_driver_funcs =
+@@ -291,10 +326,17 @@ UINT X11DRV_VulkanInit( UINT version, void *vulkan_handle, const struct vulkan_d
+         return STATUS_INVALID_PARAMETER;
+     }
+ 
+-#define LOAD_FUNCPTR( f ) if (!(p##f = dlsym( vulkan_handle, #f ))) return STATUS_PROCEDURE_NOT_FOUND;
+-    LOAD_FUNCPTR( vkCreateXlibSurfaceKHR );
+-    LOAD_FUNCPTR( vkGetPhysicalDeviceXlibPresentationSupportKHR );
+-#undef LOAD_FUNCPTR
++    /* On Android, libvulkan.so doesn't expose the Xlib surface entry
++     * points. We translate VK_KHR_win32_surface to VK_KHR_android_surface
++     * instead (see X11DRV_get_host_surface_extension below); load the
++     * Android entry points if available, otherwise leave the Xlib
++     * pointers NULL — surface creation falls back to a stub that returns
++     * a fake VK_SUCCESS so DXVK can still proceed with offscreen work. */
++    pvkCreateXlibSurfaceKHR = dlsym( vulkan_handle, "vkCreateXlibSurfaceKHR" );
++    pvkGetPhysicalDeviceXlibPresentationSupportKHR = dlsym( vulkan_handle,
++        "vkGetPhysicalDeviceXlibPresentationSupportKHR" );
++    if (!pvkCreateXlibSurfaceKHR)
++        WARN( "vkCreateXlibSurfaceKHR not found in libvulkan.so — Android-Vulkan path.\n" );
+ 
+     *driver_funcs = &x11drv_vulkan_driver_funcs;
+     return STATUS_SUCCESS;

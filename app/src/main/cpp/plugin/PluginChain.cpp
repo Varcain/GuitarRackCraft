@@ -235,7 +235,27 @@ PluginChain::ChainState PluginChain::saveChainState() {
     ChainState cs;
     cs.plugins.reserve(plugins_.size());
     for (auto& plugin : plugins_) {
-        cs.plugins.push_back(plugin->saveState());
+        auto ps = plugin->saveState();
+        // Tag format from getInfo() so the preset can pick the right factory
+        // on reload. Plugins that don't override saveState() return an empty
+        // PluginState; we still want their format so PresetManager can at
+        // least re-instantiate them (e.g. VST plugins that don't yet sync
+        // params back from wine).
+        if (ps.format.empty()) {
+            ps.format = plugin->getInfo().format;
+        }
+        if (ps.pluginUri.empty()) {
+            // Default to getInfo().id with any "FORMAT:" prefix stripped so
+            // PresetManager can rebuild fullId = "$format:$uri" cleanly.
+            auto id = plugin->getInfo().id;
+            auto colon = id.find(':');
+            if (colon != std::string::npos && id.substr(0, colon) == ps.format) {
+                ps.pluginUri = id.substr(colon + 1);
+            } else {
+                ps.pluginUri = id;
+            }
+        }
+        cs.plugins.push_back(std::move(ps));
     }
     LOGI("saveChainState: %zu plugins", cs.plugins.size());
     return cs;

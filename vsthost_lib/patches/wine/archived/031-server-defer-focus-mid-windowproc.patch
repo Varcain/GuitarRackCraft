@@ -1,0 +1,447 @@
+diff --git a/server/queue.c b/server/queue.c
+index c408a46e..bc0f6d71 100644
+--- a/server/queue.c
++++ b/server/queue.c
+@@ -27,6 +27,7 @@
+ #include <unistd.h>
+ #include <poll.h>
+ #include <limits.h>
++#include <signal.h>
+ 
+ #include "ntstatus.h"
+ #define WIN32_NO_STATUS
+@@ -135,6 +136,9 @@ struct msg_queue
+     struct thread_input   *input;           /* thread input descriptor */
+     struct hook_table     *hooks;           /* hook table */
+     timeout_t              last_get_msg;    /* time of last get message call */
++    timeout_t              vstpoc_last_timer_delivery; /* patch 029: WM_TIMER throttle */
++    timeout_t              vstpoc_last_user_delivery;  /* patch 030: WM_USER+N throttle */
++    struct list            vstpoc_deferred_focus_msgs; /* patch 031: focus MSG_NOTIFY held mid-WindowProc */
+     int                    keystate_lock;   /* owns an input keystate lock */
+     queue_shm_t           *shared;          /* queue in session shared memory */
+ };
+@@ -316,6 +320,9 @@ static struct msg_queue *create_msg_queue( struct thread *thread, struct thread_
+         queue->hooks           = NULL;
+         queue->last_get_msg    = current_time;
+         queue->keystate_lock   = 0;
++        queue->vstpoc_last_timer_delivery = 0;
++        queue->vstpoc_last_user_delivery  = 0;
++        list_init( &queue->vstpoc_deferred_focus_msgs );
+         list_init( &queue->send_result );
+         list_init( &queue->callback_result );
+         list_init( &queue->pending_timers );
+@@ -913,7 +920,22 @@ static int merge_message( struct thread_input *input, const struct message *msg
+ /* vstpoc patch 025: forward decls (definitions are further down the file). */
+ static int vstpoc_cycle_detect_disabled( void );
+ static void vstpoc_cycle_timeout( void *private );
+-#define VSTPOC_CYCLE_THRESHOLD ((timeout_t)500 * 10000)  /* 500ms in 100ns units */
++/* vstpoc patch 028: post-message coalesce (defined further down). */
++static int vstpoc_should_drop_post( struct msg_queue *queue, struct message *msg );
++/* vstpoc patch 031: defer focus MSG_NOTIFY mid-WindowProc (defined further down). */
++static int vstpoc_should_defer_focus( struct msg_queue *recv_queue, struct message *msg );
++static void vstpoc_drain_deferred_focus( struct msg_queue *queue );
++
++/* vstpoc 025 cycle detect threshold. Tuning trade-off:
++ *   - Too short (≤200ms): synth fires while receiver is still doing
++ *     legit work; sender continues with potentially-wrong reply value
++ *     and TH-U state machine gets confused → crash at +0x1802DF0C3.
++ *   - Too long (≥1000ms): popup-click compounds many cycles into a
++ *     multi-second UI hang and Android marks the app ANR-frozen.
++ *   500ms hits the sweet spot in testing — short enough to keep total
++ *   under ANR threshold, long enough that receiver usually completes
++ *   naturally and synth only fires for the truly-stuck focus sends. */
++#define VSTPOC_CYCLE_THRESHOLD ((timeout_t)500 * 10000)  /* 500ms */
+ 
+ /* free a result structure */
+ static void free_result( struct message_result *result )
+@@ -1195,6 +1217,12 @@ static void reply_message( struct msg_queue *queue, lparam_t result,
+         if (len && (res->data = memdup( data, len ))) res->data_size = len;
+         store_message_result( res, result, error );
+     }
++
++    /* vstpoc patch 031: if recv_result drained to NULL above (remove==1
++     * and this was the last in-flight dispatch), release any focus
++     * messages we held back. Equivalent to JUCE 8 running
++     * handleSetFocus() after the mouse handler returns. */
++    if (remove) vstpoc_drain_deferred_focus( queue );
+ }
+ 
+ static int match_window( user_handle_t win, user_handle_t msg_win )
+@@ -1206,17 +1234,48 @@ static int match_window( user_handle_t win, user_handle_t msg_win )
+ }
+ 
+ /* retrieve a posted message */
++/* vstpoc patch 030: same idea as patch 029 (WM_TIMER throttle) but for
++ * posted WM_USER+N messages. TH-U's JUCE callback chain posts WM_USER+123
++ * to its dispatcher window and the handler re-posts; with patch 028's
++ * coalesce drop-when->=200-pending, queue stays small but the dispatch
++ * cycle runs as fast as the MessageManager can drain (steady-state CPU-
++ * bound livelock). Time-throttle: only deliver one WM_USER+N posted
++ * message per WINE_VSTPOC_POST_GAP_MS interval per queue. Env-gated,
++ * default 0 (disabled). System messages (msg < 0x400) always deliver. */
++static int vstpoc_post_gap_ticks( void )
++{
++    static int checked = 0;
++    static int ticks = 0;
++    if (!checked)
++    {
++        const char *e = getenv("WINE_VSTPOC_POST_GAP_MS");
++        int ms = (e && *e) ? atoi(e) : 0;
++        if (ms < 0) ms = 0;
++        ticks = ms * 10000;
++        checked = 1;
++    }
++    return ticks;
++}
++
+ static int get_posted_message( struct msg_queue *queue, user_handle_t win,
+                                unsigned int first, unsigned int last, unsigned int flags,
+                                struct get_message_reply *reply )
+ {
+     struct message *msg;
++    int post_gap = vstpoc_post_gap_ticks();
+ 
+     /* check against the filters */
+     LIST_FOR_EACH_ENTRY( msg, &queue->msg_list[POST_MESSAGE], struct message, entry )
+     {
+         if (!match_window( win, msg->win )) continue;
+         if (!check_msg_filter( msg->msg, first, last )) continue;
++        /* vstpoc 030: throttle WM_USER+N if we delivered one too recently. */
++        if (post_gap > 0 && msg->msg >= 0x400 && (flags & PM_REMOVE) &&
++            queue->vstpoc_last_user_delivery &&
++            current_time - queue->vstpoc_last_user_delivery < post_gap)
++        {
++            return 0;
++        }
+         goto found; /* found one */
+     }
+     return 0;
+@@ -1240,6 +1299,8 @@ found:
+ 
+     if (flags & PM_REMOVE)
+     {
++        /* vstpoc 030: stamp last WM_USER+N delivery time for throttle. */
++        if (msg->msg >= 0x400) queue->vstpoc_last_user_delivery = current_time;
+         if (msg->data)
+         {
+             set_reply_data_ptr( msg->data, msg->data_size );
+@@ -1377,42 +1438,165 @@ static void vstpoc_cycle_timeout( void *private )
+     result->cycle_timeout = NULL;
+     if (result->replied) return;  /* race: real reply landed first */
+ 
+-    /* vstpoc 025 two-phase (2026-05-23 PM): instead of synthesizing
+-     * a 0-reply immediately on the first 500ms timeout, give the
+-     * receiver one more chance to actually process the message by
+-     * waking its queue (set_queue_bits QS_SENDMESSAGE). Many JUCE
+-     * deadlocks are "receiver just hasn't reached a message pump
+-     * yet" — waking the queue forces any MsgWaitForMultipleObjects
+-     * to return so the message can be drained.
+-     *
+-     * Phase 1 (first fire, cycle_wake_attempted=0):
+-     *   - Wake the receiver queue
+-     *   - Re-arm timer for another 500ms
+-     *
+-     * Phase 2 (second fire, cycle_wake_attempted=1):
+-     *   - Receiver still hasn't replied → synthesize 0-reply as before
+-     *
+-     * Net effect: real replies happen for "just slow" cases (most
+-     * frequent on FEX); synth fallback for truly stuck cases. */
+-    if (!result->cycle_wake_attempted && result->receiver)
+-    {
+-        result->cycle_wake_attempted = 1;
+-        set_queue_bits( result->receiver, QS_SENDMESSAGE );
+-        fprintf( stderr, "vstpoc cycle: 500ms threshold — phase 1 wake "
+-                 "result=%p sender=%p receiver=%p msg=0x%04x\n",
+-                 result, result->sender, result->receiver,
+-                 result->cycle_orig_msg );
+-        result->cycle_timeout = add_timeout_user(
+-            VSTPOC_CYCLE_THRESHOLD, vstpoc_cycle_timeout, result );
+-        return;
+-    }
+-
+-    fprintf( stderr, "vstpoc cycle: 1000ms threshold — synthesizing 0-reply "
+-             "result=%p sender=%p msg=0x%04x (phase 2)\n",
++    /* vstpoc 025: single-phase synth-only. We previously tried two phases
++     * with a phase-1 "wake" — set_queue_bits (cosmetic) or signal
++     * (active). The signal variant broke TH-U: it interrupts the
++     * receiver's in-flight RtlWaitOnAddress, returning STATUS_ALERTED
++     * prematurely so the receiver thinks its wait was satisfied and
++     * proceeds with bogus state → null deref crash at TH-U+0x1802DF0C3.
++     * Synth alone is safe: only the sender is unblocked (via a fake
++     * "your message was processed with reply=0"); the receiver keeps
++     * running its WindowProc naturally and stays in consistent state. */
++    fprintf( stderr, "vstpoc cycle: %dms threshold — synthesizing 0-reply "
++             "result=%p sender=%p msg=0x%04x\n",
++             (int)(VSTPOC_CYCLE_THRESHOLD / 10000),
+              result, result->sender, result->cycle_orig_msg );
+     store_message_result( result, 0, 0 );
+ }
+ 
++/* vstpoc patch 028: drop posted WM_USER+N if the target queue already
++ * has >= threshold pending of the same (hwnd, msg). Defeats the JUCE-
++ * on-FEX callback-storm livelock where TH-U's MessageManager thread
++ * spins at 80% CPU forever draining WM_USER+123 that worker threads
++ * post faster than FEX can dispatch.
++ *
++ * Threshold is per (hwnd, msg) — different msg IDs to the same hwnd
++ * each have their own quota, so legitimate distinct callbacks aren't
++ * starved.
++ *
++ * Lossy by design: dropped messages = dropped JUCE async callbacks.
++ * The receiver plugin may end up in inconsistent state. Trade off
++ * accepted because the alternative is the host being permanently CPU-
++ * bound with no recovery possible. Default OFF; enable with
++ * WINE_VSTPOC_COALESCE_POSTS=<threshold>, e.g. 200. */
++static int vstpoc_coalesce_threshold( void )
++{
++    static int checked = 0, threshold = 0;
++    if (!checked)
++    {
++        const char *e = getenv("WINE_VSTPOC_COALESCE_POSTS");
++        threshold = (e && *e) ? atoi(e) : 0;
++        if (threshold < 0) threshold = 0;
++        checked = 1;
++    }
++    return threshold;
++}
++
++static int vstpoc_should_drop_post( struct msg_queue *queue, struct message *msg )
++{
++    int threshold = vstpoc_coalesce_threshold();
++    struct message *m;
++    int matches = 0, scanned = 0;
++
++    if (threshold <= 0) return 0;
++    if (msg->msg < 0x400) return 0;  /* only the WM_USER+N range */
++
++    /* Scan the receiver's posted-message list, capped to avoid O(huge)
++     * per post when the queue is already saturated. If we find threshold
++     * matches in the first 8192 entries, that's signal enough — drop. */
++    LIST_FOR_EACH_ENTRY( m, &queue->msg_list[POST_MESSAGE], struct message, entry )
++    {
++        if (++scanned > 8192) break;
++        if (m->msg == msg->msg && m->win == msg->win)
++        {
++            if (++matches >= threshold)
++            {
++                static int last_warn_msg = -1;
++                static user_handle_t last_warn_win = 0;
++                if (last_warn_msg != (int)msg->msg || last_warn_win != msg->win)
++                {
++                    fprintf( stderr, "vstpoc 028: coalescing posts hwnd=%08x "
++                             "msg=0x%04x (>= %d pending — dropping further posts)\n",
++                             msg->win, msg->msg, threshold );
++                    last_warn_msg = msg->msg;
++                    last_warn_win = msg->win;
++                }
++                return 1;
++            }
++        }
++    }
++    return 0;
++}
++
++/* vstpoc patch 031: emulate JUCE 8's mouseActivateFlags deferred-focus
++ * fix at the wine layer. JUCE 7 plugins (TH-U) handle WM_SETFOCUS
++ * synchronously inside their WindowProc, which can be reentered while
++ * the previous WindowProc (e.g. WM_LBUTTONUP for popup-dismiss click)
++ * is still in flight. The plugin's focusGained() override then kicks
++ * off a parameter-validation chain on top of the in-flight popup-
++ * teardown — that chain self-feeds via callAsync and runs forever.
++ *
++ * Detection: msg_queue->recv_result != NULL means the receiver thread
++ * is currently inside call_window_proc for some prior sent message. If
++ * we'd be delivering a focus-class MSG_NOTIFY to a busy queue, hold it
++ * on a deferred list instead of the SEND_MESSAGE list. vstpoc_drain_
++ * deferred_focus() in reply_message moves them back to SEND_MESSAGE
++ * once recv_result drains to NULL — equivalent to JUCE 8's "run
++ * handleSetFocus() after the mouse handler returns".
++ *
++ * Focus-class messages mirror patch 025's set: WM_SETFOCUS (0x07),
++ * WM_KILLFOCUS (0x08), WM_ACTIVATE (0x06), WM_ACTIVATEAPP (0x1c),
++ * WM_NCACTIVATE (0x86).
++ *
++ * Same-process same-thread sends are never deferred (recv_result on
++ * the calling thread can be checked, but that case is filtered by the
++ * caller already going synchronous in send_focus_message_async).
++ *
++ * Env gate: WINE_VSTPOC_DEFER_FOCUS_WHEN_BUSY (default ON since this
++ * matches Windows kernel ordering more closely). */
++static int vstpoc_defer_focus_disabled( void )
++{
++    static int checked = 0, disabled = 0;
++    if (!checked)
++    {
++        const char *e = getenv("WINE_VSTPOC_DEFER_FOCUS_WHEN_BUSY");
++        /* default ON; explicit "0" disables. */
++        disabled = (e && *e == '0' && e[1] == '\0');
++        checked = 1;
++    }
++    return disabled;
++}
++
++static int vstpoc_should_defer_focus( struct msg_queue *recv_queue, struct message *msg )
++{
++    if (vstpoc_defer_focus_disabled()) return 0;
++    if (!recv_queue || !recv_queue->recv_result) return 0;  /* receiver idle */
++    /* Only focus-class messages — anything else delivers normally. */
++    switch (msg->msg)
++    {
++        case 0x0006: /* WM_ACTIVATE */
++        case 0x0007: /* WM_SETFOCUS */
++        case 0x0008: /* WM_KILLFOCUS */
++        case 0x001C: /* WM_ACTIVATEAPP */
++        case 0x0086: /* WM_NCACTIVATE */
++            return 1;
++        default:
++            return 0;
++    }
++}
++
++/* Called from reply_message after popping recv_result. If the queue
++ * is now idle (recv_result == NULL) and we have deferred focus
++ * messages, move them onto SEND_MESSAGE and wake the queue so they
++ * dispatch on the next get_message. */
++static void vstpoc_drain_deferred_focus( struct msg_queue *queue )
++{
++    struct list *ptr;
++    int moved = 0;
++
++    if (!queue) return;
++    if (queue->recv_result) return;             /* still mid-WindowProc */
++    if (list_empty( &queue->vstpoc_deferred_focus_msgs )) return;
++
++    while ((ptr = list_head( &queue->vstpoc_deferred_focus_msgs )))
++    {
++        list_remove( ptr );
++        list_add_tail( &queue->msg_list[SEND_MESSAGE], ptr );
++        moved++;
++    }
++    if (moved) set_queue_bits( queue, QS_SENDMESSAGE );
++}
++
+ static int msg_queue_add_queue( struct object *obj, struct wait_queue_entry *entry )
+ {
+     struct msg_queue *queue = (struct msg_queue *)obj;
+@@ -1487,6 +1671,8 @@ static void msg_queue_destroy( struct object *obj )
+ 
+     cleanup_results( queue );
+     for (i = 0; i < NB_MSG_KINDS; i++) empty_msg_list( &queue->msg_list[i] );
++    /* vstpoc patch 031: free any held-back focus messages. */
++    empty_msg_list( &queue->vstpoc_deferred_focus_msgs );
+ 
+     LIST_FOR_EACH_ENTRY_SAFE( hotkey, hotkey2, &queue->input->desktop->hotkeys, struct hotkey, entry )
+     {
+@@ -1799,11 +1985,52 @@ static void restart_timer( struct msg_queue *queue, struct timer *timer )
+ }
+ 
+ /* find an expired timer matching the filtering parameters */
++/* vstpoc patch 029: throttle WM_TIMER delivery to break TH-U livelocks
++ * where a JUCE Timer callback under FEX emulation takes longer than the
++ * timer rate to run. Wine re-arms the timer at `now + rate` and
++ * `find_expired_timer` returns immediately on the next get_message —
++ * which monopolises the MessageManager thread at 80% CPU.
++ *
++ * Throttle: require at least N ms between deliveries to the same queue.
++ * Default 0 (disabled, upstream behavior); set WINE_VSTPOC_TIMER_GAP_MS
++ * to e.g. 33 to cap at ~30 Hz across all of a queue's timers.
++ *
++ * Trade-off: a JUCE plugin using sub-30Hz Timers for animation will
++ * appear less smooth. Avoid altogether for plugins whose Timer
++ * callback completes in <5ms (which is most). Tuned for TH-U-style
++ * heavy callbacks where the alternative is host being permanently
++ * CPU-bound. */
++static int vstpoc_timer_gap_ticks( void )
++{
++    static int checked = 0;
++    static int ticks = 0;  /* 100ns ticks; 0 = disabled */
++    if (!checked)
++    {
++        const char *e = getenv("WINE_VSTPOC_TIMER_GAP_MS");
++        int ms = (e && *e) ? atoi(e) : 0;
++        if (ms < 0) ms = 0;
++        ticks = ms * 10000;
++        checked = 1;
++    }
++    return ticks;
++}
++
+ static struct timer *find_expired_timer( struct msg_queue *queue, user_handle_t win,
+                                          unsigned int get_first, unsigned int get_last,
+                                          int remove )
+ {
+     struct list *ptr;
++    int gap;
++
++    /* vstpoc 029: if a throttle is configured AND we've delivered a
++     * WM_TIMER too recently, pretend no timer is expired. The next
++     * get_message will retry once enough wall time has passed. */
++    gap = vstpoc_timer_gap_ticks();
++    if (gap > 0 && remove && queue->vstpoc_last_timer_delivery)
++    {
++        if (current_time - queue->vstpoc_last_timer_delivery < gap)
++            return NULL;
++    }
+ 
+     LIST_FOR_EACH( ptr, &queue->expired_timers )
+     {
+@@ -1811,7 +2038,11 @@ static struct timer *find_expired_timer( struct msg_queue *queue, user_handle_t
+         if (win && timer->win != win) continue;
+         if (check_msg_filter( timer->msg, get_first, get_last ))
+         {
+-            if (remove) restart_timer( queue, timer );
++            if (remove)
++            {
++                queue->vstpoc_last_timer_delivery = current_time;
++                restart_timer( queue, timer );
++            }
+             return timer;
+         }
+     }
+@@ -3387,12 +3618,45 @@ DECL_HANDLER(send_message)
+                 free_message( msg );
+                 break;
+             }
+-            /* fall through */
++            list_add_tail( &recv_queue->msg_list[SEND_MESSAGE], &msg->entry );
++            set_queue_bits( recv_queue, QS_SENDMESSAGE );
++            break;
+         case MSG_NOTIFY:
++            /* vstpoc patch 031: defer cross-thread focus MSG_NOTIFY when
++             * the receiver thread is mid-WindowProc (recv_result != NULL).
++             * Emulates JUCE 8's mouseActivateFlags defer pattern at the
++             * wine layer — JUCE 7 plugins (TH-U) reenter focusGained()
++             * inside an in-flight WM_LBUTTONUP dispatch, kicking off a
++             * parameter-validation runaway. Holding focus messages until
++             * the WindowProc returns puts delivery at the same logical
++             * point as JUCE 8's deferred handleSetFocus(). The drain
++             * happens in reply_message when recv_result is popped.
++             * Gated by env WINE_VSTPOC_DEFER_FOCUS_WHEN_BUSY (default ON). */
++            if (vstpoc_should_defer_focus( recv_queue, msg ))
++            {
++                list_add_tail( &recv_queue->vstpoc_deferred_focus_msgs, &msg->entry );
++                /* no QS_SENDMESSAGE wake: don't disturb the dispatcher. */
++                break;
++            }
+             list_add_tail( &recv_queue->msg_list[SEND_MESSAGE], &msg->entry );
+             set_queue_bits( recv_queue, QS_SENDMESSAGE );
+             break;
+         case MSG_POSTED:
++            /* vstpoc patch 028: JUCE plugins on FEX-Emu can post WM_USER+N
++             * faster than the MessageManager thread can drain. TH-U after a
++             * popup dismiss enters a runaway state where 5000+ WM_USER+123
++             * pile up in the queue, the MM thread spins at 80% CPU forever
++             * processing them, host never recovers. Coalesce: when the
++             * receiver queue already has N pending posts to the same
++             * (hwnd, msg) pair, drop new ones. Gated by env var
++             * WINE_VSTPOC_COALESCE_POSTS=<threshold>, default OFF.
++             * Only WM_USER+N (msg >= 0x400) is eligible — system messages
++             * (WM_PAINT, WM_KEYDOWN…) are never dropped. */
++            if (vstpoc_should_drop_post( recv_queue, msg ))
++            {
++                free_message( msg );
++                break;
++            }
+             list_add_tail( &recv_queue->msg_list[POST_MESSAGE], &msg->entry );
+             set_queue_bits( recv_queue, QS_POSTMESSAGE|QS_ALLPOSTMESSAGE );
+             if (msg->msg == WM_HOTKEY)

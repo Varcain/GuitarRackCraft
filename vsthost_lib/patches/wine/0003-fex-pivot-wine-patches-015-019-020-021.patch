@@ -1,0 +1,270 @@
+From 126f47547ccfb979fdae82afd729a1cb0f8cbea5 Mon Sep 17 00:00:00 2001
+From: Kamil Lulko <kamil.lulko@gmail.com>
+Date: Fri, 22 May 2026 03:19:28 +0200
+Subject: [PATCH 3/6] fex-pivot: wine patches 015, 019, 020, 021
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+015: NtUserSetFocus cross-thread auto-attach input — fixes
+     JUCE activation popups losing focus when created on worker
+     threads.
+
+019: wininet bypass cert chain errors (UNTRUSTED_ROOT,
+     NOT_SIGNATURE_VALID, NOT_TIME_VALID, PARTIAL_CHAIN) — Android
+     certs load but Bionic signature check fails; lets HTTPS
+     proceed for TH-U demo activation.
+
+020: RtlSleepConditionVariableSRW drain pending sent messages
+     on 200ms poll when timeout is infinite — fixes circular
+     SendMessage deadlock between JUCE WindowProc and sibling
+     thread inter-thread sends.
+
+020 ext: RtlWaitOnAddress same drain on every wake (timeout
+     OR alerted) when timeout <= 500ms — JUCE 7 modal handlers
+     use short-timeout polls; same drain pattern needed.
+
+021: skip WM_SETFOCUS injection for top_level_child popups in
+     process_mouse_message. Real Windows doesn't send WM_SETFOCUS
+     for child window clicks unless focus actually changes;
+     synthesizing it triggered JUCE 7 handleFocusGain →
+     bringModalComponentsToFront → cross-thread SetWindowPos
+     deadlock. JUCE 8 plugins (AmpCraft, X50II) manage focus
+     internally via Component::currentlyFocusedComponent and
+     work without the synthesized message. Verified: TH-U rig
+     pack dialog now responds to clicks; X50II + AmpCraft
+     unchanged.
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+---
+ dlls/ntdll/sync.c            | 93 +++++++++++++++++++++++++++++++++++-
+ dlls/win32u/input.c          | 24 ++++++++++
+ dlls/win32u/message.c        | 15 ++++--
+ dlls/wininet/netconnection.c | 11 +++++
+ 4 files changed, 139 insertions(+), 4 deletions(-)
+
+diff --git a/dlls/ntdll/sync.c b/dlls/ntdll/sync.c
+index 522ce0a2..db563c33 100644
+--- a/dlls/ntdll/sync.c
++++ b/dlls/ntdll/sync.c
+@@ -792,18 +792,71 @@ NTSTATUS WINAPI RtlSleepConditionVariableCS( RTL_CONDITION_VARIABLE *variable, R
+  * NOTES
+  *  the behaviour is undefined if the thread doesn't own the lock.
+  */
++/* vstpoc patch (020-cv-drain-sent-messages): wine on Android Bionic has a
++ * circular SendMessage deadlock when JUCE/TH-U calls SleepConditionVariable
++ * from inside a WindowProc dispatched on thread A, while thread B sends an
++ * inter-thread message back to thread A. Both threads block.
++ *
++ * Fix: poll the CV wait at 200ms intervals when timeout is infinite. After
++ * each poll, call NtUserPeekMessage which dispatches any queued inter-thread
++ * sent messages (those land on QS_SENDMESSAGE bit and are drained by
++ * process_sent_messages, invoked from peek's wait_message_reply path).
++ *
++ * NtUserPeekMessage is in win32u.dll, which is always loaded for GUI
++ * processes; we declare it extern here so the PE linker resolves it. */
++typedef int VSTPOC_MSG_t[16]; /* opaque, large enough for MSG */
++typedef BOOL (WINAPI *PFN_NtUserPeekMessage)(VSTPOC_MSG_t *msg, HWND hwnd, UINT first, UINT last, UINT flags);
++
++static PFN_NtUserPeekMessage vstpoc_get_peek_msg(void)
++{
++    static PFN_NtUserPeekMessage cached;
++    static BOOL tried;
++    if (!tried) {
++        UNICODE_STRING name;
++        ANSI_STRING func_name;
++        HMODULE win32u = NULL;
++        tried = TRUE;
++        RtlInitUnicodeString(&name, L"win32u.dll");
++        if (LdrGetDllHandle(NULL, 0, &name, &win32u) < 0) return NULL;
++        RtlInitAnsiString(&func_name, "NtUserPeekMessage");
++        if (LdrGetProcedureAddress(win32u, &func_name, 0, (void **)&cached) < 0)
++            cached = NULL;
++    }
++    return cached;
++}
++
+ NTSTATUS WINAPI RtlSleepConditionVariableSRW( RTL_CONDITION_VARIABLE *variable, RTL_SRWLOCK *lock,
+                                               const LARGE_INTEGER *timeout, ULONG flags )
+ {
+     int value = *(int *)&variable->Ptr;
+     NTSTATUS status;
++    LARGE_INTEGER vstpoc_poll = { .QuadPart = -2000000LL }; /* 200ms */
++    BOOL vstpoc_is_infinite = !timeout;
++    const LARGE_INTEGER *eff_timeout = vstpoc_is_infinite ? &vstpoc_poll : timeout;
+ 
+     if (flags & RTL_CONDITION_VARIABLE_LOCKMODE_SHARED)
+         RtlReleaseSRWLockShared( lock );
+     else
+         RtlReleaseSRWLockExclusive( lock );
+ 
+-    status = RtlWaitOnAddress( &variable->Ptr, &value, sizeof(value), timeout );
++    for (;;) {
++        status = RtlWaitOnAddress( &variable->Ptr, &value, sizeof(value), eff_timeout );
++        if (status != STATUS_TIMEOUT) break;
++        if (vstpoc_is_infinite) {
++            /* On infinite wait timeout: drain pending sent messages so a
++             * cross-thread SendMessage deadlock can resolve. PM_NOREMOVE
++             * dispatches QS_SENDMESSAGE as a side effect without consuming
++             * posted messages. */
++            PFN_NtUserPeekMessage peek = vstpoc_get_peek_msg();
++            if (peek) {
++                VSTPOC_MSG_t dummy;
++                peek(&dummy, NULL, 0, 0, 0);
++            }
++            value = *(int *)&variable->Ptr;
++            continue;
++        }
++        break;
++    }
+ 
+     if (flags & RTL_CONDITION_VARIABLE_LOCKMODE_SHARED)
+         RtlAcquireSRWLockShared( lock );
+@@ -875,6 +928,20 @@ static BOOL compare_addr( const void *addr, const void *cmp, SIZE_T size )
+ 
+ /***********************************************************************
+  *           RtlWaitOnAddress   (NTDLL.@)
++ *
++ * vstpoc: JUCE uses RtlWaitOnAddress with a 200ms timeout to wait for
++ * Component state changes from a sibling JUCE thread (typically the
++ * MessageManager). This creates a cross-thread SendMessage deadlock when:
++ *   - Tid A is inside WindowProc (e.g. WM_SETFOCUS) → calls RtlWaitOnAddress(X, 200ms)
++ *   - Tid B (MessageManager) wants to send_inter_thread_message to tid A's hwnd
++ *     before it can signal X (e.g. WM_WINE_SETWINDOWPOS to apply window changes)
++ *   - Tid B blocks waiting for tid A's WindowProc to drain the send
++ *   - Tid A can't drain because it's blocked on RtlWaitOnAddress
++ *
++ * Without intervention, the 200ms timeout fires endlessly and the UI freezes.
++ * Fix: when timeout fires AND the timeout is short-ish (likely a poll loop),
++ * drain any pending inter-thread sent messages via NtUserPeekMessage. This
++ * unblocks tid B, which can then signal X, which lets tid A proceed.
+  */
+ NTSTATUS WINAPI RtlWaitOnAddress( const void *addr, const void *cmp, SIZE_T size,
+                                   const LARGE_INTEGER *timeout )
+@@ -882,6 +949,12 @@ NTSTATUS WINAPI RtlWaitOnAddress( const void *addr, const void *cmp, SIZE_T size
+     struct futex_queue *queue = get_futex_queue( addr );
+     struct futex_entry entry;
+     NTSTATUS ret;
++    /* vstpoc: track if this is a polling-style wait that may be in a SendMessage
++     * deadlock. We treat any timeout <= 500ms as polling. Infinite timeouts and
++     * long timeouts (>500ms) take the normal path to avoid disturbing audio or
++     * other timing-sensitive code paths. */
++    BOOL vstpoc_short_timeout = (timeout && timeout->QuadPart < 0 &&
++                                  timeout->QuadPart > -5000000LL); /* > -500ms */
+ 
+     TRACE("addr %p cmp %p size %#Ix timeout %s\n", addr, cmp, size, debugstr_timeout( timeout ));
+ 
+@@ -918,6 +991,24 @@ NTSTATUS WINAPI RtlWaitOnAddress( const void *addr, const void *cmp, SIZE_T size
+         spin_unlock( &queue->lock );
+     }
+ 
++    /* vstpoc: drain pending sent messages on EVERY wake-up of a polling-style
++     * (short-timeout) wait. JUCE's modal handlers (e.g. WM_SETFOCUS) have
++     * multi-stage state machines where each wait-iteration coordinates with
++     * a sibling thread via cross-thread SendMessage. Draining only on timeout
++     * unblocks the FIRST stage, but subsequent stages stall if their sender
++     * is also waiting on us. Draining on every wake (timeout OR alerted)
++     * gives every stage a chance to receive its sent message. PM_NOREMOVE
++     * peek dispatches QS_SENDMESSAGE bits without touching the posted-message
++     * queue. */
++    if (vstpoc_short_timeout && (ret == STATUS_TIMEOUT || ret == STATUS_ALERTED))
++    {
++        PFN_NtUserPeekMessage peek = vstpoc_get_peek_msg();
++        if (peek) {
++            VSTPOC_MSG_t dummy;
++            peek(&dummy, NULL, 0, 0, 0);
++        }
++    }
++
+     TRACE("returning %#lx\n", ret);
+ 
+     if (ret == STATUS_ALERTED) ret = STATUS_SUCCESS;
+diff --git a/dlls/win32u/input.c b/dlls/win32u/input.c
+index e7d94748..3548bb47 100644
+--- a/dlls/win32u/input.c
++++ b/dlls/win32u/input.c
+@@ -2109,9 +2109,33 @@ HWND WINAPI NtUserSetFocus( HWND hwnd )
+ {
+     HWND hwndTop = hwnd, active;
+     HWND previous = get_focus();
++    DWORD win_tid = 0, win_pid = 0, my_tid;
+ 
+     TRACE( "%p prev %p\n", hwnd, previous );
+ 
++    /* vstpoc patch (015-win32u-cross-thread-attach):
++     * JUCE plugins use `callFunctionIfNotLocked` which routes SetFocus
++     * to the MessageManager thread, but the target window may be owned
++     * by a different thread in the same process (e.g., a JUCE activation
++     * popup created on a worker thread). Wine's `check_queue_input_window`
++     * rejects the wineserver `set_active_window` request with
++     * ACCESS_DENIED in that case, NtUserSetFocus returns 0, JUCE's
++     * `peer->isFocused()` returns false, `takeKeyboardFocus` silently
++     * aborts at BLOCK B, and the TextEditor caret never appears.
++     *
++     * Real Windows handles the cross-thread case via attached thread
++     * inputs. Replicate that: if the target window's owning thread !=
++     * current thread and they're in the same process, attach the two
++     * threads' inputs (merges thread_input pointers so active/focus/
++     * capture become shared) before proceeding. */
++    if (hwnd)
++    {
++        win_tid = get_window_thread( hwnd, &win_pid );
++        my_tid  = GetCurrentThreadId();
++        if (win_tid && win_pid == GetCurrentProcessId() && win_tid != my_tid)
++            NtUserAttachThreadInput( my_tid, win_tid, TRUE );
++    }
++
+     if (hwnd)
+     {
+         /* Check if we can set the focus to this window */
+diff --git a/dlls/win32u/message.c b/dlls/win32u/message.c
+index 5402c90d..e46dcd7f 100644
+--- a/dlls/win32u/message.c
++++ b/dlls/win32u/message.c
+@@ -2709,9 +2709,18 @@ static BOOL process_mouse_message( MSG *msg, UINT hw_id, ULONG_PTR extra_info, H
+                      * deferred-focus check ((gotMouseActivate|gotSetFocus)
+                      * on the upcoming WM_LBUTTONDOWN). */
+                     if (top_level_child) {
+-                        send_message( hwndTop, WM_SETFOCUS, 0, 0 );
+-                        ERR( "vstpoc: forced WM_SETFOCUS to %p (skipped SetForeground)\n",
+-                             hwndTop );
++                        /* Skip both set_foreground_window AND any
++                         * synthesized WM_SETFOCUS — real Windows doesn't
++                         * send WM_SETFOCUS for child window clicks
++                         * unless focus actually changes. Synthesizing
++                         * it triggered JUCE 7 plugins (TH-U) to enter
++                         * handleFocusGain → bringModalComponentsToFront
++                         * → cross-thread SetWindowPos chain which
++                         * deadlocked on nested JUCE peers. JUCE 8
++                         * plugins (AmpCraft, X50II) manage focus
++                         * internally via Component::currentlyFocusedComponent
++                         * and don't need wine to fire window-level
++                         * focus events. */
+                     } else {
+                         if (!set_foreground_window( hwndTop, TRUE )) eat_msg = TRUE;
+                     }
+diff --git a/dlls/wininet/netconnection.c b/dlls/wininet/netconnection.c
+index 06aa5c82..47ee9351 100644
+--- a/dlls/wininet/netconnection.c
++++ b/dlls/wininet/netconnection.c
+@@ -66,6 +66,17 @@ static DWORD netconn_verify_cert(netconn_t *conn, PCCERT_CONTEXT cert, HCERTSTOR
+     }
+ 
+     errors = chain->TrustStatus.dwErrorStatus;
++    /* vstpoc patch (019-wininet-bypass-cert-errors): wine on Android Bionic
++     * fails CertGetCertificateChain signature verification (gnutls behaviour
++     * quirk vs glibc), even when the chain is otherwise OK. Bypass
++     * UNTRUSTED_ROOT + NOT_SIGNATURE_VALID + NOT_TIME_VALID + PARTIAL_CHAIN
++     * so plugins that need HTTPS (TH-U license check, etc.) can proceed.
++     * This is INSECURE for production but acceptable for our dev/demo build. */
++    errors &= ~(CERT_TRUST_IS_UNTRUSTED_ROOT |
++                CERT_TRUST_IS_NOT_SIGNATURE_VALID |
++                CERT_TRUST_IS_NOT_TIME_VALID |
++                CERT_TRUST_IS_PARTIAL_CHAIN);
++    ((CERT_CHAIN_CONTEXT *)chain)->TrustStatus.dwErrorStatus = errors;
+ 
+     do {
+         /* This seems strange, but that's what tests show */
+-- 
+2.43.0
+

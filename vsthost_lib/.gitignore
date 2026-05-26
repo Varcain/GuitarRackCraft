@@ -1,0 +1,73 @@
+# Build outputs
+.gradle/
+build/
+.cxx/
+.externalNativeBuild/
+
+# Python bytecode (scripts/ uses python3 for pack-wine-fex.py)
+__pycache__/
+*.pyc
+
+# Wine packaging outputs — regenerate via scripts/fetch-and-pack-wine.sh
+# (~384 MB of libwine_*.so + 10 MB wine-data.tar.gz + 200 KB manifest)
+.cache/
+src/main/jniLibs/arm64-v8a/libwine_*.so
+src/main/assets/wine-data.tar.gz
+src/main/assets/wine-manifest.json
+
+# Legacy box64 build output (pre-FEX pivot; no longer linked but build
+# script kept around in case we need to compare). Regenerable.
+src/main/jniLibs/arm64-v8a/libbox64.so
+external/box64/build-android-arm64/
+
+# Built from upstream by scripts/build-android-libs.sh
+src/main/jniLibs/arm64-v8a/libfreetype.so
+src/main/jniLibs/arm64-v8a/libpng16.so
+
+# X11 client libs shipped under their original SONAMEs (Bionic linker
+# resolves them by name from nativeLibraryDir). Re-stage via
+# scripts/fetch-x11-libs.sh.
+src/main/jniLibs/arm64-v8a/libX11.so
+src/main/jniLibs/arm64-v8a/libXau.so
+src/main/jniLibs/arm64-v8a/libxcb.so
+src/main/jniLibs/arm64-v8a/libXdmcp.so
+src/main/jniLibs/arm64-v8a/libXext.so
+src/main/jniLibs/arm64-v8a/libXrender.so
+src/main/jniLibs/arm64-v8a/libXi.so
+src/main/jniLibs/arm64-v8a/libXfixes.so
+src/main/jniLibs/arm64-v8a/libXrandr.so
+src/main/jniLibs/arm64-v8a/libXcursor.so
+src/main/jniLibs/arm64-v8a/libXxf86vm.so
+src/main/jniLibs/arm64-v8a/libandroid-support.so
+
+# Fonts staged into assets for runtime install into wineprefix/drive_c/-
+# windows/Fonts/. Copied from /usr/share/fonts by build scripts.
+src/main/assets/wine-fonts/
+
+# Backups produced by scripts/patch-proot.py (regenerable).
+src/main/jniLibs/arm64-v8a/libwine_proot.so.orig
+src/main/jniLibs/arm64-v8a/libwine_proot.so.patched
+
+# Submodule build outputs — wine, FEX, llvm-mingw live as submodules at
+# external/{wine-upstream,fex-upstream,llvm-mingw}; their inner build dirs
+# should never be staged into the parent index.
+external/wine-upstream/build-*/
+external/fex-upstream/build-*/
+external/llvm-mingw/install/
+external/llvm-mingw/build/
+# Other external-tree caches (not submodules; pulled by other build scripts)
+toolchain/x11-headers/
+toolchain/x11-libs/
+toolchain/android-libs/
+toolchain/wine-fonts/
+toolchain/gnutls-android-arm64/
+external/gnutls-deps/
+external/vst3sdk/
+
+# User-supplied test plugins (not part of the repo)
+WagnerSharp_x64.dll
+WagnerSharp.dll
+external/vst_plugins/
+
+# Built artifact of external/focus_test_plugin/focus_test.c
+external/focus_test_plugin/focus_test.dll

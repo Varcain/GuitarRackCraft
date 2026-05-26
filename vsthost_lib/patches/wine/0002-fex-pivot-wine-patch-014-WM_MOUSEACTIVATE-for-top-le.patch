@@ -1,0 +1,128 @@
+From 23e2916b852ecaff967e845f319f754b622ef0d6 Mon Sep 17 00:00:00 2001
+From: Kamil Lulko <kamil.lulko@gmail.com>
+Date: Wed, 20 May 2026 23:52:27 +0200
+Subject: [PATCH 2/6] =?UTF-8?q?fex-pivot:=20wine=20patch=20014=20=E2=80=94?=
+ =?UTF-8?q?=20WM=5FMOUSEACTIVATE=20for=20top-level=20WS=5FCHILD?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Allow WM_MOUSEACTIVATE to fire for top-level WS_CHILD windows (VST
+plugin editors), and skip the set_foreground_window step in that case
+(SetForeground sends WM_KILLFOCUS to editor which clears JUCE's
+freshly-set gotMouseActivate flag). Directly send WM_SETFOCUS instead
+so JUCE's WindowProc sees the proper
+WM_MOUSEACTIVATE → WM_SETFOCUS → WM_LBUTTONDOWN sequence.
+
+Verified via ERR traces that all three messages dispatch to editor's
+WindowProc with correct hwnd and that wine's foreground/focus/active
+state stays consistent.
+
+DESPITE THIS: TextEditor caret still does not appear on tap in
+X50II / TH-U activation dialogs. JUCE's Component-level focus grant
+on TextEditor.mouseDown is not committing currentlyFocusedComponent.
+Drag-selection on placeholder text works (so mouseDown reaches the
+right Component), but focusOnClickIfNeeded → grabKeyboardFocus path
+fails silently.
+
+Patches 011/012/013/014 in this series unblock the entire Win32
+keyboard plumbing through wine. JUCE-internal Component focus
+remains the open issue — requires JUCE source-level debugging
+(add traces to Component::grabKeyboardFocusInternal,
+TextEditor::focusGained, isShowing, etc.) which we cannot do
+without modifying / rebuilding the plugin or JUCE itself.
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+---
+ dlls/win32u/message.c    | 41 ++++++++++++++++++++++++++++++++++++----
+ dlls/winex11.drv/event.c |  9 +++++++--
+ 2 files changed, 44 insertions(+), 6 deletions(-)
+
+diff --git a/dlls/win32u/message.c b/dlls/win32u/message.c
+index 2a824dbd..5402c90d 100644
+--- a/dlls/win32u/message.c
++++ b/dlls/win32u/message.c
+@@ -2661,12 +2661,32 @@ static BOOL process_mouse_message( MSG *msg, UINT hw_id, ULONG_PTR extra_info, H
+ 
+         /* Activate the window if needed */
+ 
+-        if (msg->hwnd != info.hwndActive)
+         {
+             HWND hwndTop = NtUserGetAncestor( msg->hwnd, GA_ROOT );
+-
+-            if ((get_window_long( hwndTop, GWL_STYLE ) & (WS_POPUP|WS_CHILD)) != WS_CHILD)
++            DWORD top_style = get_window_long( hwndTop, GWL_STYLE );
++            BOOL top_level_child = FALSE;
++            if ((top_style & (WS_POPUP|WS_CHILD)) == WS_CHILD)
++            {
++                HWND root_parent = NtUserGetAncestor( hwndTop, GA_PARENT );
++                if (!root_parent || root_parent == get_desktop_window())
++                    top_level_child = TRUE;
++            }
++            /* vstpoc patch (014): allow WM_MOUSEACTIVATE for top-level
++             * WS_CHILD (VST plugin editors with desktop as parent), AND
++             * fire it on EVERY click even when the editor is already
++             * active. JUCE's WM_SETFOCUS handler defers handleSetFocus
++             * until WM_MOUSEACTIVATE arrives — without re-sending it on
++             * every mouseDown JUCE never finishes its focus handshake
++             * and the TextEditor caret never shows. */
++            ERR( "vstpoc: mouseactivate decision msg->hwnd=%p hwndTop=%p info.hwndActive=%p "
++                 "top_style=%lx top_level_child=%d hittest=%d msg->msg=%x\n",
++                 msg->hwnd, hwndTop, info.hwndActive, (long)top_style,
++                 top_level_child, hittest, msg->message );
++            if ((msg->hwnd != info.hwndActive || top_level_child) &&
++                ((top_style & (WS_POPUP|WS_CHILD)) != WS_CHILD || top_level_child))
+             {
++                ERR( "vstpoc: sending WM_MOUSEACTIVATE target=%p wparam=%p\n",
++                     msg->hwnd, hwndTop );
+                 UINT ret = send_message( msg->hwnd, WM_MOUSEACTIVATE, (WPARAM)hwndTop,
+                                          MAKELONG( hittest, msg->message ) );
+                 switch(ret)
+@@ -2681,7 +2701,20 @@ static BOOL process_mouse_message( MSG *msg, UINT hw_id, ULONG_PTR extra_info, H
+                     /* fall through */
+                 case MA_ACTIVATE:
+                 case 0:
+-                    if (!set_foreground_window( hwndTop, TRUE )) eat_msg = TRUE;
++                    /* For top-level WS_CHILD windows, skip
++                     * set_foreground_window — it sends WM_KILLFOCUS to
++                     * editor which clears JUCE's mouseActivateFlags
++                     * (the gotMouseActivate bit just set). Instead
++                     * directly send WM_SETFOCUS to satisfy JUCE's
++                     * deferred-focus check ((gotMouseActivate|gotSetFocus)
++                     * on the upcoming WM_LBUTTONDOWN). */
++                    if (top_level_child) {
++                        send_message( hwndTop, WM_SETFOCUS, 0, 0 );
++                        ERR( "vstpoc: forced WM_SETFOCUS to %p (skipped SetForeground)\n",
++                             hwndTop );
++                    } else {
++                        if (!set_foreground_window( hwndTop, TRUE )) eat_msg = TRUE;
++                    }
+                     break;
+                 default:
+                     WARN( "unknown WM_MOUSEACTIVATE code %d\n", ret );
+diff --git a/dlls/winex11.drv/event.c b/dlls/winex11.drv/event.c
+index f4324804..97d34578 100644
+--- a/dlls/winex11.drv/event.c
++++ b/dlls/winex11.drv/event.c
+@@ -808,11 +808,16 @@ static void handle_wm_protocols( HWND hwnd, XClientMessageEvent *event )
+             else if (event_hwnd_root)
+             {
+                 /* vstpoc patch (011-winex11-focus-fallback): VST editors are
+-                 * WS_CHILD-of-desktop and fail can_activate_window for both
++                 * WS_CHILD-of-desktop; can_activate_window fails for both
+                  * editor and GA_ROOT. Without this fallback wine has no
+                  * foreground, INPUT_KEYBOARD is dropped, and EDIT controls
+                  * never see WM_KEYDOWN. Paired with wineserver patch 012
+-                 * (is_valid_foreground_window allowing top-level WS_CHILD). */
++                 * (is_valid_foreground_window allowing top-level WS_CHILD)
++                 * and win32u patch 013 (NtUserSetFocus accepting top-level
++                 * WS_CHILD). SetForegroundWindow internally calls
++                 * set_active_window which sends the proper activation
++                 * messages (WM_NCACTIVATE / WM_ACTIVATE / WM_SETFOCUS) via
++                 * the standard path — don't synthesize them ourselves. */
+                 NtUserSetForegroundWindow( event_hwnd_root );
+             }
+         }
+-- 
+2.43.0
+

@@ -1,0 +1,111 @@
+diff --git a/server/user.h b/server/user.h
+index ee0042b8..6e745b68 100644
+--- a/server/user.h
++++ b/server/user.h
+@@ -77,6 +77,7 @@ struct desktop
+     struct hook_table   *global_hooks;     /* table of global hooks on this desktop */
+     struct list          hotkeys;          /* list of registered hotkeys */
+     struct list          pointers;         /* list of active pointers */
++    struct list          inputs;           /* vstpoc patch 033: all thread_inputs on this desktop */
+     struct timeout_user *close_timeout;    /* timeout before closing the desktop */
+     struct thread_input *foreground_input; /* thread input of foreground thread */
+     unsigned int         users;            /* processes and threads using this desktop */
+diff --git a/server/winstation.c b/server/winstation.c
+index b3746090..cb7ff4dc 100644
+--- a/server/winstation.c
++++ b/server/winstation.c
+@@ -305,6 +305,7 @@ static struct desktop *create_desktop( const struct unicode_str *name, unsigned
+             list_add_tail( &winstation->desktops, &desktop->entry );
+             list_init( &desktop->hotkeys );
+             list_init( &desktop->pointers );
++            list_init( &desktop->inputs );      /* vstpoc patch 033 */
+ 
+             if (!(desktop->shared = alloc_shared_object()))
+             {
+diff --git a/server/queue.c b/server/queue.c
+--- a/server/queue.c
++++ b/server/queue.c
+@@ -114,6 +114,7 @@
+     struct list            msg_list;      /* list of hardware messages */
+     unsigned char          desktop_keystate[256]; /* desktop keystate when keystate was synced */
+     input_shm_t           *shared;        /* thread input in session shared memory */
++    struct list            desktop_entry; /* vstpoc patch 033: entry in desktop->inputs */
+ };
+ 
+ struct msg_queue
+@@ -257,6 +258,7 @@
+     if ((input = alloc_object( &thread_input_ops )))
+     {
+         list_init( &input->msg_list );
++        list_init( &input->desktop_entry );  /* vstpoc patch 033: safe for list_remove on early failure */
+         input->shared = NULL;
+ 
+         if (!(input->desktop = get_thread_desktop( thread, 0 /* FIXME: access rights */ )))
+@@ -264,6 +266,9 @@
+             release_object( input );
+             return NULL;
+         }
++        /* vstpoc patch 033: chain into desktop's input list for cross-thread
++         * capture routing in find_hardware_message_window. */
++        list_add_tail( &input->desktop->inputs, &input->desktop_entry );
+         memcpy( input->desktop_keystate, (const void *)input->desktop->shared->keystate,
+                 sizeof(input->desktop_keystate) );
+ 
+@@ -1734,6 +1739,12 @@
+     empty_msg_list( &input->msg_list );
+     if ((desktop = input->desktop))
+     {
++        /* vstpoc patch 033: unchain from desktop->inputs. Safe even if
++         * we never linked (create failed mid-way) because list_remove
++         * is a no-op on an uninitialized-but-zeroed entry only if it
++         * was list_init'd. We always link in create_thread_input
++         * before any error path that calls release_object here. */
++        list_remove( &input->desktop_entry );
+         if (desktop->foreground_input == input) desktop->foreground_input = NULL;
+         release_object( desktop );
+     }
+@@ -2225,6 +2236,30 @@
+     return 1;
+ }
+ 
++/* vstpoc patch 033: scan all thread_inputs on the desktop for any active
++ * pointer capture and return its window + owning thread. Windows' SetCapture
++ * is conceptually desktop-wide, but wine stores it per-thread_input. When a
++ * cross-thread popup (e.g. JUCE 7's PopupMenu) holds capture, the desktop's
++ * foreground_input doesn't see it, so mouse events route to the parent
++ * window's thread and the popup never receives the click that should
++ * dismiss it. This helper recovers the desktop-wide capture target. */
++static user_handle_t vstpoc_find_any_thread_capture( struct desktop *desktop, struct thread **out_thread )
++{
++    struct thread_input *ti;
++    user_handle_t cap;
++
++    LIST_FOR_EACH_ENTRY( ti, &desktop->inputs, struct thread_input, desktop_entry )
++    {
++        if (!ti->shared) continue;
++        cap = ti->shared->capture;
++        if (!cap) continue;
++        *out_thread = get_window_thread( cap );
++        return cap;
++    }
++    *out_thread = NULL;
++    return 0;
++}
++
+ /* find the window that should receive a given hardware message */
+ static user_handle_t find_hardware_message_window( struct desktop *desktop, struct thread_input *input,
+                                                    struct message *msg, unsigned int *msg_code,
+@@ -2252,6 +2287,13 @@
+     case QS_MOUSEBUTTON:
+         if (!input || !(win = input_shm->capture))
+         {
++            /* vstpoc patch 033: check ANY thread_input for capture before
++             * falling back to geometric routing. Without this, a popup that
++             * called SetCapture on its own thread never receives clicks
++             * that geometrically land elsewhere (its modal loop hangs). */
++            if ((win = vstpoc_find_any_thread_capture( desktop, thread )))
++                break;
++
+             if (is_window_visible( msg->win ) && !is_window_transparent( msg->win )) win = msg->win;
+             else win = shallow_window_from_point( desktop, msg->x, msg->y );
+             *thread = window_thread_from_point( win, msg->x, msg->y );

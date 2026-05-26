@@ -1,0 +1,248 @@
+diff --git a/dlls/win32u/opengl.c b/dlls/win32u/opengl.c
+index b997ea4..7531686 100644
+--- a/dlls/win32u/opengl.c
++++ b/dlls/win32u/opengl.c
+@@ -174,9 +174,14 @@ static UINT egldrv_init_pixel_formats( UINT *onscreen_count )
+ {
+     const struct opengl_funcs *funcs = &display_funcs;
+     struct egl_platform *egl = &display_egl;
++    /* Android only provides OpenGL ES, not desktop OpenGL — asking for
++     * EGL_OPENGL_BIT returns zero configs there. Use EGL_OPENGL_ES2_BIT
++     * which Android implementations always support; wined3d's GL paths
++     * are largely ES2-compatible and call into the same eglGetProcAddress
++     * resolver for any function pointers they actually need. */
+     const EGLint attribs[] =
+     {
+-        EGL_RENDERABLE_TYPE, EGL_OPENGL_BIT,
++        EGL_RENDERABLE_TYPE, EGL_OPENGL_ES2_BIT,
+         EGL_SURFACE_TYPE, EGL_WINDOW_BIT,
+         EGL_NONE
+     };
+@@ -366,63 +371,160 @@ static const char *egldrv_init_wgl_extensions( struct opengl_funcs *funcs )
+ 
+ static BOOL egldrv_set_pixel_format( HWND hwnd, int old_format, int new_format, BOOL internal )
+ {
+-    FIXME( "stub!\n" );
++    /* No per-HWND surface tracking yet — context_make_current attaches a
++     * small pbuffer surface unconditionally. Sufficient for wined3d's caps
++     * GL context init (no visible rendering needed). */
+     return TRUE;
+ }
+ 
++/* Each wine wgl context is wrapped so we can attach a pbuffer surface at
++ * make_current time. The void* `private` slot of wine's driver protocol
++ * stores this wrapper. */
++struct egldrv_context
++{
++    EGLContext ctx;
++    EGLSurface surface;  /* owned pbuffer used when no HDC-specific surface */
++    EGLConfig config;
++};
++
++static EGLConfig egldrv_config_for_format( int format )
++{
++    struct egl_platform *egl = &display_egl;
++    int idx;
++    if (!egl->config_count) return EGL_NO_CONFIG_KHR;
++    idx = format - 1;
++    if (idx < 0) idx = 0;
++    return egl->configs[idx % egl->config_count];
++}
++
+ static BOOL egldrv_swap_buffers( void *private, HWND hwnd, HDC hdc, int interval )
+ {
+-    FIXME( "stub!\n" );
++    struct opengl_funcs *funcs = &display_funcs;
++    struct egl_platform *egl = &display_egl;
++    struct egldrv_context *c = private;
++    if (!c || c->surface == EGL_NO_SURFACE) return TRUE;
++    funcs->p_eglSwapBuffers( egl->display, c->surface );
+     return TRUE;
+ }
+ 
+ static BOOL egldrv_pbuffer_create( HDC hdc, int format, BOOL largest, GLenum texture_format, GLenum texture_target,
+                                    GLint max_level, GLsizei *width, GLsizei *height, void **private )
+ {
+-    FIXME( "stub!\n" );
+-    return FALSE;
++    struct opengl_funcs *funcs = &display_funcs;
++    struct egl_platform *egl = &display_egl;
++    EGLConfig config = egldrv_config_for_format( format );
++    EGLint pbuf_attribs[] = {
++        EGL_WIDTH,  *width  > 0 ? *width  : 1,
++        EGL_HEIGHT, *height > 0 ? *height : 1,
++        EGL_NONE
++    };
++    EGLSurface surface;
++    if (config == EGL_NO_CONFIG_KHR) return FALSE;
++    surface = funcs->p_eglCreatePbufferSurface( egl->display, config, pbuf_attribs );
++    if (surface == EGL_NO_SURFACE)
++    {
++        ERR( "eglCreatePbufferSurface failed\n" );
++        return FALSE;
++    }
++    *private = surface;
++    return TRUE;
+ }
+ 
+ static BOOL egldrv_pbuffer_destroy( HDC hdc, void *private )
+ {
+-    FIXME( "stub!\n" );
+-    return FALSE;
++    struct opengl_funcs *funcs = &display_funcs;
++    struct egl_platform *egl = &display_egl;
++    if (private) funcs->p_eglDestroySurface( egl->display, private );
++    return TRUE;
+ }
+ 
+ static BOOL egldrv_pbuffer_updated( HDC hdc, void *private, GLenum cube_face, GLint mipmap_level )
+ {
+-    FIXME( "stub!\n" );
+     return GL_TRUE;
+ }
+ 
+ static UINT egldrv_pbuffer_bind( HDC hdc, void *private, GLenum buffer )
+ {
+-    FIXME( "stub!\n" );
+     return -1; /* use default implementation */
+ }
+ 
+ static BOOL egldrv_context_create( HDC hdc, int format, void *share, const int *attribs, void **private )
+ {
+-    FIXME( "stub!\n" );
++    struct opengl_funcs *funcs = &display_funcs;
++    struct egl_platform *egl = &display_egl;
++    struct egldrv_context *c, *share_c = share;
++    EGLConfig config = egldrv_config_for_format( format );
++    EGLint pbuf_attribs[] = { EGL_WIDTH, 1, EGL_HEIGHT, 1, EGL_NONE };
++    EGLint ctx_attribs[] = { EGL_CONTEXT_CLIENT_VERSION, 2, EGL_NONE };
++    EGLContext shared_ctx = share_c ? share_c->ctx : EGL_NO_CONTEXT;
++
++    if (config == EGL_NO_CONFIG_KHR)
++    {
++        ERR( "no EGL config for format %d\n", format );
++        return FALSE;
++    }
++    if (!(c = calloc( 1, sizeof(*c) ))) return FALSE;
++    c->config = config;
++    c->ctx = funcs->p_eglCreateContext( egl->display, config, shared_ctx, ctx_attribs );
++    if (c->ctx == EGL_NO_CONTEXT)
++    {
++        ERR( "eglCreateContext failed\n" );
++        free( c );
++        return FALSE;
++    }
++    /* Attach a tiny pbuffer so make_current always has a drawable to bind.
++     * wined3d's caps GL context only needs ANY current surface so it can
++     * call glGetString, glGetIntegerv, etc. The visible-rendering path
++     * (TODO: actual editor UI surface) would replace this with a real
++     * window surface mapped to the wine HWND. */
++    c->surface = funcs->p_eglCreatePbufferSurface( egl->display, config, pbuf_attribs );
++    if (c->surface == EGL_NO_SURFACE)
++    {
++        ERR( "eglCreatePbufferSurface failed during context_create\n" );
++        funcs->p_eglDestroyContext( egl->display, c->ctx );
++        free( c );
++        return FALSE;
++    }
++    *private = c;
+     return TRUE;
+ }
+ 
+ static BOOL egldrv_context_destroy( void *private )
+ {
+-    FIXME( "stub!\n" );
+-    return FALSE;
++    struct opengl_funcs *funcs = &display_funcs;
++    struct egl_platform *egl = &display_egl;
++    struct egldrv_context *c = private;
++    if (!c) return TRUE;
++    if (c->surface != EGL_NO_SURFACE) funcs->p_eglDestroySurface( egl->display, c->surface );
++    if (c->ctx != EGL_NO_CONTEXT) funcs->p_eglDestroyContext( egl->display, c->ctx );
++    free( c );
++    return TRUE;
+ }
+ 
+ static BOOL egldrv_context_flush( void *private, HWND hwnd, HDC hdc, int interval, void (*flush)(void) )
+ {
+-    FIXME( "stub!\n" );
+-    return FALSE;
++    if (flush) flush();
++    return TRUE;
+ }
+ 
+ static BOOL egldrv_context_make_current( HDC draw_hdc, HDC read_hdc, void *private )
+ {
+-    FIXME( "stub!\n" );
+-    return FALSE;
++    struct opengl_funcs *funcs = &display_funcs;
++    struct egl_platform *egl = &display_egl;
++    struct egldrv_context *c = private;
++
++    if (!c)
++    {
++        /* Detach: bind no context. */
++        funcs->p_eglMakeCurrent( egl->display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT );
++        return TRUE;
++    }
++    if (!funcs->p_eglMakeCurrent( egl->display, c->surface, c->surface, c->ctx ))
++    {
++        ERR( "eglMakeCurrent failed, EGL error 0x%x\n", funcs->p_eglGetError() );
++        return FALSE;
++    }
++    return TRUE;
+ }
+ 
+ static const struct opengl_driver_funcs egldrv_funcs =
+@@ -478,8 +580,25 @@ static BOOL egl_init( const struct opengl_driver_funcs **driver_funcs )
+         ERR( "Failed to find required extension %s\n", #ext );  \
+         goto failed;                                            \
+     }
+-    CHECK_EXTENSION( EGL_KHR_client_get_all_proc_addresses );
+-    CHECK_EXTENSION( EGL_EXT_platform_base );
++    /* Android's EGL exposes EGL_KHR_get_all_proc_addresses as a DISPLAY
++     * extension (queryable only after eglInitialize), not the CLIENT
++     * variant wine normally checks for here at EGL_NO_DISPLAY. Soften the
++     * check: if the client variant is absent we still proceed — eglGetProcAddress
++     * on Android returns GL pointers via the display-side extension, and
++     * the function-load loop below will catch genuinely-missing symbols. */
++    if (!has_extension( extensions, "EGL_KHR_client_get_all_proc_addresses" ))
++        WARN( "EGL_KHR_client_get_all_proc_addresses absent at EGL_NO_DISPLAY; relying on display-side variant.\n" );
++    /* Android exposes EGL_KHR_platform_android instead of EGL_EXT_platform_base.
++     * Both end up providing eglGetPlatformDisplay — and on EGL 1.5+ (API 28+
++     * on Android) the function exists in core without any extension at all.
++     * Accept either platform extension; if neither is present, fall through
++     * to legacy eglGetDisplay(EGL_DEFAULT_DISPLAY) via the !platform branch
++     * in init_egl_platform. */
++    if (!has_extension( extensions, "EGL_EXT_platform_base" ) &&
++        !has_extension( extensions, "EGL_KHR_platform_android" ) &&
++        !has_extension( extensions, "EGL_KHR_platform_wayland" ) &&
++        !has_extension( extensions, "EGL_KHR_platform_x11" ))
++        WARN( "No EGL platform extension; will use legacy eglGetDisplay path.\n" );
+ #undef CHECK_EXTENSION
+ 
+ #define USE_GL_FUNC( func )                                                                     \
+@@ -508,9 +627,21 @@ static void init_egl_platform( struct egl_platform *egl, struct opengl_funcs *fu
+     EGLint major, minor;
+     EGLenum platform;
+ 
+-    if (!funcs->egl_handle || !driver_funcs->p_init_egl_platform) return;
++    if (!funcs->egl_handle) return;
+ 
+-    platform = driver_funcs->p_init_egl_platform( egl, &platform_display );
++    /* winex11.drv on Android doesn't supply p_init_egl_platform — there's
++     * no glX/wgl analogue to plug into. Fall back to the simplest path:
++     * eglGetDisplay(EGL_DEFAULT_DISPLAY). Android's EGL_DEFAULT_DISPLAY
++     * resolves to the system display and exposes ES2-capable configs,
++     * which is what wined3d needs for its GL-context init. */
++    if (!driver_funcs->p_init_egl_platform)
++    {
++        platform = 0;
++    }
++    else
++    {
++        platform = driver_funcs->p_init_egl_platform( egl, &platform_display );
++    }
+     if (!platform) egl->display = funcs->p_eglGetDisplay( EGL_DEFAULT_DISPLAY );
+     else egl->display = funcs->p_eglGetPlatformDisplay( platform, platform_display, NULL );
+ 
