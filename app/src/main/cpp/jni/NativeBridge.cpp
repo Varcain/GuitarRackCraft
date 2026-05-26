@@ -39,6 +39,14 @@
 #include "../plugin/IPlugin.h"
 #include "../plugin/IPluginFactory.h"
 #include "../plugin/lv2/LV2PluginFactory.h"
+
+// VST hosting (full flavor only — gated by CMake -DHAS_VST_HOST from
+// productFlavors.full.externalNativeBuild). Header comes from :vsthost_lib's
+// prefab package (vsthost_lib::vsthost target → -I<prefab>/include/vsthost/).
+#if HAS_VST_HOST
+// Prefab adds vsthost_lib/src/main/cpp to the include path as -isystem.
+#include <vst/VstFactory.h>
+#endif
 #include "../plugin/StateSerializer.h"
 #include "../plugin/PluginUIManager.h"
 #include "../x11/X11NativeDisplay.h"
@@ -293,6 +301,19 @@ Java_com_varcain_guitarrackcraft_engine_NativeEngine_nativeInit(JNIEnv* env, job
     auto lv2Factory = std::make_unique<LV2PluginFactory>(g_ctx->lv2Path, g_ctx->nativeLibDir, g_ctx->filesDir, g_ctx->pluginLibDir);
     g_ctx->pluginRegistry->registerFactory(std::move(lv2Factory));
 
+#if HAS_VST_HOST
+    // Register VST factory (full flavor only — VST hosting via wine + FEX).
+    // Plugin enumeration reads filesDir/vst_plugins/registry.json which the
+    // Manage VST UI (Phase D) writes on user import/remove.
+    const std::string wineRoot   = g_ctx->filesDir + "/wine";
+    // VstHostSetup.ensureWineRoot stages vst_host.exe variants directly
+    // into filesDir/ (not filesDir/assets/) — match that.
+    const std::string assetsDir  = g_ctx->filesDir;
+    auto vstFactory = vsthost::createVstFactory(g_ctx->filesDir, wineRoot, assetsDir, g_ctx->nativeLibDir);
+    g_ctx->pluginRegistry->registerFactory(std::move(vstFactory));
+    LOGI("Registered VST factory (full flavor)");
+#endif
+
     // Initialize all factories
     if (!g_ctx->pluginRegistry->initializeAll()) {
         LOGE("Failed to initialize plugin factories");
@@ -317,6 +338,47 @@ Java_com_varcain_guitarrackcraft_engine_NativeEngine_nativeInit(JNIEnv* env, job
 
     LOGI("Native engine initialized");
     return JNI_TRUE;
+}
+
+JNIEXPORT jint JNICALL
+Java_com_varcain_guitarrackcraft_engine_NativeEngine_nativeGetRackPluginX11Display(JNIEnv* env, jobject thiz, jint position) {
+    // Returns the X11 display slot the plugin at the given rack position
+    // renders to, or -1 if the position is invalid or the plugin doesn't
+    // render via the in-process X11 server. Used by VstEditorActivity to
+    // bind the right SurfaceView to the wine subprocess.
+    if (!g_ctx || !g_ctx->audioEngine) return -1;
+    auto* plugin = g_ctx->audioEngine->getChain().getPlugin(static_cast<int>(position));
+    return plugin ? plugin->getX11DisplayNumber() : -1;
+}
+
+JNIEXPORT jlong JNICALL
+Java_com_varcain_guitarrackcraft_engine_NativeEngine_nativeGetRackPluginEditorSize(JNIEnv* env, jobject thiz, jint position) {
+    // Encoded as one long: high 32 bits = width, low 32 bits = height.
+    // 0 if the plugin has no editor or its size isn't known yet (wine
+    // populates these via shm after effEditGetRect; takes a few hundred
+    // ms after activate()).
+    if (!g_ctx || !g_ctx->audioEngine) return 0;
+    auto* plugin = g_ctx->audioEngine->getChain().getPlugin(static_cast<int>(position));
+    if (!plugin) return 0;
+    const int64_t w = plugin->getEditorWidth();
+    const int64_t h = plugin->getEditorHeight();
+    return (w << 32) | (h & 0xffffffffLL);
+}
+
+JNIEXPORT jboolean JNICALL
+Java_com_varcain_guitarrackcraft_engine_NativeEngine_nativeRefreshPluginRegistry(JNIEnv* env, jobject thiz) {
+    if (!g_ctx || !g_ctx->pluginRegistry) {
+        LOGE("nativeRefreshPluginRegistry: registry not initialized");
+        return JNI_FALSE;
+    }
+    // Re-runs each factory's initialize() (which for VstFactory re-reads
+    // filesDir/vst_plugins/registry.json) and rebuilds pluginCache_ from
+    // their enumeratePlugins(). Called from Kotlin after the Manage VST UI
+    // imports or removes a plugin so the rack browser sees the new entry
+    // without an engine restart.
+    const bool ok = g_ctx->pluginRegistry->initializeAll();
+    LOGI("nativeRefreshPluginRegistry: ok=%d", ok ? 1 : 0);
+    return ok ? JNI_TRUE : JNI_FALSE;
 }
 
 JNIEXPORT jboolean JNICALL

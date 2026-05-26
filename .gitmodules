@@ -116,3 +116,12 @@
 [submodule "3rd_party/doubletracker.lv2"]
 	path = 3rd_party/doubletracker.lv2
 	url = https://github.com/Varcain/doubletracker.lv2
+[submodule "vsthost_lib/external/wine-upstream"]
+	path = vsthost_lib/external/wine-upstream
+	url = https://github.com/wine-mirror/wine.git
+[submodule "vsthost_lib/external/fex-upstream"]
+	path = vsthost_lib/external/fex-upstream
+	url = https://github.com/FEX-Emu/FEX.git
+[submodule "vsthost_lib/external/llvm-mingw"]
+	path = vsthost_lib/external/llvm-mingw
+	url = https://github.com/mstorsjo/llvm-mingw.git

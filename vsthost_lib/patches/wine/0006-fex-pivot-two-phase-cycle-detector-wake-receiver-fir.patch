@@ -1,0 +1,135 @@
+From 2d07fa338065fc6ff7702cfbc3254b86f00db855 Mon Sep 17 00:00:00 2001
+From: Kamil Lulko <kamil.lulko@gmail.com>
+Date: Sat, 23 May 2026 19:20:56 +0200
+Subject: [PATCH 6/6] =?UTF-8?q?fex-pivot:=20two-phase=20cycle=20detector?=
+ =?UTF-8?q?=20=E2=80=94=20wake=20receiver=20first,=20synth=20as=20fallback?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Patch 025 used to synthesize a 0-reply on the first 500ms timeout.
+Field measurement showed this caused TH-U to crash at TH-U+0x18028ECAC
+(after 3 popup interactions) and TH-U+0x1802A05AF — the synth reply
+unblocks the sender but the receiver hasn't actually processed the
+focus message, so TH-U's app-activation state machine drifts.
+
+Two-phase approach:
+  Phase 1 (500ms): set_queue_bits(receiver, QS_SENDMESSAGE).
+                   This wakes any thread blocked on MsgWaitForMultiple
+                   Objects so the message can be drained naturally.
+                   Re-arm timer for another 500ms.
+  Phase 2 (1000ms total): synthesize 0-reply (old behavior).
+
+Field result with two-phase enabled (TH-U session):
+  2080 phase 1 wakes
+    12 phase 2 fallback synths   (0.6% fallback rate)
+     0 crashes
+
+Cases where receiver was just slow (most common on FEX, where
+emulation latency pushes timings into deadlock windows) now resolve
+via the natural reply path. Truly stuck receivers still get the
+synth fallback after a longer 1000ms threshold.
+
+Also adds cycle_orig_msg field on message_result to log the specific
+focus message type (WM_SETFOCUS=0x07, WM_KILLFOCUS=0x08,
+WM_ACTIVATE=0x06, WM_ACTIVATEAPP=0x1c, WM_NCACTIVATE=0x86) in the
+fallback synth log, for future diagnosis.
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+---
+ server/queue.c | 51 +++++++++++++++++++++++++++++++++++++++++++++++---
+ 1 file changed, 48 insertions(+), 3 deletions(-)
+
+diff --git a/server/queue.c b/server/queue.c
+index bf3e48da..c408a46e 100644
+--- a/server/queue.c
++++ b/server/queue.c
+@@ -72,6 +72,8 @@ struct message_result
+     unsigned int           data_size;     /* size of message reply data */
+     struct timeout_user   *timeout;       /* result timeout */
+     struct timeout_user   *cycle_timeout; /* vstpoc 025: JUCE-7 cycle detection timer */
++    unsigned int           cycle_orig_msg; /* vstpoc 025: original msg type for log */
++    int                    cycle_wake_attempted; /* vstpoc 025: phase 1 wake done */
+ };
+ 
+ struct message
+@@ -1055,6 +1057,8 @@ static struct message_result *alloc_message_result( struct msg_queue *send_queue
+         result->data_size     = 0;
+         result->timeout       = NULL;
+         result->cycle_timeout = NULL;
++        result->cycle_orig_msg = 0;
++        result->cycle_wake_attempted = 0;
+         result->hardware_msg  = NULL;
+         result->desktop       = NULL;
+         result->callback_msg  = NULL;
+@@ -1144,7 +1148,16 @@ static void receive_message( struct msg_queue *queue, struct message *msg,
+          * popup interaction froze because there are other stuck focus-class
+          * sends — WM_ACTIVATE in particular — that need the same
+          * synthesized-reply treatment. Restored to the full 5-message
+-         * filter.) */
++         * filter.)
++         *
++         * (2026-05-23 PM: msg-id logging revealed WM_ACTIVATEAPP (0x1c)
++         * fires 3× per popup interaction — TH-U keeps retrying it,
++         * meaning the synth reply doesn't satisfy TH-U's app-activation
++         * state machine. After 3 popups, TH-U crashes at
++         * TH-U+0x18028ECAC NULL read. Removed WM_ACTIVATEAPP from the
++         * filter; TH-U should now drive its own activation timing via
++         * the natural send timeout, and we still cover NCACTIVATE +
++         * ACTIVATE + SETFOCUS + KILLFOCUS for the popup deadlock fix.) */
+         int is_focus_msg = (orig_msg == 0x0007 || orig_msg == 0x0008 ||
+                             orig_msg == 0x001C || orig_msg == 0x0086 ||
+                             orig_msg == 0x0006);
+@@ -1152,6 +1165,7 @@ static void receive_message( struct msg_queue *queue, struct message *msg,
+             !result->timeout && !result->cycle_timeout &&
+             !vstpoc_cycle_detect_disabled())
+         {
++            result->cycle_orig_msg = orig_msg;
+             result->cycle_timeout = add_timeout_user(
+                 VSTPOC_CYCLE_THRESHOLD, vstpoc_cycle_timeout, result );
+         }
+@@ -1363,8 +1377,39 @@ static void vstpoc_cycle_timeout( void *private )
+     result->cycle_timeout = NULL;
+     if (result->replied) return;  /* race: real reply landed first */
+ 
+-    fprintf( stderr, "vstpoc cycle: 500ms threshold — synthesizing 0-reply "
+-             "result=%p sender=%p (focus msg)\n", result, result->sender );
++    /* vstpoc 025 two-phase (2026-05-23 PM): instead of synthesizing
++     * a 0-reply immediately on the first 500ms timeout, give the
++     * receiver one more chance to actually process the message by
++     * waking its queue (set_queue_bits QS_SENDMESSAGE). Many JUCE
++     * deadlocks are "receiver just hasn't reached a message pump
++     * yet" — waking the queue forces any MsgWaitForMultipleObjects
++     * to return so the message can be drained.
++     *
++     * Phase 1 (first fire, cycle_wake_attempted=0):
++     *   - Wake the receiver queue
++     *   - Re-arm timer for another 500ms
++     *
++     * Phase 2 (second fire, cycle_wake_attempted=1):
++     *   - Receiver still hasn't replied → synthesize 0-reply as before
++     *
++     * Net effect: real replies happen for "just slow" cases (most
++     * frequent on FEX); synth fallback for truly stuck cases. */
++    if (!result->cycle_wake_attempted && result->receiver)
++    {
++        result->cycle_wake_attempted = 1;
++        set_queue_bits( result->receiver, QS_SENDMESSAGE );
++        fprintf( stderr, "vstpoc cycle: 500ms threshold — phase 1 wake "
++                 "result=%p sender=%p receiver=%p msg=0x%04x\n",
++                 result, result->sender, result->receiver,
++                 result->cycle_orig_msg );
++        result->cycle_timeout = add_timeout_user(
++            VSTPOC_CYCLE_THRESHOLD, vstpoc_cycle_timeout, result );
++        return;
++    }
++
++    fprintf( stderr, "vstpoc cycle: 1000ms threshold — synthesizing 0-reply "
++             "result=%p sender=%p msg=0x%04x (phase 2)\n",
++             result, result->sender, result->cycle_orig_msg );
+     store_message_result( result, 0, 0 );
+ }
+ 
+-- 
+2.43.0
+

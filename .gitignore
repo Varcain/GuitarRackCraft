@@ -121,3 +121,17 @@ neural_pack/src/main/assets/plugins/arm64-v8a/*.so
 gxplugins_pack/src/main/assets/plugins/arm64-v8a/*.so
 brummer_pack/src/main/assets/plugins/arm64-v8a/*.so
 app/src/full/jniLibs/arm64-v8a/*.so
+
+# vsthost_lib build artifacts (rebuilt by vsthost_lib/scripts/)
+# Everything in assets/ and jniLibs/ is generated — wine binaries, FEX PE DLLs,
+# X11/gnutls/freetype .so files, PE32+ guest .exe files, DXVK runtime, fonts.
+# See vsthost_lib/README.md (TBD in Step 5) for the build pipeline.
+vsthost_lib/src/main/assets/*
+vsthost_lib/src/main/jniLibs/
+# Build-script caches and llvm-mingw build outputs
+vsthost_lib/.cache/
+vsthost_lib/external/llvm-mingw/install/
+vsthost_lib/external/llvm-mingw/build/
+vsthost_lib/external/wine-upstream/build-*/
+vsthost_lib/external/fex-upstream/build-*/
+vsthost_lib/toolchain/

@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <application
+        android:name="com.varcain.guitarrackcraft.VstHostApplication"
+        tools:replace="android:name">
+
+        <!-- VST plugin editor. Lives in a SEPARATE process to isolate
+             wine + DXVK EGL state from the main process's HWUI compositor.
+             android:exported="false" because only the rack UI launches it
+             via explicit Intent. Full-flavor only — the playstore flavor
+             doesn't have vsthost_lib so this activity wouldn't compile. -->
+        <!-- VST editor activity. Lives in the MAIN process so it shares the
+             in-process X11 server + libvsthost.so state with the audio
+             engine that spawned the wine subprocess. (Tried :vstui isolation
+             but the X11 server can only run in one process per display, and
+             wine was launched by the main process — separating the editor
+             causes SIGSEGV on X11 server init.) -->
+        <activity
+            android:name="com.varcain.guitarrackcraft.ui.vst.VstEditorActivity"
+            android:exported="true"
+            android:configChanges="orientation|screenSize|screenLayout"
+            android:theme="@style/Theme.GuitarRackCraft" />
+
+    </application>
+</manifest>

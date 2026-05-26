@@ -35,6 +35,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Album
 import androidx.compose.material.icons.filled.ExpandLess
+import androidx.compose.material.icons.filled.Extension
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
@@ -46,6 +47,7 @@ import androidx.compose.material.icons.filled.Dashboard
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.DesktopWindows
 import androidx.compose.material.icons.filled.Fullscreen
+import androidx.compose.material.icons.filled.Keyboard
 import androidx.compose.material.icons.filled.LibraryMusic
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.MoreVert
@@ -235,6 +237,7 @@ fun RackScreen(
     onNavigateToSettings: () -> Unit = {},
     onNavigateToRecordings: () -> Unit = {},
     onNavigateToTone3000: (String?, String?, String?, Int, String?) -> Unit = { _, _, _, _, _ -> },
+    onNavigateToVstManager: () -> Unit = {},
     onReplacePlugin: (Int) -> Unit = {},
     viewModel: RackViewModel = viewModel()
 ) {
@@ -571,6 +574,22 @@ fun RackScreen(
                                         )
                                     }
                                 )
+                                if (com.varcain.guitarrackcraft.BuildConfig.HAS_VST_HOST) {
+                                    DropdownMenuItem(
+                                        text = { Text("Manage VST") },
+                                        onClick = {
+                                            showOverflowMenu = false
+                                            onNavigateToVstManager()
+                                        },
+                                        leadingIcon = {
+                                            Icon(
+                                                Icons.Default.Extension,
+                                                contentDescription = null,
+                                                modifier = Modifier.size(20.dp)
+                                            )
+                                        }
+                                    )
+                                }
                                 DropdownMenuItem(
                                     text = { Text("About") },
                                     onClick = {
@@ -1241,19 +1260,65 @@ fun PluginCard(
                             modifier = Modifier.size(20.dp)
                         )
                     }
-                    // Fullscreen — only for X11 or Modgui modes
-                    if (currentUiMode == UiType.X11 || currentUiMode == UiType.MODGUI) {
+                    // Fullscreen button:
+                    //   - LV2 X11 / Modgui: shown when those modes are active (uses LV2 dims)
+                    //   - VST: always shown in LANDSCAPE so users can pop the wine editor
+                    //     full-screen without first switching into X11 mode (wine editors
+                    //     are typically wider than tall and benefit most from landscape).
+                    val isLandscapeOrientation = androidx.compose.ui.platform.LocalConfiguration.current.orientation ==
+                        android.content.res.Configuration.ORIENTATION_LANDSCAPE
+                    val isVstFsCandidate = (pluginInfo.format == "VST2" || pluginInfo.format == "VST3") &&
+                        com.varcain.guitarrackcraft.BuildConfig.HAS_VST_HOST &&
+                        isLandscapeOrientation
+                    val showFullscreenButton = currentUiMode == UiType.X11 || currentUiMode == UiType.MODGUI ||
+                        isVstFsCandidate
+                    if (showFullscreenButton) {
                         IconButton(
                             onClick = {
-                                val w = if (currentUiMode == UiType.X11) x11PluginNaturalW else modguiContentWidth
-                                val h = if (currentUiMode == UiType.X11) x11PluginNaturalH else modguiContentHeight
-                                onOpenFullscreen(pluginIndex, currentUiMode, w, h)
+                                if (isVstFsCandidate && currentUiMode != UiType.X11) {
+                                    // Auto-switch into X11 so the fullscreen layout renders
+                                    // VstInlineEditor (the sliders panel would be useless full-screen).
+                                    currentUiMode = UiType.X11
+                                    viewModel.setPreferredUiTypeForPlugin(pluginInfo.fullId, UiType.X11)
+                                }
+                                val (w, h) = when {
+                                    pluginInfo.format == "VST2" || pluginInfo.format == "VST3" -> {
+                                        // Use the wine editor's reported size; falls back to 0/0
+                                        // if not yet known (orientation request is gated on
+                                        // w > h*1.3 so 0/0 just skips the rotate, harmless).
+                                        val encoded = runCatching {
+                                            com.varcain.guitarrackcraft.engine.NativeEngine.getInstance()
+                                                .nativeGetRackPluginEditorSize(pluginIndex)
+                                        }.getOrDefault(0L)
+                                        Pair((encoded ushr 32).toInt(), (encoded and 0xffffffffL).toInt())
+                                    }
+                                    currentUiMode == UiType.X11 -> Pair(x11PluginNaturalW, x11PluginNaturalH)
+                                    else -> Pair(modguiContentWidth, modguiContentHeight)
+                                }
+                                onOpenFullscreen(pluginIndex, UiType.X11, w, h)
                             },
                             modifier = Modifier.size(32.dp)
                         ) {
                             Icon(
                                 Icons.Default.Fullscreen,
                                 contentDescription = "Fullscreen",
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
+                    }
+                    // Keyboard — VST plugins in X11 mode (wine editor is on-screen)
+                    val isVstPluginChrome = pluginInfo.format == "VST2" || pluginInfo.format == "VST3"
+                    if (isVstPluginChrome && com.varcain.guitarrackcraft.BuildConfig.HAS_VST_HOST &&
+                        currentUiMode == UiType.X11) {
+                        IconButton(
+                            onClick = {
+                                com.varcain.guitarrackcraft.ui.vst.VstKeyboardAction.showKeyboard(pluginIndex)
+                            },
+                            modifier = Modifier.size(32.dp)
+                        ) {
+                            Icon(
+                                Icons.Default.Keyboard,
+                                contentDescription = "Keyboard",
                                 modifier = Modifier.size(20.dp)
                             )
                         }
@@ -1293,9 +1358,12 @@ fun PluginCard(
 
                 // Allocate X11 display number for this plugin — always kept alive while in rack.
                 // Display is only released when plugin is removed from rack (onDispose).
+                // VST plugins have their OWN X11 server inside vsthost_lib (different display
+                // number range) — they don't borrow from :app's X11DisplayManager.
+                val isVstPlugin = pluginInfo.format == "VST2" || pluginInfo.format == "VST3"
                 var x11DisplayNumber by remember {
                     mutableStateOf(
-                        if (pluginInfo.hasX11Ui) X11DisplayManager.allocateDisplay() else -1
+                        if (pluginInfo.hasX11Ui && !isVstPlugin) X11DisplayManager.allocateDisplay() else -1
                     )
                 }
 
@@ -1395,8 +1463,11 @@ fun PluginCard(
                 // CRITICAL: Always keep PluginX11UiView in composition to avoid TextureView destruction.
                 // When switching away from X11 mode, we hide it instead of removing it.
                 // This prevents the Android graphics driver from destroying shared mutexes.
+                // VST plugins have their own X11 server (vsthost_lib) and use the separate
+                // VstInlineEditor block further down — skip the LV2 viewport entirely.
                 var x11UiReady by rememberSaveable { mutableStateOf(false) }
                 var x11OnScreen by remember { mutableStateOf(true) }
+                if (pluginInfo.format == "LV2") {
                 Box(modifier = if (isFullscreen && currentUiMode == UiType.X11) Modifier.fillMaxSize() else Modifier.fillMaxWidth()) {
                     BoxWithConstraints(
                         modifier = if (isFullscreen && currentUiMode == UiType.X11) Modifier.fillMaxSize() else Modifier.fillMaxWidth(),
@@ -1472,6 +1543,34 @@ fun PluginCard(
                         onScaleChange = { x11UserScale = it },
                         modifier = Modifier.align(Alignment.CenterHorizontally)
                     )
+                }
+                }  // end if (pluginInfo.format == "LV2")
+
+                // VST X11 (wine editor) — uses vsthost_lib's separate X11 server.
+                // Composed only when X11 mode is active. PluginSurface uses
+                // destroyOnDispose=false so the wine subprocess + X11 server
+                // stay alive on mode switch; only the SurfaceView is recreated.
+                // attachSurface drains any prior render thread on re-attach.
+                if (isVstPlugin && com.varcain.guitarrackcraft.BuildConfig.HAS_VST_HOST &&
+                    currentUiMode == UiType.X11) {
+                    Box(modifier = if (isFullscreen) Modifier.fillMaxSize() else Modifier.fillMaxWidth()) {
+                        com.varcain.guitarrackcraft.ui.vst.VstInlineEditor(pluginIndex, isFullscreen = isFullscreen)
+                        if (isFullscreen) {
+                            IconButton(
+                                onClick = onExitFullscreen,
+                                modifier = Modifier
+                                    .align(Alignment.TopStart)
+                                    .padding(16.dp)
+                                    .background(Color.Black.copy(alpha = 0.5f), CircleShape)
+                            ) {
+                                Icon(
+                                    Icons.Default.Close,
+                                    contentDescription = "Exit fullscreen",
+                                    tint = Color.White
+                                )
+                            }
+                        }
+                    }
                 }
 
                 // Model picker shared state — declared before modgui block so it can be referenced there
@@ -1664,6 +1763,7 @@ fun PluginCard(
                             Spacer(modifier = Modifier.height(8.dp))
                         }
                         val controlPorts = pluginInfo.controlPorts
+                        val isVst = pluginInfo.format == "VST2" || pluginInfo.format == "VST3"
                         if (controlPorts.isNotEmpty()) {
                             Divider()
                             Spacer(modifier = Modifier.height(8.dp))
@@ -1678,7 +1778,7 @@ fun PluginCard(
                                     )
                                 }
                             }
-                        } else if (modelConfig == null) {
+                        } else if (modelConfig == null && !isVst) {
                             Text(
                                 text = "No control parameters available",
                                 style = MaterialTheme.typography.bodySmall,

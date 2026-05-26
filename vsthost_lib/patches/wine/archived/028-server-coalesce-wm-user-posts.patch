@@ -1,0 +1,174 @@
+diff --git a/server/queue.c b/server/queue.c
+index c408a46e..5c82a64a 100644
+--- a/server/queue.c
++++ b/server/queue.c
+@@ -27,6 +27,7 @@
+ #include <unistd.h>
+ #include <poll.h>
+ #include <limits.h>
++#include <signal.h>
+ 
+ #include "ntstatus.h"
+ #define WIN32_NO_STATUS
+@@ -913,7 +914,19 @@ static int merge_message( struct thread_input *input, const struct message *msg
+ /* vstpoc patch 025: forward decls (definitions are further down the file). */
+ static int vstpoc_cycle_detect_disabled( void );
+ static void vstpoc_cycle_timeout( void *private );
+-#define VSTPOC_CYCLE_THRESHOLD ((timeout_t)500 * 10000)  /* 500ms in 100ns units */
++/* vstpoc patch 028: post-message coalesce (defined further down). */
++static int vstpoc_should_drop_post( struct msg_queue *queue, struct message *msg );
++
++/* vstpoc 025 cycle detect threshold. Tuning trade-off:
++ *   - Too short (≤200ms): synth fires while receiver is still doing
++ *     legit work; sender continues with potentially-wrong reply value
++ *     and TH-U state machine gets confused → crash at +0x1802DF0C3.
++ *   - Too long (≥1000ms): popup-click compounds many cycles into a
++ *     multi-second UI hang and Android marks the app ANR-frozen.
++ *   500ms hits the sweet spot in testing — short enough to keep total
++ *   under ANR threshold, long enough that receiver usually completes
++ *   naturally and synth only fires for the truly-stuck focus sends. */
++#define VSTPOC_CYCLE_THRESHOLD ((timeout_t)500 * 10000)  /* 500ms */
+ 
+ /* free a result structure */
+ static void free_result( struct message_result *result )
+@@ -1377,42 +1390,86 @@ static void vstpoc_cycle_timeout( void *private )
+     result->cycle_timeout = NULL;
+     if (result->replied) return;  /* race: real reply landed first */
+ 
+-    /* vstpoc 025 two-phase (2026-05-23 PM): instead of synthesizing
+-     * a 0-reply immediately on the first 500ms timeout, give the
+-     * receiver one more chance to actually process the message by
+-     * waking its queue (set_queue_bits QS_SENDMESSAGE). Many JUCE
+-     * deadlocks are "receiver just hasn't reached a message pump
+-     * yet" — waking the queue forces any MsgWaitForMultipleObjects
+-     * to return so the message can be drained.
+-     *
+-     * Phase 1 (first fire, cycle_wake_attempted=0):
+-     *   - Wake the receiver queue
+-     *   - Re-arm timer for another 500ms
+-     *
+-     * Phase 2 (second fire, cycle_wake_attempted=1):
+-     *   - Receiver still hasn't replied → synthesize 0-reply as before
+-     *
+-     * Net effect: real replies happen for "just slow" cases (most
+-     * frequent on FEX); synth fallback for truly stuck cases. */
+-    if (!result->cycle_wake_attempted && result->receiver)
+-    {
+-        result->cycle_wake_attempted = 1;
+-        set_queue_bits( result->receiver, QS_SENDMESSAGE );
+-        fprintf( stderr, "vstpoc cycle: 500ms threshold — phase 1 wake "
+-                 "result=%p sender=%p receiver=%p msg=0x%04x\n",
+-                 result, result->sender, result->receiver,
+-                 result->cycle_orig_msg );
+-        result->cycle_timeout = add_timeout_user(
+-            VSTPOC_CYCLE_THRESHOLD, vstpoc_cycle_timeout, result );
+-        return;
+-    }
+-
+-    fprintf( stderr, "vstpoc cycle: 1000ms threshold — synthesizing 0-reply "
+-             "result=%p sender=%p msg=0x%04x (phase 2)\n",
++    /* vstpoc 025: single-phase synth-only. We previously tried two phases
++     * with a phase-1 "wake" — set_queue_bits (cosmetic) or signal
++     * (active). The signal variant broke TH-U: it interrupts the
++     * receiver's in-flight RtlWaitOnAddress, returning STATUS_ALERTED
++     * prematurely so the receiver thinks its wait was satisfied and
++     * proceeds with bogus state → null deref crash at TH-U+0x1802DF0C3.
++     * Synth alone is safe: only the sender is unblocked (via a fake
++     * "your message was processed with reply=0"); the receiver keeps
++     * running its WindowProc naturally and stays in consistent state. */
++    fprintf( stderr, "vstpoc cycle: %dms threshold — synthesizing 0-reply "
++             "result=%p sender=%p msg=0x%04x\n",
++             (int)(VSTPOC_CYCLE_THRESHOLD / 10000),
+              result, result->sender, result->cycle_orig_msg );
+     store_message_result( result, 0, 0 );
+ }
+ 
++/* vstpoc patch 028: drop posted WM_USER+N if the target queue already
++ * has >= threshold pending of the same (hwnd, msg). Defeats the JUCE-
++ * on-FEX callback-storm livelock where TH-U's MessageManager thread
++ * spins at 80% CPU forever draining WM_USER+123 that worker threads
++ * post faster than FEX can dispatch.
++ *
++ * Threshold is per (hwnd, msg) — different msg IDs to the same hwnd
++ * each have their own quota, so legitimate distinct callbacks aren't
++ * starved.
++ *
++ * Lossy by design: dropped messages = dropped JUCE async callbacks.
++ * The receiver plugin may end up in inconsistent state. Trade off
++ * accepted because the alternative is the host being permanently CPU-
++ * bound with no recovery possible. Default OFF; enable with
++ * WINE_VSTPOC_COALESCE_POSTS=<threshold>, e.g. 200. */
++static int vstpoc_coalesce_threshold( void )
++{
++    static int checked = 0, threshold = 0;
++    if (!checked)
++    {
++        const char *e = getenv("WINE_VSTPOC_COALESCE_POSTS");
++        threshold = (e && *e) ? atoi(e) : 0;
++        if (threshold < 0) threshold = 0;
++        checked = 1;
++    }
++    return threshold;
++}
++
++static int vstpoc_should_drop_post( struct msg_queue *queue, struct message *msg )
++{
++    int threshold = vstpoc_coalesce_threshold();
++    struct message *m;
++    int matches = 0, scanned = 0;
++
++    if (threshold <= 0) return 0;
++    if (msg->msg < 0x400) return 0;  /* only the WM_USER+N range */
++
++    /* Scan the receiver's posted-message list, capped to avoid O(huge)
++     * per post when the queue is already saturated. If we find threshold
++     * matches in the first 8192 entries, that's signal enough — drop. */
++    LIST_FOR_EACH_ENTRY( m, &queue->msg_list[POST_MESSAGE], struct message, entry )
++    {
++        if (++scanned > 8192) break;
++        if (m->msg == msg->msg && m->win == msg->win)
++        {
++            if (++matches >= threshold)
++            {
++                static int last_warn_msg = -1;
++                static user_handle_t last_warn_win = 0;
++                if (last_warn_msg != (int)msg->msg || last_warn_win != msg->win)
++                {
++                    fprintf( stderr, "vstpoc 028: coalescing posts hwnd=%08x "
++                             "msg=0x%04x (>= %d pending — dropping further posts)\n",
++                             msg->win, msg->msg, threshold );
++                    last_warn_msg = msg->msg;
++                    last_warn_win = msg->win;
++                }
++                return 1;
++            }
++        }
++    }
++    return 0;
++}
++
+ static int msg_queue_add_queue( struct object *obj, struct wait_queue_entry *entry )
+ {
+     struct msg_queue *queue = (struct msg_queue *)obj;
+@@ -3393,6 +3450,21 @@ DECL_HANDLER(send_message)
+             set_queue_bits( recv_queue, QS_SENDMESSAGE );
+             break;
+         case MSG_POSTED:
++            /* vstpoc patch 028: JUCE plugins on FEX-Emu can post WM_USER+N
++             * faster than the MessageManager thread can drain. TH-U after a
++             * popup dismiss enters a runaway state where 5000+ WM_USER+123
++             * pile up in the queue, the MM thread spins at 80% CPU forever
++             * processing them, host never recovers. Coalesce: when the
++             * receiver queue already has N pending posts to the same
++             * (hwnd, msg) pair, drop new ones. Gated by env var
++             * WINE_VSTPOC_COALESCE_POSTS=<threshold>, default OFF.
++             * Only WM_USER+N (msg >= 0x400) is eligible — system messages
++             * (WM_PAINT, WM_KEYDOWN…) are never dropped. */
++            if (vstpoc_should_drop_post( recv_queue, msg ))
++            {
++                free_message( msg );
++                break;
++            }
+             list_add_tail( &recv_queue->msg_list[POST_MESSAGE], &msg->entry );
+             set_queue_bits( recv_queue, QS_POSTMESSAGE|QS_ALLPOSTMESSAGE );
+             if (msg->msg == WM_HOTKEY)

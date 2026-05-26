@@ -1,0 +1,45 @@
+/*
+ * Copyright (C) 2026 Kamil Lulko <kamil.lulko@gmail.com>
+ *
+ * This file is part of Guitar RackCraft.
+ *
+ * Guitar RackCraft is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * Guitar RackCraft is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with Guitar RackCraft. If not, see <https://www.gnu.org/licenses/>.
+ */
+
+#include "PluginUIGuard.h"
+#include "../x11/DisplayState.h"
+#include <atomic>
+
+namespace guitarrackcraft {
+
+static std::atomic<bool> g_anyPluginUiCreating{false};
+
+bool isCreatingPluginUI() {
+    return g_anyPluginUiCreating.load(std::memory_order_acquire);
+}
+
+void setCreatingPluginUI(bool value) {
+    g_anyPluginUiCreating.store(value, std::memory_order_release);
+}
+
+bool isCreatingPluginUIForDisplay(int displayNumber) {
+    std::lock_guard<std::mutex> lock(displayStateMutex());
+    auto it = displayStates().find(displayNumber);
+    if (it != displayStates().end()) {
+        return it->second.phase == DisplayState::Phase::Creating;
+    }
+    return false;
+}
+
+} // namespace guitarrackcraft

@@ -1,0 +1,82 @@
+diff --git a/dlls/win32u/vulkan.c b/dlls/win32u/vulkan.c
+index 048df02..a0af73a 100644
+--- a/dlls/win32u/vulkan.c
++++ b/dlls/win32u/vulkan.c
+@@ -166,8 +166,17 @@ static void adjust_surface_capabilities( struct vulkan_instance *instance, struc
+     if (!capabilities->maxImageCount) capabilities->maxImageCount = max( capabilities->minImageCount, 16 );
+ 
+     /* Update the image extents to match what the Win32 WSI would provide. */
+-    /* FIXME: handle DPI scaling, somehow */
+-    NtUserGetClientRect( surface->hwnd, &client_rect, NtUserGetDpiForWindow( surface->hwnd ) );
++    /* Use MDT_RAW_DPI (physical pixels) instead of NtUserGetDpiForWindow.
++     * The latter returns the per-window DPI (96 for DPI-unaware plugins
++     * like AmpCraft), so NtUserGetClientRect with that DPI returns the
++     * logical/scaled-down size — 896 instead of 1290 on a 138-DPI display.
++     * Then DXVK creates a 896-wide swapchain but x11drv's surface_presented
++     * uses RAW_DPI for its blit target (rect_dst), so we'd StretchBlt from a
++     * 896 src into a 1290 dst — except the actual painted region in the X11
++     * client window is only 896 wide. Net result: only the left ~70% of the
++     * editor renders, right side stays brown. Matching the DPI here gives
++     * DXVK the full physical extent and lets the present stay 1:1. */
++    NtUserGetClientRect( surface->hwnd, &client_rect, NtUserGetWinMonitorDpi( surface->hwnd, MDT_RAW_DPI ) );
+     capabilities->minImageExtent.width = client_rect.right - client_rect.left;
+     capabilities->minImageExtent.height = client_rect.bottom - client_rect.top;
+     capabilities->maxImageExtent.width = client_rect.right - client_rect.left;
+@@ -187,6 +196,28 @@ static VkResult win32u_vkGetPhysicalDeviceSurfaceCapabilitiesKHR( VkPhysicalDevi
+     if (!NtUserIsWindow( surface->hwnd )) return VK_ERROR_SURFACE_LOST_KHR;
+     res = instance->p_vkGetPhysicalDeviceSurfaceCapabilitiesKHR( physical_device->host.physical_device,
+                                                        surface->obj.host.surface, capabilities );
++    if (res)
++    {
++        /* Android-Vulkan path: when winex11.drv hands wine a stub
++         * VkSurfaceKHR (no real ANativeWindow because libvulkan.so lacks
++         * vkCreateXlibSurfaceKHR), the underlying loader can't query it
++         * and returns an error. Synthesize plausible capabilities from
++         * the HWND rect — this gives DXVK a swapchain extent matching
++         * what the plugin's editor wants instead of an Adreno default
++         * (which crops the right side of large editors). */
++        WARN( "vkGetPhysicalDeviceSurfaceCapabilitiesKHR failed for host_surface %p (res=%d) — synthesizing caps from HWND.\n",
++              (void *)(UINT_PTR)surface->obj.host.surface, res );
++        memset( capabilities, 0, sizeof(*capabilities) );
++        capabilities->minImageCount = 2;
++        capabilities->maxImageCount = 16;
++        capabilities->currentTransform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
++        capabilities->supportedTransforms = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
++        capabilities->supportedCompositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
++        capabilities->supportedUsageFlags = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
++                                            VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
++                                            VK_IMAGE_USAGE_TRANSFER_DST_BIT;
++        res = VK_SUCCESS;
++    }
+     if (!res) adjust_surface_capabilities( instance, surface, capabilities );
+     return res;
+ }
+@@ -242,9 +273,26 @@ static VkResult win32u_vkGetPhysicalDeviceSurfaceFormatsKHR( VkPhysicalDevice cl
+     struct vulkan_physical_device *physical_device = vulkan_physical_device_from_handle( client_physical_device );
+     struct surface *surface = surface_from_handle( client_surface );
+     struct vulkan_instance *instance = physical_device->instance;
+-
+-    return instance->p_vkGetPhysicalDeviceSurfaceFormatsKHR( physical_device->host.physical_device,
++    VkResult res = instance->p_vkGetPhysicalDeviceSurfaceFormatsKHR( physical_device->host.physical_device,
+                                                                 surface->obj.host.surface, format_count, formats );
++    if (res)
++    {
++        /* Android-Vulkan stub surface path — host loader can't enumerate
++         * formats on our fake VkSurfaceKHR. Synthesize a single common
++         * BGRA8 SRGB format; DXVK is happy with that. Match the pattern
++         * used in vkGetPhysicalDeviceSurfaceCapabilitiesKHR above. */
++        if (!formats)
++        {
++            *format_count = 1;
++            return VK_SUCCESS;
++        }
++        if (*format_count == 0) return VK_INCOMPLETE;
++        formats[0].format = VK_FORMAT_B8G8R8A8_UNORM;
++        formats[0].colorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
++        *format_count = 1;
++        return VK_SUCCESS;
++    }
++    return res;
+ }
+ 
+ static VkResult win32u_vkGetPhysicalDeviceSurfaceFormats2KHR( VkPhysicalDevice client_physical_device, const VkPhysicalDeviceSurfaceInfo2KHR *surface_info,

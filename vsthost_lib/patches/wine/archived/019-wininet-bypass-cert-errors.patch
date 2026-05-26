@@ -1,0 +1,19 @@
+diff --git a/dlls/wininet/netconnection.c b/dlls/wininet/netconnection.c
+--- a/dlls/wininet/netconnection.c
++++ b/dlls/wininet/netconnection.c
+@@ -65,6 +65,15 @@ static DWORD netconn_verify_cert(netconn_t *conn, PCCERT_CONTEXT cert, HCERTSTOR
+     }
+ 
+     errors = chain->TrustStatus.dwErrorStatus;
++    /* vstpoc patch (019): wine on Android Bionic fails CertGetCertificateChain
++     * signature verification (gnutls behaviour quirk vs glibc), even when the
++     * chain is otherwise OK. Bypass UNTRUSTED_ROOT + NOT_SIGNATURE_VALID +
++     * NOT_TIME_VALID + PARTIAL_CHAIN so plugins that need HTTPS can proceed. */
++    errors &= ~(CERT_TRUST_IS_UNTRUSTED_ROOT |
++                CERT_TRUST_IS_NOT_SIGNATURE_VALID |
++                CERT_TRUST_IS_NOT_TIME_VALID |
++                CERT_TRUST_IS_PARTIAL_CHAIN);
++    ((CERT_CHAIN_CONTEXT *)chain)->TrustStatus.dwErrorStatus = errors;
+ 
+     do {
+         /* This seems strange, but that's what tests show */

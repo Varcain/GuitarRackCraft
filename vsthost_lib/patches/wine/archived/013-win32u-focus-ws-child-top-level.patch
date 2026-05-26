@@ -1,0 +1,28 @@
+diff --git a/dlls/win32u/input.c b/dlls/win32u/input.c
+index 1fbf8c4..e7d9474 100644
+--- a/dlls/win32u/input.c
++++ b/dlls/win32u/input.c
+@@ -2131,7 +2131,22 @@ HWND WINAPI NtUserSetFocus( HWND hwnd )
+             parent = NtUserGetAncestor( hwndTop, GA_PARENT );
+             if (!parent || parent == get_desktop_window())
+             {
+-                if ((style & (WS_POPUP|WS_CHILD)) == WS_CHILD) return 0;
++                /* vstpoc patch (013-win32u-focus-ws-child-top-level):
++                 * upstream returns 0 here, refusing to focus WS_CHILD
++                 * windows whose parent is the desktop. VST plugin editors
++                 * (vst_host calls effEditOpen with GetDesktopWindow() as
++                 * the parent HWND, plugin makes its editor WS_CHILD)
++                 * always hit this. JUCE's TextField calls grabKeyboard
++                 * Focus → SetFocus, gets 0 back, and never commits its
++                 * internal focus → typed WM_CHAR is dropped. Mirror
++                 * patch 012 (wineserver is_valid_foreground_window):
++                 * allow top-level WS_CHILD to receive focus when there
++                 * is no other activatable candidate. */
++                if ((style & (WS_POPUP|WS_CHILD)) == WS_CHILD)
++                {
++                    /* break out and let set_focus_window handle it */
++                    break;
++                }
+                 break;
+             }
+             if (parent == get_hwnd_message_parent()) return 0;

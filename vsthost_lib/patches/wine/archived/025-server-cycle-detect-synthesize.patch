@@ -1,0 +1,170 @@
+diff --git a/server/queue.c b/server/queue.c
+index 10c8b70f..bf3e48da 100644
+--- a/server/queue.c
++++ b/server/queue.c
+@@ -71,6 +71,7 @@ struct message_result
+     void                  *data;          /* message reply data */
+     unsigned int           data_size;     /* size of message reply data */
+     struct timeout_user   *timeout;       /* result timeout */
++    struct timeout_user   *cycle_timeout; /* vstpoc 025: JUCE-7 cycle detection timer */
+ };
+ 
+ struct message
+@@ -907,10 +908,16 @@ static int merge_message( struct thread_input *input, const struct message *msg
+     return 0;
+ }
+ 
++/* vstpoc patch 025: forward decls (definitions are further down the file). */
++static int vstpoc_cycle_detect_disabled( void );
++static void vstpoc_cycle_timeout( void *private );
++#define VSTPOC_CYCLE_THRESHOLD ((timeout_t)500 * 10000)  /* 500ms in 100ns units */
++
+ /* free a result structure */
+ static void free_result( struct message_result *result )
+ {
+     if (result->timeout) remove_timeout_user( result->timeout );
++    if (result->cycle_timeout) remove_timeout_user( result->cycle_timeout );
+     free( result->data );
+     if (result->callback_msg) free_message( result->callback_msg );
+     if (result->hardware_msg) free_message( result->hardware_msg );
+@@ -939,6 +946,11 @@ static void store_message_result( struct message_result *res, lparam_t result, u
+         remove_timeout_user( res->timeout );
+         res->timeout = NULL;
+     }
++    if (res->cycle_timeout)
++    {
++        remove_timeout_user( res->cycle_timeout );
++        res->cycle_timeout = NULL;
++    }
+ 
+     if (res->hardware_msg)
+     {
+@@ -1035,16 +1047,17 @@ static struct message_result *alloc_message_result( struct msg_queue *send_queue
+     struct message_result *result = mem_alloc( sizeof(*result) );
+     if (result)
+     {
+-        result->msg          = msg;
+-        result->sender       = send_queue;
+-        result->receiver     = recv_queue;
+-        result->replied      = 0;
+-        result->data         = NULL;
+-        result->data_size    = 0;
+-        result->timeout      = NULL;
+-        result->hardware_msg = NULL;
+-        result->desktop      = NULL;
+-        result->callback_msg = NULL;
++        result->msg           = msg;
++        result->sender        = send_queue;
++        result->receiver      = recv_queue;
++        result->replied       = 0;
++        result->data          = NULL;
++        result->data_size     = 0;
++        result->timeout       = NULL;
++        result->cycle_timeout = NULL;
++        result->hardware_msg  = NULL;
++        result->desktop       = NULL;
++        result->callback_msg  = NULL;
+ 
+         if (msg->type == MSG_CALLBACK)
+         {
+@@ -1110,9 +1123,38 @@ static void receive_message( struct msg_queue *queue, struct message *msg,
+     /* put the result on the receiver result stack */
+     if (result)
+     {
++        unsigned int orig_msg = msg->msg;
+         result->msg = NULL;
+         result->recv_next  = queue->recv_result;
+         queue->recv_result = result;
++        /* vstpoc patch 025: arm cycle-detect timer ONLY for messages
++         * where set_focus_window in win32u/input.c discards the return
++         * value (the JUCE-7 popup-close deadlock vector). For other
++         * cross-thread sends, return values matter and faking a 0-reply
++         * leaves TH-U / JUCE in inconsistent state — observed empirically
++         * to either crash drag-drop (at TH-U+0x18028ECAC array destructor)
++         * or hang in subsequent state machine steps. Narrow scope:
++         *   0x0007 WM_SETFOCUS
++         *   0x0008 WM_KILLFOCUS
++         *   0x001C WM_ACTIVATEAPP
++         *   0x0086 WM_NCACTIVATE
++         *   0x0006 WM_ACTIVATE
++         *
++         * (Attempted 2026-05-23 to narrow to {SETFOCUS, KILLFOCUS} only;
++         * popup interaction froze because there are other stuck focus-class
++         * sends — WM_ACTIVATE in particular — that need the same
++         * synthesized-reply treatment. Restored to the full 5-message
++         * filter.) */
++        int is_focus_msg = (orig_msg == 0x0007 || orig_msg == 0x0008 ||
++                            orig_msg == 0x001C || orig_msg == 0x0086 ||
++                            orig_msg == 0x0006);
++        if (is_focus_msg &&
++            !result->timeout && !result->cycle_timeout &&
++            !vstpoc_cycle_detect_disabled())
++        {
++            result->cycle_timeout = add_timeout_user(
++                VSTPOC_CYCLE_THRESHOLD, vstpoc_cycle_timeout, result );
++        }
+     }
+     free( msg );
+     if (list_empty( &queue->msg_list[SEND_MESSAGE] )) clear_queue_bits( queue, QS_SENDMESSAGE );
+@@ -1271,6 +1313,61 @@ static int is_queue_hung( struct msg_queue *queue )
+     return 1;
+ }
+ 
++/* vstpoc patch 025: detect JUCE-7 popup-close cross-thread SendMessage cycle
++ * and break it by synthesizing a 0-reply once the receiver has held the
++ * message past a 500ms threshold without replying.
++ *
++ * Cycle pattern:
++ *   Thread A calls SendMessage cross-thread to thread B's window (sync).
++ *   A blocks in wait_message_reply.
++ *   B dequeues the message via get_message: the message_result is now on
++ *   B's recv_result stack with .replied=0 and .sender pointing to A.
++ *   B's WindowProc (JUCE handleFocusLoss) enters RtlWaitOnAddress polling
++ *   on a shared atomic. That atomic is only advanced by A's own posted-
++ *   message dispatch (WM_TIMER / WM_USER+123) — but A is blocked.
++ *   Deadlock: A waits for B's reply, B waits for A's posts.
++ *
++ * Fix: when receive_message moves a result to B's recv_result, schedule
++ * a 500ms timer (vstpoc_cycle_timeout). If the receiver hasn't replied
++ * by then, the timer fires and store_message_result(res, 0, 0) wakes A
++ * with a synthetic 0-reply. A returns from SendMessage, resumes its own
++ * pump, posted messages dispatch, atomic advances, B's polling loop
++ * exits, B's WindowProc returns. When B finally calls reply_message,
++ * reply_message sees res->replied==1 and skips the second
++ * store_message_result (existing path at line 1137).
++ *
++ * Why drag-drop is unaffected:
++ *   Drag-drop's per-message receiver-side handler completes in <10ms
++ *   typically (no polling). The 500ms timer is removed by store_message_result
++ *   long before it fires.
++ *
++ * Gated by env var WINE_VSTPOC_NO_CYCLE_DETECT for rollback. */
++
++static int vstpoc_cycle_detect_disabled( void )
++{
++    static int checked = 0;
++    static int disabled = 0;
++    if (!checked)
++    {
++        const char *e = getenv("WINE_VSTPOC_NO_CYCLE_DETECT");
++        disabled = (e && *e && *e != '0');
++        checked = 1;
++    }
++    return disabled;
++}
++
++static void vstpoc_cycle_timeout( void *private )
++{
++    struct message_result *result = private;
++
++    result->cycle_timeout = NULL;
++    if (result->replied) return;  /* race: real reply landed first */
++
++    fprintf( stderr, "vstpoc cycle: 500ms threshold — synthesizing 0-reply "
++             "result=%p sender=%p (focus msg)\n", result, result->sender );
++    store_message_result( result, 0, 0 );
++}
++
+ static int msg_queue_add_queue( struct object *obj, struct wait_queue_entry *entry )
+ {
+     struct msg_queue *queue = (struct msg_queue *)obj;

@@ -1,0 +1,453 @@
+From 8b88c998174a428ad2ac67102d31418639b8b9b1 Mon Sep 17 00:00:00 2001
+From: Kamil Lulko <kamil.lulko@gmail.com>
+Date: Sat, 23 May 2026 03:42:05 +0200
+Subject: [PATCH 5/6] =?UTF-8?q?fex-pivot:=20TH-U=20session=20=E2=80=94=20n?=
+ =?UTF-8?q?arrow=20patches=20014,=20020,=20025=20+=20revert=20013?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+After deep debugging of TH-U popup hang, drag-drop crash, and
+random crash signatures on Android + FEX-Emu:
+
+* Patch 020 (RtlWait / SleepCV drain): narrowed to drain only on
+  STATUS_TIMEOUT (not STATUS_ALERTED) AND only when not inside a
+  WindowProc dispatch (NtUserGetThreadInfo()->recursion_count == 0).
+  The ALERTED branch + re-entrant dispatch were triggering TH-U's
+  drag-drop NULL-this crash at TH-U+0x1802DF0C3 by dispatching
+  cross-thread sends inside the worker's mid-flight windowproc.
+  SleepConditionVariableSRW path keeps draining regardless of depth
+  (its drain exists *specifically* to break in-windowproc deadlocks).
+
+* Patch 014 (WM_MOUSEACTIVATE for top_level_child): narrowed to fire
+  only when the active window actually changes (matches upstream
+  wine condition shape). Removed the per-click cross-thread send
+  that perturbed TH-U's MessageManager↔worker timing.
+
+* Patch 025 (server-side focus-cycle detector): kept the original
+  5-message filter ({WM_SETFOCUS, WM_KILLFOCUS, WM_ACTIVATE,
+  WM_ACTIVATEAPP, WM_NCACTIVATE}) — tested narrowing to just
+  SETFOCUS/KILLFOCUS but popup interaction froze (WM_ACTIVATE
+  variant was load-bearing).
+
+* Patch 013 (NtUserSetFocus allow top-level WS_CHILD): reverted.
+  No regression observed; patches 014/015/021 cover the JUCE focus
+  paths sufficiently.
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+---
+ dlls/ntdll/sync.c     | 116 ++++++++++++++++++++++++++++++-----------
+ dlls/win32u/input.c   |  17 +-----
+ dlls/win32u/message.c |  24 ++++++---
+ server/queue.c        | 117 ++++++++++++++++++++++++++++++++++++++----
+ 4 files changed, 211 insertions(+), 63 deletions(-)
+
+diff --git a/dlls/ntdll/sync.c b/dlls/ntdll/sync.c
+index db563c33..8dec90e0 100644
+--- a/dlls/ntdll/sync.c
++++ b/dlls/ntdll/sync.c
+@@ -792,9 +792,9 @@ NTSTATUS WINAPI RtlSleepConditionVariableCS( RTL_CONDITION_VARIABLE *variable, R
+  * NOTES
+  *  the behaviour is undefined if the thread doesn't own the lock.
+  */
+-/* vstpoc patch (020-cv-drain-sent-messages): wine on Android Bionic has a
+- * circular SendMessage deadlock when JUCE/TH-U calls SleepConditionVariable
+- * from inside a WindowProc dispatched on thread A, while thread B sends an
++/* vstpoc patch (020-narrow): wine on Android Bionic has a circular
++ * SendMessage deadlock when JUCE/TH-U calls SleepConditionVariable from
++ * inside a WindowProc dispatched on thread A, while thread B sends an
+  * inter-thread message back to thread A. Both threads block.
+  *
+  * Fix: poll the CV wait at 200ms intervals when timeout is infinite. After
+@@ -802,11 +802,55 @@ NTSTATUS WINAPI RtlSleepConditionVariableCS( RTL_CONDITION_VARIABLE *variable, R
+  * sent messages (those land on QS_SENDMESSAGE bit and are drained by
+  * process_sent_messages, invoked from peek's wait_message_reply path).
+  *
+- * NtUserPeekMessage is in win32u.dll, which is always loaded for GUI
+- * processes; we declare it extern here so the PE linker resolves it. */
++ * This is the narrowed variant: in RtlWaitOnAddress below, we drain ONLY on
++ * STATUS_TIMEOUT (not STATUS_ALERTED). The original drain-on-ALERTED branch
++ * triggered TH-U's drag-drop crash at TH-U+0x1802DF0C3 by dispatching
++ * cross-thread sends re-entrantly inside the receiver's mid-flight
++ * WindowProc. Patch 025 (server-side cycle detector) now handles the
++ * focus-message popup deadlock the ALERTED drain was originally added for. */
+ typedef int VSTPOC_MSG_t[16]; /* opaque, large enough for MSG */
+ typedef BOOL (WINAPI *PFN_NtUserPeekMessage)(VSTPOC_MSG_t *msg, HWND hwnd, UINT first, UINT last, UINT flags);
+ 
++/* vstpoc patch 020 (per-thread windowproc-depth gate, 2026-05-23):
++ * Patch 020's drain dispatches QS_SENDMESSAGE re-entrantly inside the
++ * RtlWaitOnAddress caller's call stack. When the caller is JUCE init code
++ * (NOT inside a WindowProc), re-entrant dispatch is safe and unblocks
++ * stuck cross-thread senders → TH-U renders.
++ *
++ * When the caller is INSIDE a WindowProc (e.g. TH-U's WM_LBUTTONUP
++ * drag-drop handler doing its own thread sync), re-entrant dispatch
++ * delivers an unexpected message into TH-U's mid-flight C++ state and
++ * causes a NULL-pointer deref at TH-U+0x1802DF0C3 (the array destructor).
++ *
++ * The fix: read wine's existing per-thread recursion_count from
++ * ntuser_thread_info (already bumped in dlls/win32u/message.c
++ * dispatch_win_proc_params around every KeUserModeCallback). Drain only
++ * when recursion_count == 0 (not in any windowproc).
++ *
++ * We avoid including ntuser.h (would pull in win32u-specific deps into
++ * ntdll). Instead read TEB->Win32ClientInfo and use a partial struct
++ * mirror of `ntuser_thread_info` up to the field we need. */
++struct vstpoc_partial_thread_info
++{
++    UINT64               _pad_driver_data;
++    DWORD                _pad_message_time;
++    DWORD                _pad_message_pos;
++    UINT64               _pad_message_extra;
++    DWORD                _pad_msg_source[2];   /* INPUT_MESSAGE_SOURCE = 2 DWORDs */
++    WORD                 recursion_count;
++    /* … further fields follow; we only read recursion_count */
++};
++
++static int vstpoc_in_windowproc(void)
++{
++    /* TEB->Win32ClientInfo is the per-thread state populated by win32u on
++     * its first call. NULL means no GUI state yet → effectively depth 0. */
++    struct vstpoc_partial_thread_info *ti =
++        (struct vstpoc_partial_thread_info *)NtCurrentTeb()->Win32ClientInfo;
++    if (!ti) return 0;
++    return ti->recursion_count > 0;
++}
++
+ static PFN_NtUserPeekMessage vstpoc_get_peek_msg(void)
+ {
+     static PFN_NtUserPeekMessage cached;
+@@ -846,7 +890,21 @@ NTSTATUS WINAPI RtlSleepConditionVariableSRW( RTL_CONDITION_VARIABLE *variable,
+             /* On infinite wait timeout: drain pending sent messages so a
+              * cross-thread SendMessage deadlock can resolve. PM_NOREMOVE
+              * dispatches QS_SENDMESSAGE as a side effect without consuming
+-             * posted messages. */
++             * posted messages.
++             *
++             * NOTE: NO windowproc-depth gate here. SleepConditionVariable
++             * is called from JUCE's deferred handlers INSIDE a WindowProc
++             * dispatch — that's the entire reason patch 020 exists.
++             * Skipping the drain when in-windowproc would re-introduce the
++             * deadlock this drain was added to fix (thread 0024 stuck on
++             * infinite SRW wait while a cross-thread sender blocked
++             * because 0024 didn't drain).
++             *
++             * Re-entrancy concerns are limited to the RtlWaitOnAddress
++             * drain below, where short-timeout poll loops (≤500ms)
++             * dispatch unexpectedly into TH-U's worker thread state. The
++             * SRW path is infinite-timeout only — already in a wait, so
++             * the dispatch is the desired side-effect. */
+             PFN_NtUserPeekMessage peek = vstpoc_get_peek_msg();
+             if (peek) {
+                 VSTPOC_MSG_t dummy;
+@@ -929,19 +987,25 @@ static BOOL compare_addr( const void *addr, const void *cmp, SIZE_T size )
+ /***********************************************************************
+  *           RtlWaitOnAddress   (NTDLL.@)
+  *
+- * vstpoc: JUCE uses RtlWaitOnAddress with a 200ms timeout to wait for
+- * Component state changes from a sibling JUCE thread (typically the
+- * MessageManager). This creates a cross-thread SendMessage deadlock when:
+- *   - Tid A is inside WindowProc (e.g. WM_SETFOCUS) → calls RtlWaitOnAddress(X, 200ms)
+- *   - Tid B (MessageManager) wants to send_inter_thread_message to tid A's hwnd
++ * vstpoc (020-narrow): JUCE uses RtlWaitOnAddress with a short timeout to
++ * wait for state changes from a sibling thread (typically the MessageManager
++ * or a worker). This creates a cross-thread SendMessage deadlock when:
++ *   - Tid A is inside a WindowProc or init path → calls RtlWaitOnAddress(X, 200ms)
++ *   - Tid B (sibling) wants to send_inter_thread_message to tid A's hwnd
+  *     before it can signal X (e.g. WM_WINE_SETWINDOWPOS to apply window changes)
+  *   - Tid B blocks waiting for tid A's WindowProc to drain the send
+  *   - Tid A can't drain because it's blocked on RtlWaitOnAddress
+  *
+- * Without intervention, the 200ms timeout fires endlessly and the UI freezes.
+- * Fix: when timeout fires AND the timeout is short-ish (likely a poll loop),
+- * drain any pending inter-thread sent messages via NtUserPeekMessage. This
+- * unblocks tid B, which can then signal X, which lets tid A proceed.
++ * Without intervention, the timeout fires endlessly and rendering stalls.
++ * Fix: on STATUS_TIMEOUT for a short-ish wait, drain any pending inter-thread
++ * sent messages via NtUserPeekMessage. This unblocks tid B, which can then
++ * signal X, which lets tid A proceed.
++ *
++ * IMPORTANT: drain ONLY on STATUS_TIMEOUT, never on STATUS_ALERTED. When the
++ * wait was alerted, the alerter has already published the state change — the
++ * caller will see the new value on its next compare. Re-entrantly dispatching
++ * cross-thread sends here lands an unexpected message on tid A's mid-flight
++ * windowproc state and corrupts plugin-internal data (TH-U drag-drop crash).
+  */
+ NTSTATUS WINAPI RtlWaitOnAddress( const void *addr, const void *cmp, SIZE_T size,
+                                   const LARGE_INTEGER *timeout )
+@@ -949,10 +1013,9 @@ NTSTATUS WINAPI RtlWaitOnAddress( const void *addr, const void *cmp, SIZE_T size
+     struct futex_queue *queue = get_futex_queue( addr );
+     struct futex_entry entry;
+     NTSTATUS ret;
+-    /* vstpoc: track if this is a polling-style wait that may be in a SendMessage
+-     * deadlock. We treat any timeout <= 500ms as polling. Infinite timeouts and
+-     * long timeouts (>500ms) take the normal path to avoid disturbing audio or
+-     * other timing-sensitive code paths. */
++    /* vstpoc: treat any timeout <= 500ms as polling. Infinite or long
++     * timeouts take the normal path to avoid disturbing audio or other
++     * timing-sensitive code paths. */
+     BOOL vstpoc_short_timeout = (timeout && timeout->QuadPart < 0 &&
+                                   timeout->QuadPart > -5000000LL); /* > -500ms */
+ 
+@@ -991,16 +1054,11 @@ NTSTATUS WINAPI RtlWaitOnAddress( const void *addr, const void *cmp, SIZE_T size
+         spin_unlock( &queue->lock );
+     }
+ 
+-    /* vstpoc: drain pending sent messages on EVERY wake-up of a polling-style
+-     * (short-timeout) wait. JUCE's modal handlers (e.g. WM_SETFOCUS) have
+-     * multi-stage state machines where each wait-iteration coordinates with
+-     * a sibling thread via cross-thread SendMessage. Draining only on timeout
+-     * unblocks the FIRST stage, but subsequent stages stall if their sender
+-     * is also waiting on us. Draining on every wake (timeout OR alerted)
+-     * gives every stage a chance to receive its sent message. PM_NOREMOVE
+-     * peek dispatches QS_SENDMESSAGE bits without touching the posted-message
+-     * queue. */
+-    if (vstpoc_short_timeout && (ret == STATUS_TIMEOUT || ret == STATUS_ALERTED))
++    /* vstpoc: on a short-timeout wait that timed out, drain pending sent
++     * messages — but ONLY when not inside a WindowProc dispatch. Inside a
++     * windowproc, re-entrant dispatch corrupts plugin state (see TLS depth
++     * counter comment above). STATUS_ALERTED path also NOT included. */
++    if (vstpoc_short_timeout && ret == STATUS_TIMEOUT && !vstpoc_in_windowproc())
+     {
+         PFN_NtUserPeekMessage peek = vstpoc_get_peek_msg();
+         if (peek) {
+diff --git a/dlls/win32u/input.c b/dlls/win32u/input.c
+index 3548bb47..2f1a76d6 100644
+--- a/dlls/win32u/input.c
++++ b/dlls/win32u/input.c
+@@ -2155,22 +2155,7 @@ HWND WINAPI NtUserSetFocus( HWND hwnd )
+             parent = NtUserGetAncestor( hwndTop, GA_PARENT );
+             if (!parent || parent == get_desktop_window())
+             {
+-                /* vstpoc patch (013-win32u-focus-ws-child-top-level):
+-                 * upstream returns 0 here, refusing to focus WS_CHILD
+-                 * windows whose parent is the desktop. VST plugin editors
+-                 * (vst_host calls effEditOpen with GetDesktopWindow() as
+-                 * the parent HWND, plugin makes its editor WS_CHILD)
+-                 * always hit this. JUCE's TextField calls grabKeyboard
+-                 * Focus → SetFocus, gets 0 back, and never commits its
+-                 * internal focus → typed WM_CHAR is dropped. Mirror
+-                 * patch 012 (wineserver is_valid_foreground_window):
+-                 * allow top-level WS_CHILD to receive focus when there
+-                 * is no other activatable candidate. */
+-                if ((style & (WS_POPUP|WS_CHILD)) == WS_CHILD)
+-                {
+-                    /* break out and let set_focus_window handle it */
+-                    break;
+-                }
++                if ((style & (WS_POPUP|WS_CHILD)) == WS_CHILD) return 0;
+                 break;
+             }
+             if (parent == get_hwnd_message_parent()) return 0;
+diff --git a/dlls/win32u/message.c b/dlls/win32u/message.c
+index e46dcd7f..d49587aa 100644
+--- a/dlls/win32u/message.c
++++ b/dlls/win32u/message.c
+@@ -2671,18 +2671,26 @@ static BOOL process_mouse_message( MSG *msg, UINT hw_id, ULONG_PTR extra_info, H
+                 if (!root_parent || root_parent == get_desktop_window())
+                     top_level_child = TRUE;
+             }
+-            /* vstpoc patch (014): allow WM_MOUSEACTIVATE for top-level
+-             * WS_CHILD (VST plugin editors with desktop as parent), AND
+-             * fire it on EVERY click even when the editor is already
+-             * active. JUCE's WM_SETFOCUS handler defers handleSetFocus
+-             * until WM_MOUSEACTIVATE arrives — without re-sending it on
+-             * every mouseDown JUCE never finishes its focus handshake
+-             * and the TextEditor caret never shows. */
++            /* vstpoc patch (014, narrowed 2026-05-22): allow
++             * WM_MOUSEACTIVATE for top-level WS_CHILD (VST plugin editors
++             * with desktop as parent), but ONLY when the active window
++             * actually changes — same condition as upstream wine.
++             *
++             * The previous variant fired WM_MOUSEACTIVATE on every click
++             * even when already active, to satisfy JUCE's deferred
++             * handleSetFocus path. That added a cross-thread send on
++             * every mouseDown and turned out to perturb TH-U's
++             * MessageManager↔worker timing enough to expose an
++             * intermittent TH-U-internal use-after-free during popup
++             * teardown (crash at TH-U+0x1802A05AF). The "TextEditor caret
++             * never shows" symptom this branch was added for is JUCE-7
++             * only and can be revisited via patch 025's cycle detector
++             * if it resurfaces. */
+             ERR( "vstpoc: mouseactivate decision msg->hwnd=%p hwndTop=%p info.hwndActive=%p "
+                  "top_style=%lx top_level_child=%d hittest=%d msg->msg=%x\n",
+                  msg->hwnd, hwndTop, info.hwndActive, (long)top_style,
+                  top_level_child, hittest, msg->message );
+-            if ((msg->hwnd != info.hwndActive || top_level_child) &&
++            if ((msg->hwnd != info.hwndActive) &&
+                 ((top_style & (WS_POPUP|WS_CHILD)) != WS_CHILD || top_level_child))
+             {
+                 ERR( "vstpoc: sending WM_MOUSEACTIVATE target=%p wparam=%p\n",
+diff --git a/server/queue.c b/server/queue.c
+index 10c8b70f..bf3e48da 100644
+--- a/server/queue.c
++++ b/server/queue.c
+@@ -71,6 +71,7 @@ struct message_result
+     void                  *data;          /* message reply data */
+     unsigned int           data_size;     /* size of message reply data */
+     struct timeout_user   *timeout;       /* result timeout */
++    struct timeout_user   *cycle_timeout; /* vstpoc 025: JUCE-7 cycle detection timer */
+ };
+ 
+ struct message
+@@ -907,10 +908,16 @@ static int merge_message( struct thread_input *input, const struct message *msg
+     return 0;
+ }
+ 
++/* vstpoc patch 025: forward decls (definitions are further down the file). */
++static int vstpoc_cycle_detect_disabled( void );
++static void vstpoc_cycle_timeout( void *private );
++#define VSTPOC_CYCLE_THRESHOLD ((timeout_t)500 * 10000)  /* 500ms in 100ns units */
++
+ /* free a result structure */
+ static void free_result( struct message_result *result )
+ {
+     if (result->timeout) remove_timeout_user( result->timeout );
++    if (result->cycle_timeout) remove_timeout_user( result->cycle_timeout );
+     free( result->data );
+     if (result->callback_msg) free_message( result->callback_msg );
+     if (result->hardware_msg) free_message( result->hardware_msg );
+@@ -939,6 +946,11 @@ static void store_message_result( struct message_result *res, lparam_t result, u
+         remove_timeout_user( res->timeout );
+         res->timeout = NULL;
+     }
++    if (res->cycle_timeout)
++    {
++        remove_timeout_user( res->cycle_timeout );
++        res->cycle_timeout = NULL;
++    }
+ 
+     if (res->hardware_msg)
+     {
+@@ -1035,16 +1047,17 @@ static struct message_result *alloc_message_result( struct msg_queue *send_queue
+     struct message_result *result = mem_alloc( sizeof(*result) );
+     if (result)
+     {
+-        result->msg          = msg;
+-        result->sender       = send_queue;
+-        result->receiver     = recv_queue;
+-        result->replied      = 0;
+-        result->data         = NULL;
+-        result->data_size    = 0;
+-        result->timeout      = NULL;
+-        result->hardware_msg = NULL;
+-        result->desktop      = NULL;
+-        result->callback_msg = NULL;
++        result->msg           = msg;
++        result->sender        = send_queue;
++        result->receiver      = recv_queue;
++        result->replied       = 0;
++        result->data          = NULL;
++        result->data_size     = 0;
++        result->timeout       = NULL;
++        result->cycle_timeout = NULL;
++        result->hardware_msg  = NULL;
++        result->desktop       = NULL;
++        result->callback_msg  = NULL;
+ 
+         if (msg->type == MSG_CALLBACK)
+         {
+@@ -1110,9 +1123,38 @@ static void receive_message( struct msg_queue *queue, struct message *msg,
+     /* put the result on the receiver result stack */
+     if (result)
+     {
++        unsigned int orig_msg = msg->msg;
+         result->msg = NULL;
+         result->recv_next  = queue->recv_result;
+         queue->recv_result = result;
++        /* vstpoc patch 025: arm cycle-detect timer ONLY for messages
++         * where set_focus_window in win32u/input.c discards the return
++         * value (the JUCE-7 popup-close deadlock vector). For other
++         * cross-thread sends, return values matter and faking a 0-reply
++         * leaves TH-U / JUCE in inconsistent state — observed empirically
++         * to either crash drag-drop (at TH-U+0x18028ECAC array destructor)
++         * or hang in subsequent state machine steps. Narrow scope:
++         *   0x0007 WM_SETFOCUS
++         *   0x0008 WM_KILLFOCUS
++         *   0x001C WM_ACTIVATEAPP
++         *   0x0086 WM_NCACTIVATE
++         *   0x0006 WM_ACTIVATE
++         *
++         * (Attempted 2026-05-23 to narrow to {SETFOCUS, KILLFOCUS} only;
++         * popup interaction froze because there are other stuck focus-class
++         * sends — WM_ACTIVATE in particular — that need the same
++         * synthesized-reply treatment. Restored to the full 5-message
++         * filter.) */
++        int is_focus_msg = (orig_msg == 0x0007 || orig_msg == 0x0008 ||
++                            orig_msg == 0x001C || orig_msg == 0x0086 ||
++                            orig_msg == 0x0006);
++        if (is_focus_msg &&
++            !result->timeout && !result->cycle_timeout &&
++            !vstpoc_cycle_detect_disabled())
++        {
++            result->cycle_timeout = add_timeout_user(
++                VSTPOC_CYCLE_THRESHOLD, vstpoc_cycle_timeout, result );
++        }
+     }
+     free( msg );
+     if (list_empty( &queue->msg_list[SEND_MESSAGE] )) clear_queue_bits( queue, QS_SENDMESSAGE );
+@@ -1271,6 +1313,61 @@ static int is_queue_hung( struct msg_queue *queue )
+     return 1;
+ }
+ 
++/* vstpoc patch 025: detect JUCE-7 popup-close cross-thread SendMessage cycle
++ * and break it by synthesizing a 0-reply once the receiver has held the
++ * message past a 500ms threshold without replying.
++ *
++ * Cycle pattern:
++ *   Thread A calls SendMessage cross-thread to thread B's window (sync).
++ *   A blocks in wait_message_reply.
++ *   B dequeues the message via get_message: the message_result is now on
++ *   B's recv_result stack with .replied=0 and .sender pointing to A.
++ *   B's WindowProc (JUCE handleFocusLoss) enters RtlWaitOnAddress polling
++ *   on a shared atomic. That atomic is only advanced by A's own posted-
++ *   message dispatch (WM_TIMER / WM_USER+123) — but A is blocked.
++ *   Deadlock: A waits for B's reply, B waits for A's posts.
++ *
++ * Fix: when receive_message moves a result to B's recv_result, schedule
++ * a 500ms timer (vstpoc_cycle_timeout). If the receiver hasn't replied
++ * by then, the timer fires and store_message_result(res, 0, 0) wakes A
++ * with a synthetic 0-reply. A returns from SendMessage, resumes its own
++ * pump, posted messages dispatch, atomic advances, B's polling loop
++ * exits, B's WindowProc returns. When B finally calls reply_message,
++ * reply_message sees res->replied==1 and skips the second
++ * store_message_result (existing path at line 1137).
++ *
++ * Why drag-drop is unaffected:
++ *   Drag-drop's per-message receiver-side handler completes in <10ms
++ *   typically (no polling). The 500ms timer is removed by store_message_result
++ *   long before it fires.
++ *
++ * Gated by env var WINE_VSTPOC_NO_CYCLE_DETECT for rollback. */
++
++static int vstpoc_cycle_detect_disabled( void )
++{
++    static int checked = 0;
++    static int disabled = 0;
++    if (!checked)
++    {
++        const char *e = getenv("WINE_VSTPOC_NO_CYCLE_DETECT");
++        disabled = (e && *e && *e != '0');
++        checked = 1;
++    }
++    return disabled;
++}
++
++static void vstpoc_cycle_timeout( void *private )
++{
++    struct message_result *result = private;
++
++    result->cycle_timeout = NULL;
++    if (result->replied) return;  /* race: real reply landed first */
++
++    fprintf( stderr, "vstpoc cycle: 500ms threshold — synthesizing 0-reply "
++             "result=%p sender=%p (focus msg)\n", result, result->sender );
++    store_message_result( result, 0, 0 );
++}
++
+ static int msg_queue_add_queue( struct object *obj, struct wait_queue_entry *entry )
+ {
+     struct msg_queue *queue = (struct msg_queue *)obj;
+-- 
+2.43.0
+

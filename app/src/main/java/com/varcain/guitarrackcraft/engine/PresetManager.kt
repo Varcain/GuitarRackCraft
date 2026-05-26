@@ -107,14 +107,21 @@ class PresetManager(private val engine: NativeEngine) {
             engine.removePluginFromRack(i)
         }
 
-        // Add each plugin by URI
+        // Add each plugin by URI. The native engine accepts "FORMAT:id":
+        //   LV2  → "LV2:<lv2-uri>"
+        //   VST2 → "VST2:<uuid>"
+        //   VST3 → "VST3:<uuid>"
+        // Legacy presets (pre-2026-05-26) wrote only "uri" without a "format"
+        // field — back then only LV2 was supported, so default to "LV2".
         for (i in 0 until plugins.length()) {
-            val uri = plugins.getJSONObject(i).optString("uri", "")
+            val pluginObj = plugins.getJSONObject(i)
+            val uri = pluginObj.optString("uri", "")
+            val format = pluginObj.optString("format", "").ifEmpty { "LV2" }
             if (uri.isEmpty()) {
                 Log.e(TAG, "loadPresetFromJson: plugin[$i] has no URI")
                 return false
             }
-            val fullId = "LV2:$uri"
+            val fullId = "$format:$uri"
             val pos = engine.addPluginToRack(fullId, -1)
             if (pos < 0) {
                 Log.e(TAG, "loadPresetFromJson: failed to add plugin '$fullId'")

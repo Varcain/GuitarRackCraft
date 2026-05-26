@@ -81,6 +81,7 @@ std::string serializeChainStateToJson(const PluginChain::ChainState& state) {
         const auto& ps = state.plugins[pi];
         if (pi > 0) os << ",";
         os << "\n    {\n      \"uri\": \"" << jsonEscape(ps.pluginUri) << "\",\n";
+        os << "      \"format\": \"" << jsonEscape(ps.format) << "\",\n";
 
         // Control ports
         os << "      \"controlPorts\": [";

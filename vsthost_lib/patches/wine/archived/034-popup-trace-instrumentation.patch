@@ -1,0 +1,511 @@
+diff --git a/dlls/win32u/message.c b/dlls/win32u/message.c
+index d49587aa..95a5166d 100644
+--- a/dlls/win32u/message.c
++++ b/dlls/win32u/message.c
+@@ -35,9 +35,15 @@
+ #include "dde.h"
+ #include "immdev.h"
+ #include "wine/debug.h"
++/* vstpoc patch 032: NtQueryVirtualMemory for safe-read of plugin lparam. */
++#include "winternl.h"
+ 
+ WINE_DEFAULT_DEBUG_CHANNEL(msg);
+ WINE_DECLARE_DEBUG_CHANNEL(key);
++
++/* vstpoc popup trace: shared file-scoped gate. Set WINE_VSTPOC_POPUP_TRACE=1 to enable. */
++static int vstpoc_popup_trace_checked = 0;
++static int vstpoc_popup_trace_on     = 0;
+ WINE_DECLARE_DEBUG_CHANNEL(relay);
+ 
+ #define MAX_WINPROC_RECURSION  64
+@@ -2413,6 +2419,13 @@ static BOOL process_keyboard_message( MSG *msg, UINT hw_id, HWND hwnd_filter,
+ {
+     EVENTMSG event;
+ 
++    /* vstpoc popup trace: log entry to process_keyboard_message so we can
++     * confirm the ESC keypress reaches wine's keyboard dispatcher. */
++    if (vstpoc_popup_trace_on)
++        ERR( "vstpoc/popup-trace: process_keyboard_message ENTRY tid=%04lx msg=0x%04x hwnd=%p wParam=0x%lx first=0x%x last=0x%x\n",
++             (long)(GetCurrentThreadId() & 0xffff), msg->message, msg->hwnd,
++             (long)msg->wParam, first, last );
++
+     if (msg->message == WM_KEYDOWN || msg->message == WM_SYSKEYDOWN ||
+         msg->message == WM_KEYUP || msg->message == WM_SYSKEYUP)
+         switch (msg->wParam)
+@@ -2508,12 +2521,36 @@ static BOOL process_mouse_message( MSG *msg, UINT hw_id, ULONG_PTR extra_info, H
+ 
+     /* find the window to dispatch this mouse message to */
+ 
++    /* vstpoc popup trace: log entry to process_mouse_message. Gated by
++     * WINE_VSTPOC_POPUP_TRACE env var (same gate as wineserver-side trace
++     * so a single env switch turns on both halves of the flow). */
++    if (!vstpoc_popup_trace_checked)
++    {
++        const char *e = getenv("WINE_VSTPOC_POPUP_TRACE");
++        vstpoc_popup_trace_on = (e && *e && *e != '0');
++        vstpoc_popup_trace_checked = 1;
++    }
++
+     info.cbSize = sizeof(info);
+     NtUserGetGUIThreadInfo( GetCurrentThreadId(), &info );
++
++    if (vstpoc_popup_trace_on)
++    {
++        ERR( "vstpoc/popup-trace: process_mouse_message ENTRY tid=%04lx msg=0x%04x "
++             "msg->hwnd=%p pt=(%ld,%ld) info.hwndCapture=%p info.hwndActive=%p "
++             "info.hwndFocus=%p info.flags=0x%x\n",
++             (long)(GetCurrentThreadId() & 0xffff), msg->message, msg->hwnd,
++             (long)msg->pt.x, (long)msg->pt.y,
++             info.hwndCapture, info.hwndActive, info.hwndFocus, info.flags );
++    }
++
+     if (info.hwndCapture)
+     {
+         hittest = HTCLIENT;
+         msg->hwnd = info.hwndCapture;
++        if (vstpoc_popup_trace_on)
++            ERR( "vstpoc/popup-trace: CAPTURE-redirect msg->hwnd <- info.hwndCapture=%p\n",
++                 info.hwndCapture );
+     }
+     else
+     {
+@@ -2528,10 +2565,16 @@ static BOOL process_mouse_message( MSG *msg, UINT hw_id, ULONG_PTR extra_info, H
+                 is_current_thread_window( next ))
+                 msg->hwnd = window_from_point( next, msg->pt, &hittest );
+         }
++        if (vstpoc_popup_trace_on)
++            ERR( "vstpoc/popup-trace: window_from_point orig=%p pt=(%ld,%ld) -> msg->hwnd=%p hittest=%d\n",
++                 orig, (long)msg->pt.x, (long)msg->pt.y, msg->hwnd, hittest );
+     }
+ 
+     if (!msg->hwnd || !is_current_thread_window( msg->hwnd ))
+     {
++        if (vstpoc_popup_trace_on)
++            ERR( "vstpoc/popup-trace: DROP msg=0x%04x hwnd=%p (null or wrong thread)\n",
++                 msg->message, msg->hwnd );
+         accept_hardware_message( hw_id );
+         return FALSE;
+     }
+@@ -4484,6 +4527,178 @@ static BOOL send_message_callback( HWND hwnd, UINT msg, WPARAM wparam, LPARAM lp
+     return process_message( &info, NULL, ansi );
+ }
+ 
++/* vstpoc patch 032: content-aware fingerprint filter for WM_USER+N posts.
++ *
++ * Background: TH-U (JUCE 7) enters a self-feeding callback chain via
++ * MessageManager::callAsync(λ) on popup interaction. Each call posts
++ * WM_USER+123 with lparam = pointer to a juce::CallbackMessage object
++ * (which holds the std::function). The handler runs the lambda; the
++ * lambda calls callAsync(λ) again; infinite. JUCE uses the SAME
++ * mechanism for legitimate popup-layout posts so we cannot filter by
++ * (hwnd, msg) alone (patch 030 tried — broke popups).
++ *
++ * Insight: the lparam points into the plugin's heap. We can safe-read
++ * the first 16 bytes (vtable pointer + std::function header) as a
++ * cheap fingerprint of "which lambda this post represents". The same
++ * lambda re-posted has the same fingerprint; different lambdas have
++ * different fingerprints. Suppress posts whose fingerprint fires more
++ * than VSTPOC_FP_THRESHOLD times in VSTPOC_FP_WINDOW_MS ms — that is
++ * the runaway. Legitimate distinct lambdas pass through.
++ *
++ * Per-thread state via __thread; SEH-guarded read so a non-pointer
++ * lparam can't crash us. Env-gated WINE_VSTPOC_FINGERPRINT_FILTER. */
++
++#define VSTPOC_FP_RING       512    /* per-thread sliding window capacity */
++#define VSTPOC_FP_WINDOW_NS  (100ULL * 1000 * 1000)  /* 100 ms */
++#define VSTPOC_FP_THRESHOLD  50     /* posts of same fingerprint in window */
++
++struct vstpoc_fp_entry
++{
++    ULONGLONG hash;
++    LONGLONG  ts;       /* 100ns ticks */
++};
++
++static __thread struct vstpoc_fp_entry vstpoc_fp_ring[VSTPOC_FP_RING];
++static __thread int vstpoc_fp_idx;
++static __thread int vstpoc_fp_checked;
++static __thread int vstpoc_fp_enabled;
++
++static int vstpoc_fp_filter_enabled(void)
++{
++    if (!vstpoc_fp_checked)
++    {
++        const char *e = getenv("WINE_VSTPOC_FINGERPRINT_FILTER");
++        vstpoc_fp_enabled = (e && *e && *e != '0');
++        vstpoc_fp_checked = 1;
++    }
++    return vstpoc_fp_enabled;
++}
++
++/* Read up to 16 bytes at addr into out. Returns 0 on success. Uses
++ * NtQueryVirtualMemory to verify the page is committed and readable
++ * before copying — Unix-side wine builds can't use __try/__except.
++ * False negatives possible (the page passes the check but is unmapped
++ * concurrently) but extremely unlikely for the JUCE CallbackMessage
++ * heap pages we'll be reading. */
++static int vstpoc_safe_read16(const void *addr, BYTE out[16])
++{
++    MEMORY_BASIC_INFORMATION mbi;
++    SIZE_T result_len = 0;
++
++    if (!addr) return -1;
++    if ((ULONG_PTR)addr < 0x10000) return -1;  /* reject low addresses */
++
++    if (NtQueryVirtualMemory( GetCurrentProcess(), addr, MemoryBasicInformation,
++                              &mbi, sizeof(mbi), &result_len ) != STATUS_SUCCESS)
++        return -1;
++
++    if (mbi.State != MEM_COMMIT) return -1;
++    if (mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD)) return -1;
++    /* Ensure the 16-byte read doesn't cross out of the queried region. */
++    if ((ULONG_PTR)addr + 16 > (ULONG_PTR)mbi.BaseAddress + mbi.RegionSize) return -1;
++
++    memcpy(out, addr, 16);
++    return 0;
++}
++
++/* FNV-1a 64-bit over 16 bytes. Skip bytes [0..7] (vtable pointer)
++ * since vtable is heap-relocatable address that varies per process
++ * but is constant within a process for the same class. We want the
++ * std::function contents (bytes 8..15) which encode the lambda. */
++static ULONGLONG vstpoc_fnv1a(const BYTE buf[16])
++{
++    ULONGLONG h = 0xcbf29ce484222325ULL;
++    int i;
++    /* Include all 16 bytes — vtable+8b function content distinguishes class+lambda. */
++    for (i = 0; i < 16; i++)
++    {
++        h ^= buf[i];
++        h *= 0x100000001b3ULL;
++    }
++    return h;
++}
++
++static LONGLONG vstpoc_now_100ns(void)
++{
++    LARGE_INTEGER c;
++    /* QueryPerformanceCounter is high-resolution; ticks/freq gives seconds. */
++    NtQueryPerformanceCounter(&c, NULL);
++    /* Cheap conversion: assume QPC freq ≈ 10MHz on Android (typical), so
++     * a tick ≈ 100ns. Even if off by 2× it doesn't matter — we're using
++     * a 100ms window so as long as ts deltas are monotonic & approximately
++     * linear, the filter works. */
++    return c.QuadPart;
++}
++
++/* Returns TRUE if this post should be suppressed. */
++static BOOL vstpoc_should_suppress_post(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
++{
++    BYTE buf[16];
++    ULONGLONG hash;
++    LONGLONG now, window_start;
++    int i, matches;
++    int read_ok = 0;
++
++    if (!vstpoc_fp_filter_enabled()) return FALSE;
++    if (msg < 0x400) return FALSE;             /* only WM_USER+N */
++
++    /* Base fingerprint = hwnd | msg | wparam. JUCE's AsyncUpdater pattern
++     * (self-feeding handleAsyncUpdate → triggerAsyncUpdate → post again)
++     * has lparam=wparam=0, so any per-lparam differentiation is moot. The
++     * threshold-in-window (50 in 100ms = 500/sec) is the discriminator:
++     * popup creation has burst rates below that; runaway sustains 1000+/sec. */
++    memset(buf, 0, 16);
++    *(HWND*)&buf[0]   = hwnd;
++    *(UINT*)&buf[8]   = msg;
++    *(WPARAM*)&buf[12] = (WPARAM)(wparam & 0xffffffff);
++
++    /* If lparam looks like a pointer to a JUCE CallbackMessage, also fold
++     * in 16 bytes of its content — different lambdas remain distinguishable
++     * (each gets its own fingerprint), only same-lambda-repeated triggers
++     * the threshold. */
++    if (lparam && !vstpoc_safe_read16((const void*)(ULONG_PTR)lparam, buf))
++    {
++        /* buf now holds the heap content; XOR in the hwnd|msg base too so
++         * that different windows posting same lambda are distinguished. */
++        *(ULONGLONG*)&buf[0]  ^= (ULONGLONG)(ULONG_PTR)hwnd;
++        *(ULONGLONG*)&buf[8]  ^= ((ULONGLONG)msg << 32) | (ULONGLONG)wparam;
++        read_ok = 1;
++    }
++    (void)read_ok;
++
++    hash = vstpoc_fnv1a(buf);
++    now = vstpoc_now_100ns();
++    window_start = now - (LONGLONG)(VSTPOC_FP_WINDOW_NS / 100);
++
++    /* Count matches in window — scan the entire ring (size 512, cheap). */
++    matches = 0;
++    for (i = 0; i < VSTPOC_FP_RING; i++)
++    {
++        if (vstpoc_fp_ring[i].hash == hash && vstpoc_fp_ring[i].ts >= window_start)
++        {
++            if (++matches >= VSTPOC_FP_THRESHOLD)
++            {
++                static __thread ULONGLONG last_warn_hash = 0;
++                if (last_warn_hash != hash)
++                {
++                    ERR("vstpoc 032: suppressing repeated WM_%x (fingerprint 0x%016llx "
++                        "fired %d+ times in %dms)\n",
++                        msg, (unsigned long long)hash, VSTPOC_FP_THRESHOLD,
++                        (int)(VSTPOC_FP_WINDOW_NS / 1000000));
++                    last_warn_hash = hash;
++                }
++                return TRUE;
++            }
++        }
++    }
++
++    /* Record this post in the ring. */
++    vstpoc_fp_ring[vstpoc_fp_idx].hash = hash;
++    vstpoc_fp_ring[vstpoc_fp_idx].ts   = now;
++    vstpoc_fp_idx = (vstpoc_fp_idx + 1) % VSTPOC_FP_RING;
++    return FALSE;
++}
++
+ /***********************************************************************
+  *           NtUserPostMessage  (win32u.@)
+  */
+@@ -4497,6 +4712,10 @@ BOOL WINAPI NtUserPostMessage( HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam
+         return FALSE;
+     }
+ 
++    /* vstpoc patch 032: drop runaway WM_USER+N posts (lying TRUE so caller
++     * doesn't react to a "failed" post — JUCE checks the return). */
++    if (vstpoc_should_suppress_post( hwnd, msg, wparam, lparam )) return TRUE;
++
+     TRACE( "hwnd %p msg %x (%s) wp %lx lp %lx\n",
+            hwnd, msg, debugstr_msg_name(msg, hwnd), (long)wparam, lparam );
+ 
+diff --git a/dlls/winex11.drv/keyboard.c b/dlls/winex11.drv/keyboard.c
+index 091c507b..f4e838e6 100644
+--- a/dlls/winex11.drv/keyboard.c
++++ b/dlls/winex11.drv/keyboard.c
+@@ -1341,6 +1341,14 @@ BOOL X11DRV_KeyEvent( HWND hwnd, XEvent *xev )
+     TRACE_(key)("type %d, window %lx, state 0x%04x, keycode %u\n",
+ 		event->type, event->window, event->state, event->keycode);
+ 
++    /* vstpoc popup trace */
++    {
++        static int checked = 0, on = 0;
++        if (!checked) { const char *e = getenv("WINE_VSTPOC_POPUP_TRACE"); on = (e && *e && *e != '0'); checked = 1; }
++        if (on) ERR( "vstpoc/popup-trace: X11DRV_KeyEvent type=%d hwnd=%p xwin=0x%lx keycode=%u state=0x%04x\n",
++                     event->type, hwnd, event->window, event->keycode, event->state );
++    }
++
+     if (event->type == KeyPress && (data = get_win_data( hwnd )))
+     {
+         window_set_user_time( data, event->time, FALSE );
+diff --git a/dlls/winex11.drv/mouse.c b/dlls/winex11.drv/mouse.c
+index 6107b167..e21342bb 100644
+--- a/dlls/winex11.drv/mouse.c
++++ b/dlls/winex11.drv/mouse.c
+@@ -1541,6 +1541,16 @@ BOOL X11DRV_ButtonPress( HWND hwnd, XEvent *xev )
+ 
+     TRACE( "hwnd %p/%lx button %u pos %d,%d\n", hwnd, event->window, buttonNum, event->x, event->y );
+ 
++    /* vstpoc popup trace: log the entry from X11 into wine for every button
++     * press. Lets us correlate X-server-side vstpoc-send events with what
++     * wine actually receives. */
++    {
++        static int checked = 0, on = 0;
++        if (!checked) { const char *e = getenv("WINE_VSTPOC_POPUP_TRACE"); on = (e && *e && *e != '0'); checked = 1; }
++        if (on) ERR( "vstpoc/popup-trace: X11DRV_ButtonPress hwnd=%p xwin=0x%lx button=%d local=(%d,%d) root=(%d,%d)\n",
++                     hwnd, event->window, buttonNum, event->x, event->y, event->x_root, event->y_root );
++    }
++
+     input.mi.dx          = event->x;
+     input.mi.dy          = event->y;
+     input.mi.mouseData   = button_down_data[buttonNum];
+@@ -1573,6 +1583,14 @@ BOOL X11DRV_ButtonRelease( HWND hwnd, XEvent *xev )
+ 
+     TRACE( "hwnd %p/%lx button %u pos %d,%d\n", hwnd, event->window, buttonNum, event->x, event->y );
+ 
++    /* vstpoc popup trace */
++    {
++        static int checked = 0, on = 0;
++        if (!checked) { const char *e = getenv("WINE_VSTPOC_POPUP_TRACE"); on = (e && *e && *e != '0'); checked = 1; }
++        if (on) ERR( "vstpoc/popup-trace: X11DRV_ButtonRelease hwnd=%p xwin=0x%lx button=%d local=(%d,%d) root=(%d,%d)\n",
++                     hwnd, event->window, buttonNum, event->x, event->y, event->x_root, event->y_root );
++    }
++
+     input.mi.dx          = event->x;
+     input.mi.dy          = event->y;
+     input.mi.mouseData   = button_up_data[buttonNum];
+diff --git a/server/queue.c b/server/queue.c
+index c408a46e..897e2b19 100644
+--- a/server/queue.c
++++ b/server/queue.c
+@@ -1995,6 +1995,22 @@ found:
+ }
+ 
+ /* find the window that should receive a given hardware message */
++/* vstpoc popup trace: env-gated. Set WINE_VSTPOC_POPUP_TRACE=1 to enable
++ * verbose tracing of capture state and mouse-message routing for popup
++ * debugging. Cheap when off (single load+branch on cached static). */
++static int vstpoc_popup_trace_enabled( void )
++{
++    static int checked = 0;
++    static int enabled = 0;
++    if (!checked)
++    {
++        const char *e = getenv("WINE_VSTPOC_POPUP_TRACE");
++        enabled = (e && *e && *e != '0');
++        checked = 1;
++    }
++    return enabled;
++}
++
+ static user_handle_t find_hardware_message_window( struct desktop *desktop, struct thread_input *input,
+                                                    struct message *msg, unsigned int *msg_code,
+                                                    struct thread **thread )
+@@ -2018,13 +2034,82 @@ static user_handle_t find_hardware_message_window( struct desktop *desktop, stru
+         }
+         break;
+     case QS_MOUSEMOVE:
+-    case QS_MOUSEBUTTON:
++        /* MOUSE MOVE: pure geometric routing. Do NOT consult cross-thread
++         * capture — JUCE PopupMenu's hover/highlight tracking expects the
++         * raw geometric target so it can map (or NOT map) the mouse to a
++         * specific item under the cursor. If we forced move events to the
++         * popup's thread, hover would land at popup-relative coords
++         * computed from editor coords and JUCE would think mouse is over
++         * unrelated items. */
+         if (!input || !(win = input_shm->capture))
+         {
+             if (is_window_visible( msg->win ) && !is_window_transparent( msg->win )) win = msg->win;
+             else win = shallow_window_from_point( desktop, msg->x, msg->y );
+             *thread = window_thread_from_point( win, msg->x, msg->y );
+         }
++        if (0 /* silenced noisy popup-trace */)
++        {
++            user_handle_t fg_cap = (desktop->foreground_input && desktop->foreground_input->shared)
++                                 ? desktop->foreground_input->shared->capture : 0;
++            fprintf( stderr,
++                     "vstpoc/popup-trace: find_hw_msg_win MOVE  msg=0x%04x x=%d y=%d msg->win=%08x "
++                     "input_cap=%08x fg_cap=%08x -> win=%08x thread=%p\n",
++                     msg->msg, msg->x, msg->y, msg->win,
++                     input_shm ? input_shm->capture : 0, fg_cap, win, *thread );
++        }
++        break;
++    case QS_MOUSEBUTTON:
++        /* vstpoc patch 035 (2026-05-25): the editor-thread's
++         * input_shm->capture frequently holds the editor HWND across
++         * clicks (JUCE editor calls SetCapture during mouseDown and
++         * sometimes doesn't release before the next click arrives).
++         * The default behavior unconditionally re-routes to the captured
++         * window, which for our X-server setup means popup clicks land on
++         * the editor instead of the popup HWND.
++         *
++         * Our X server's geometric hit-test is authoritative — when it sets
++         * msg->win to a SPECIFIC, VISIBLE window that differs from the
++         * captured window, prefer msg->win for BUTTON events. This keeps
++         * popup item activation + dismiss working without breaking drag
++         * (motion events still use capture).
++         *
++         * Narrow guard: msg->win must be visible (not a destroyed/hidden
++         * window left over in some state). */
++        if (input && input_shm->capture &&
++            msg->win && msg->win != input_shm->capture &&
++            is_window_visible( msg->win ) && !is_window_transparent( msg->win ))
++        {
++            /* vstpoc patch 035 narrowed 2026-05-26: leave *thread = NULL.
++             * The caller (queue_hardware_message) falls back to
++             * get_window_thread(win) below. Setting *thread explicitly here
++             * to window_thread_from_point caused a 2 600+ message storm —
++             * wineserver re-emitted the message many times when the
++             * derived thread differed from the calling thread's input.
++             * Letting get_window_thread compute it gives consistent results
++             * without re-queueing. */
++            win = msg->win;
++            if (vstpoc_popup_trace_enabled())
++                fprintf( stderr,
++                         "vstpoc/popup-trace: BTN override-capture msg=0x%04x msg->win=%08x "
++                         "(captured=%08x) -> win=%08x (thread left for caller)\n",
++                         msg->msg, msg->win, input_shm->capture, win );
++        }
++        else if (!input || !(win = input_shm->capture))
++        {
++            if (is_window_visible( msg->win ) && !is_window_transparent( msg->win )) win = msg->win;
++            else win = shallow_window_from_point( desktop, msg->x, msg->y );
++            *thread = window_thread_from_point( win, msg->x, msg->y );
++        }
++        if (0 /* silenced noisy popup-trace */)
++        {
++            user_handle_t fg_cap = (desktop->foreground_input && desktop->foreground_input->shared)
++                                 ? desktop->foreground_input->shared->capture : 0;
++            fprintf( stderr,
++                     "vstpoc/popup-trace: find_hw_msg_win BTN   msg=0x%04x x=%d y=%d msg->win=%08x "
++                     "input_cap=%08x fg_cap=%08x -> win=%08x thread=%p\n",
++                     msg->msg, msg->x, msg->y, msg->win,
++                     input_shm ? input_shm->capture : 0, fg_cap, win, *thread );
++        }
+         break;
+     }
+ 
+@@ -2080,6 +2165,14 @@ static void queue_hardware_message( struct desktop *desktop, struct message *msg
+     unsigned int msg_code;
+     int flags;
+ 
++    /* vstpoc popup trace: log every call so we can distinguish producer-side
++     * storm (queue_hardware_message called many times) from consumer-side
++     * storm (get_hardware_message looping). */
++    if (0 /* silenced noisy popup-trace */)
++        fprintf( stderr,
++                 "vstpoc/popup-trace: queue_hw_msg msg=0x%04x win=%08x x=%d y=%d always_queue=%d\n",
++                 msg->msg, msg->win, msg->x, msg->y, always_queue );
++
+     update_desktop_key_state( desktop, msg->msg, msg->wparam );
+     last_input_time = get_tick_count();
+     if (msg->msg != WM_MOUSEMOVE) always_queue = 1;
+@@ -2892,6 +2985,18 @@ static int get_hardware_message( struct thread *thread, unsigned int hw_id, user
+     unsigned int msg_code;
+     int no_legacy;
+ 
++    /* vstpoc popup trace: log every entry to get_hardware_message so we can
++     * see how many times each thread polls during the storm. */
++    if (0 /* silenced noisy popup-trace */)
++    {
++        int list_count = 0;
++        struct list *p;
++        LIST_FOR_EACH( p, &input->msg_list ) list_count++;
++        fprintf( stderr,
++                 "vstpoc/popup-trace: get_hw_msg ENTRY thread=%p input=%p list_count=%d hw_id=%u filter_win=%08x\n",
++                 thread, input, list_count, hw_id, filter_win );
++    }
++
+     no_legacy = (device = thread->process->rawinput_mouse) && (device->flags & RIDEV_NOLEGACY);
+ 
+     ptr = list_head( &input->msg_list );
+@@ -2935,6 +3040,15 @@ static int get_hardware_message( struct thread *thread, unsigned int hw_id, user
+         }
+         if (win_thread != thread)
+         {
++            /* vstpoc popup trace: log the cross-thread routing decision —
++             * this is the suspected storm source (msg stays in list and
++             * gets re-processed by repeated get_message calls). */
++            if (0 /* silenced noisy popup-trace */)
++                fprintf( stderr,
++                         "vstpoc/popup-trace: get_msg cross-thread msg=0x%04x win=%08x "
++                         "this_thread=%p win_thread=%p shared_input=%d\n",
++                         msg->msg, win, thread, win_thread,
++                         win_thread->queue->input == input );
+             if (win_thread->queue->input == input)
+             {
+                 /* wake the other thread */
+@@ -4065,6 +4179,16 @@ DECL_HANDLER(set_capture_window)
+     {
+         struct thread_input *input = queue->input;
+         input_shm_t *input_shm = input->shared;
++        /* vstpoc popup trace: log SetCapture calls so we can see when JUCE
++         * (or wine internally) arms the desktop-wide click grab. Includes
++         * the previous capture and which thread is making the call. */
++        if (vstpoc_popup_trace_enabled())
++        {
++            fprintf( stderr,
++                     "vstpoc/popup-trace: SetCapture cur_thread=%p input=%p "
++                     "old_cap=%08x new_cap=%08x flags=0x%x\n",
++                     current, input, input_shm->capture, req->handle, req->flags );
++        }
+ 
+         /* if in menu mode, reject all requests to change focus, except if the menu bit is set */
+         if (input_shm->menu_owner && !(req->flags & CAPTURE_MENU))

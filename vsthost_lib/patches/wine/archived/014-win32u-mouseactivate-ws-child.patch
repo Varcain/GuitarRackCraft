@@ -1,0 +1,52 @@
+diff --git a/dlls/win32u/message.c b/dlls/win32u/message.c
+--- a/dlls/win32u/message.c
++++ b/dlls/win32u/message.c
+@@ -2661,12 +2661,40 @@ static BOOL process_mouse_message( MSG *msg, UINT hw_id, ULONG_PTR extra_info, H
+
+         /* Activate the window if needed */
+
+-        if (msg->hwnd != info.hwndActive)
+         {
+             HWND hwndTop = NtUserGetAncestor( msg->hwnd, GA_ROOT );
+-
+-            if ((get_window_long( hwndTop, GWL_STYLE ) & (WS_POPUP|WS_CHILD)) != WS_CHILD)
++            DWORD top_style = get_window_long( hwndTop, GWL_STYLE );
++            BOOL top_level_child = FALSE;
++            if ((top_style & (WS_POPUP|WS_CHILD)) == WS_CHILD)
++            {
++                HWND root_parent = NtUserGetAncestor( hwndTop, GA_PARENT );
++                if (!root_parent || root_parent == get_desktop_window())
++                    top_level_child = TRUE;
++            }
++            /* vstpoc patch (014): allow WM_MOUSEACTIVATE for top-level
++             * WS_CHILD (VST plugin editors with desktop as parent), AND
++             * fire it on EVERY click even when the editor is already
++             * active. JUCE's WM_SETFOCUS handler defers handleSetFocus
++             * until WM_MOUSEACTIVATE arrives — without re-sending it on
++             * every mouseDown JUCE never finishes its focus handshake
++             * and the TextEditor caret never shows. */
++            if ((msg->hwnd != info.hwndActive || top_level_child) &&
++                ((top_style & (WS_POPUP|WS_CHILD)) != WS_CHILD || top_level_child))
+             {
+                 UINT ret = send_message( msg->hwnd, WM_MOUSEACTIVATE, (WPARAM)hwndTop,
+                                          MAKELONG( hittest, msg->message ) );
+@@ -2681,7 +2709,18 @@ static BOOL process_mouse_message( MSG *msg, UINT hw_id, ULONG_PTR extra_info, H
+                     /* fall through */
+                 case MA_ACTIVATE:
+                 case 0:
+-                    if (!set_foreground_window( hwndTop, TRUE )) eat_msg = TRUE;
++                    /* For top-level WS_CHILD windows, skip
++                     * set_foreground_window — it sends WM_KILLFOCUS to
++                     * editor which clears JUCE's mouseActivateFlags
++                     * (the gotMouseActivate bit just set). Instead
++                     * directly send WM_SETFOCUS to satisfy JUCE's
++                     * deferred-focus check ((gotMouseActivate|gotSetFocus)
++                     * on the upcoming WM_LBUTTONDOWN). */
++                    if (top_level_child) {
++                        send_message( hwndTop, WM_SETFOCUS, 0, 0 );
++                    } else {
++                        if (!set_foreground_window( hwndTop, TRUE )) eat_msg = TRUE;
++                    }
+                     break;
+                 default:
+                     WARN( "unknown WM_MOUSEACTIVATE code %d\n", ret );

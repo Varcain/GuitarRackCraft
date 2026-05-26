@@ -1,0 +1,386 @@
+diff --git a/dlls/comdlg32/Makefile.in b/dlls/comdlg32/Makefile.in
+index c298c08..d14dc16 100644
+--- a/dlls/comdlg32/Makefile.in
++++ b/dlls/comdlg32/Makefile.in
+@@ -15,6 +15,7 @@ SOURCES = \
+ 	finddlg.c \
+ 	fontdlg.c \
+ 	itemdlg.c \
++	vstpoc_picker.c \
+ 	pd32_collate.svg \
+ 	pd32_landscape.svg \
+ 	pd32_nocollate.svg \
+diff --git a/dlls/comdlg32/filedlg.c b/dlls/comdlg32/filedlg.c
+index 43066f0..892fe69 100644
+--- a/dlls/comdlg32/filedlg.c
++++ b/dlls/comdlg32/filedlg.c
+@@ -4129,6 +4129,8 @@ static inline BOOL is_win16_looks(DWORD flags)
+  *    FALSE on cancel, error, close or filename-does-not-fit-in-buffer.
+  *
+  */
++BOOL vstpoc_picker_open_a(OPENFILENAMEA *ofn, int *did_run);
++
+ BOOL WINAPI GetOpenFileNameA(OPENFILENAMEA *ofn)
+ {
+     TRACE("flags 0x%08lx\n", ofn->Flags);
+@@ -4143,6 +4145,15 @@ BOOL WINAPI GetOpenFileNameA(OPENFILENAMEA *ofn)
+     if (ofn->Flags & OFN_FILEMUSTEXIST)
+         ofn->Flags |= OFN_PATHMUSTEXIST;
+ 
++    /* vstpoc: route through Android's SAF picker when VSTPOC_PICKER_PATH
++     * is set in env. If did_run stays 0 the feature wasn't engaged and we
++     * fall through to wine's regular dialog. */
++    {
++        int did_run = 0;
++        BOOL ok = vstpoc_picker_open_a(ofn, &did_run);
++        if (did_run) return ok;
++    }
++
+     if (is_win16_looks(ofn->Flags))
+         return GetFileName31A(ofn, OPEN_DIALOG);
+     else
+@@ -4164,6 +4175,8 @@ BOOL WINAPI GetOpenFileNameA(OPENFILENAMEA *ofn)
+  *    FALSE on cancel, error, close or filename-does-not-fit-in-buffer.
+  *
+  */
++BOOL vstpoc_picker_open_w(OPENFILENAMEW *ofn, int *did_run);
++
+ BOOL WINAPI GetOpenFileNameW(OPENFILENAMEW *ofn)
+ {
+     TRACE("flags 0x%08lx\n", ofn->Flags);
+@@ -4178,6 +4191,13 @@ BOOL WINAPI GetOpenFileNameW(OPENFILENAMEW *ofn)
+     if (ofn->Flags & OFN_FILEMUSTEXIST)
+         ofn->Flags |= OFN_PATHMUSTEXIST;
+ 
++    /* vstpoc: see GetOpenFileNameA */
++    {
++        int did_run = 0;
++        BOOL ok = vstpoc_picker_open_w(ofn, &did_run);
++        if (did_run) return ok;
++    }
++
+     if (is_win16_looks(ofn->Flags))
+         return GetFileName31W(ofn, OPEN_DIALOG);
+     else
+
+diff --git a/dlls/comdlg32/vstpoc_picker.c b/dlls/comdlg32/vstpoc_picker.c
+new file mode 100644
+--- /dev/null
++++ b/dlls/comdlg32/vstpoc_picker.c
+@@ -0,0 +1,316 @@
++/*
++ * vstpoc native file-picker hook for wine's comdlg32.
++ *
++ * When the Android-side launcher sets VSTPOC_PICKER_PATH=/abs/linux/path
++ * before exec'ing wine, GetOpenFileNameA/W routes its request through the
++ * mmap'd channel at that path instead of opening wine's own dialog. The
++ * Android side observes the request, shows ACTION_OPEN_DOCUMENT, copies
++ * the picked file into the wineprefix, and writes the C:\... path back.
++ *
++ * Layout must match VstpocPickerChannel in external/shared_layout.h.
++ * Offsets are written by hand because PE-side comdlg32 cannot include
++ * that header from our app's source tree. Don't change without bumping
++ * both sides together.
++ */
++
++#include <stdarg.h>
++#include <stdlib.h>
++#include <string.h>
++
++#include "windef.h"
++#include "winbase.h"
++#include "winnls.h"
++#include "wingdi.h"
++#include "winuser.h"
++#include "commdlg.h"
++#include "wine/debug.h"
++
++WINE_DEFAULT_DEBUG_CHANNEL(commdlg);
++
++/* Offsets into the picker channel mmap. Must match the actual struct
++ * layout of VstpocPickerChannel in external/shared_layout.h.
++ *
++ * _Alignas(64) aligns the field itself, NOT the next one — so e.g.
++ * `int32_t response_cancelled` lands at offset 68 (right after the
++ * 4-byte response_seq), not 128. The struct size is 2816 (not 2880);
++ * verified via the on-device picker file (ls -la shows 2816 bytes). */
++#define VSTPOC_OFF_REQUEST_SEQ         0
++#define VSTPOC_OFF_RESPONSE_SEQ       64
++#define VSTPOC_OFF_RESPONSE_CANCEL    68
++#define VSTPOC_OFF_REQUEST_TITLE      76
++#define VSTPOC_OFF_REQUEST_FILTER    204
++#define VSTPOC_OFF_REQUEST_INIT_DIR  716
++#define VSTPOC_OFF_RESPONSE_PATH    1740
++#define VSTPOC_TITLE_LEN            128
++#define VSTPOC_FILTER_LEN           512
++#define VSTPOC_PATH_LEN            1024
++#define VSTPOC_CHANNEL_SIZE        2816
++
++#define VSTPOC_POLL_MS               25
++#define VSTPOC_TIMEOUT_MS       600000   /* 10 minutes; user might browse for a while */
++
++/* Translate an absolute Linux path "/data/user/.../foo.dat" into a wine
++ * Win32 path "Z:\\data\\user\\...\\foo.dat" the wine loader recognises. */
++static void vstpoc_linux_to_winpath(const char *linux_path, char *out, size_t outsz)
++{
++    size_t i, j;
++    char c;
++    if (outsz < 4) {
++        if (outsz > 0) out[0] = '\0';
++        return;
++    }
++    out[0] = 'Z';
++    out[1] = ':';
++    i = 2;
++    j = 0;
++    while (linux_path[j] && i < outsz - 1) {
++        c = linux_path[j++];
++        out[i++] = (c == '/') ? '\\' : c;
++    }
++    out[i] = '\0';
++}
++
++static void *vstpoc_map_channel(HANDLE *out_file, HANDLE *out_mapping)
++{
++    const char *picker_path;
++    char winpath[1024];
++    HANDLE fh, mh;
++    void *view;
++
++    picker_path = getenv("VSTPOC_PICKER_PATH");
++    if (!picker_path || !*picker_path) return NULL;
++
++    vstpoc_linux_to_winpath(picker_path, winpath, sizeof(winpath));
++
++    fh = CreateFileA(winpath, GENERIC_READ | GENERIC_WRITE,
++                     FILE_SHARE_READ | FILE_SHARE_WRITE,
++                     NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
++    if (fh == INVALID_HANDLE_VALUE) {
++        ERR("vstpoc_picker: cannot open %s (gle=%lu)\n", winpath, GetLastError());
++        return NULL;
++    }
++    mh = CreateFileMappingA(fh, NULL, PAGE_READWRITE, 0, 0, NULL);
++    if (!mh) {
++        ERR("vstpoc_picker: CreateFileMapping failed (gle=%lu)\n", GetLastError());
++        CloseHandle(fh);
++        return NULL;
++    }
++    /* Pass 0 for size = "map the whole section". Our channel file is
++     * 2816 bytes — smaller than the page size — and passing the
++     * literal size made wine's MapViewOfFile fail because it can't
++     * page-align a 2816-byte mapping below one page. Letting wine
++     * round to whole-section avoids that. */
++    view = MapViewOfFile(mh, FILE_MAP_READ | FILE_MAP_WRITE, 0, 0, 0);
++    if (!view) {
++        ERR("vstpoc_picker: MapViewOfFile failed (gle=%lu)\n", GetLastError());
++        CloseHandle(mh);
++        CloseHandle(fh);
++        return NULL;
++    }
++    *out_file = fh;
++    *out_mapping = mh;
++    return view;
++}
++
++/* Returns -1 if picker disabled, 0 on cancel, 1 on success. On success,
++ * the result path is copied into `result` (NUL-terminated). */
++static int vstpoc_pick_a(LPCSTR title, LPCSTR filter, LPCSTR initial_dir,
++                          char *result, size_t result_sz)
++{
++    HANDLE fh = NULL, mh = NULL;
++    unsigned char *ch;
++    char *req_title, *req_filter, *req_init_dir, *rsp_path;
++    volatile unsigned int *req_seq, *rsp_seq;
++    volatile int *rsp_cancel;
++    unsigned int new_seq;
++    int got, iters, i, rc;
++
++    ch = vstpoc_map_channel(&fh, &mh);
++    if (!ch) return -1;
++
++    /* Fill request fields */
++    req_title    = (char *)(ch + VSTPOC_OFF_REQUEST_TITLE);
++    req_filter   = (char *)(ch + VSTPOC_OFF_REQUEST_FILTER);
++    req_init_dir = (char *)(ch + VSTPOC_OFF_REQUEST_INIT_DIR);
++    rsp_path     = (char *)(ch + VSTPOC_OFF_RESPONSE_PATH);
++    req_seq      = (volatile unsigned int *)(ch + VSTPOC_OFF_REQUEST_SEQ);
++    rsp_seq      = (volatile unsigned int *)(ch + VSTPOC_OFF_RESPONSE_SEQ);
++    rsp_cancel   = (volatile int *)(ch + VSTPOC_OFF_RESPONSE_CANCEL);
++
++    memset(req_title, 0, VSTPOC_TITLE_LEN);
++    if (title) lstrcpynA(req_title, title, VSTPOC_TITLE_LEN);
++
++    memset(req_filter, 0, VSTPOC_FILTER_LEN);
++    if (filter) {
++        /* Copy double-NUL-terminated filter spec verbatim. The format is
++         * "<descr>\0<pattern>\0<descr>\0<pattern>\0\0" — we walk pairs
++         * until an empty string. */
++        size_t total = 0;
++        const char *f = filter;
++        size_t l;
++        for (;;) {
++            l = strlen(f);
++            if (l == 0) break;
++            if (total + l + 1 >= (size_t)VSTPOC_FILTER_LEN - 1) break;
++            memcpy(req_filter + total, f, l + 1);
++            total += l + 1;
++            f += l + 1;
++        }
++        /* Trailing '\0' already in the cleared buffer makes the
++         * double-NUL terminator. */
++    }
++
++    memset(req_init_dir, 0, VSTPOC_PATH_LEN);
++    if (initial_dir) lstrcpynA(req_init_dir, initial_dir, VSTPOC_PATH_LEN);
++
++    *rsp_cancel = 0;
++    rsp_path[0] = '\0';
++
++    new_seq = *req_seq + 1;
++    if (new_seq == 0) new_seq = 1;
++    /* Release-store the new request_seq so the Android side, when it
++     * observes the bump, also sees the freshly written title/filter. */
++    InterlockedExchange((volatile LONG *)req_seq, (LONG)new_seq);
++
++    /* Poll for response. Wine's user32 message pump is on a different
++     * thread for the plugin's editor; sleeping here doesn't block the
++     * audio path (separate process). The Compose UI handles the SAF
++     * dialog; we just wait. */
++    got = 0;
++    iters = VSTPOC_TIMEOUT_MS / VSTPOC_POLL_MS;
++    for (i = 0; i < iters; ++i) {
++        if (*rsp_seq == new_seq) { got = 1; break; }
++        Sleep(VSTPOC_POLL_MS);
++    }
++
++    if (!got || *rsp_cancel) {
++        rc = 0;
++    } else {
++        if (result && result_sz > 0) {
++            lstrcpynA(result, rsp_path, (int)result_sz);
++        }
++        rc = 1;
++    }
++
++    UnmapViewOfFile(ch);
++    CloseHandle(mh);
++    CloseHandle(fh);
++    return rc;
++}
++
++/* ANSI entry point — called from GetOpenFileNameA before falling through
++ * to wine's dialog. Returns TRUE on success (path written to ofn->lpstrFile),
++ * FALSE on cancel, and -1 (mapped to FALSE) on "feature disabled" so the
++ * caller can decide to fall back to the regular dialog. We use a second
++ * boolean to distinguish those: *did_run = 1 means we handled it. */
++BOOL vstpoc_picker_open_a(OPENFILENAMEA *ofn, int *did_run)
++{
++    char path[VSTPOC_PATH_LEN];
++    int rc;
++    size_t want;
++    const char *slash, *basename;
++    size_t tlen;
++
++    *did_run = 0;
++    if (!ofn || !ofn->lpstrFile || ofn->nMaxFile == 0) return FALSE;
++
++    path[0] = '\0';
++    rc = vstpoc_pick_a(ofn->lpstrTitle, ofn->lpstrFilter,
++                       ofn->lpstrInitialDir, path, sizeof(path));
++    if (rc < 0) return FALSE;
++    *did_run = 1;
++    if (rc == 0) return FALSE;
++
++    /* Copy result back; truncate if buffer too small. */
++    want = strlen(path);
++    if (want + 1 > ofn->nMaxFile) want = ofn->nMaxFile - 1;
++    memcpy(ofn->lpstrFile, path, want);
++    ofn->lpstrFile[want] = '\0';
++    /* If the caller wants the file-title separately, point at the basename. */
++    if (ofn->lpstrFileTitle && ofn->nMaxFileTitle > 0) {
++        slash = strrchr(ofn->lpstrFile, '\\');
++        basename = slash ? slash + 1 : ofn->lpstrFile;
++        tlen = strlen(basename);
++        if (tlen + 1 > ofn->nMaxFileTitle) tlen = ofn->nMaxFileTitle - 1;
++        memcpy(ofn->lpstrFileTitle, basename, tlen);
++        ofn->lpstrFileTitle[tlen] = '\0';
++    }
++    return TRUE;
++}
++
++/* Unicode entry point — convert from W to A for the request, then back
++ * for the response. ASCII is fine for IR paths on Android. */
++BOOL vstpoc_picker_open_w(OPENFILENAMEW *ofn, int *did_run)
++{
++    char titleA[VSTPOC_TITLE_LEN];
++    char initDirA[VSTPOC_PATH_LEN];
++    char filterA[VSTPOC_FILTER_LEN];
++    char pathA[VSTPOC_PATH_LEN];
++    int rc, chars, blen;
++    const WCHAR *slash, *basename;
++    WCHAR *p;
++
++    *did_run = 0;
++    if (!ofn || !ofn->lpstrFile || ofn->nMaxFile == 0) return FALSE;
++
++    titleA[0] = '\0';
++    initDirA[0] = '\0';
++    memset(filterA, 0, sizeof(filterA));
++
++    if (ofn->lpstrTitle) {
++        WideCharToMultiByte(CP_UTF8, 0, ofn->lpstrTitle, -1,
++                            titleA, sizeof(titleA), NULL, NULL);
++        titleA[sizeof(titleA) - 1] = '\0';
++    }
++    if (ofn->lpstrInitialDir) {
++        WideCharToMultiByte(CP_UTF8, 0, ofn->lpstrInitialDir, -1,
++                            initDirA, sizeof(initDirA), NULL, NULL);
++        initDirA[sizeof(initDirA) - 1] = '\0';
++    }
++    if (ofn->lpstrFilter) {
++        /* The filter is a double-NUL-terminated UTF-16 buffer. Walk
++         * string pairs and emit double-NUL-terminated UTF-8. */
++        const WCHAR *f = ofn->lpstrFilter;
++        size_t totalA = 0;
++        int l, outBytes;
++        for (;;) {
++            l = lstrlenW(f);
++            if (l == 0) break;
++            outBytes = WideCharToMultiByte(
++                CP_UTF8, 0, f, l,
++                filterA + totalA,
++                (int)(sizeof(filterA) - 2 - totalA),
++                NULL, NULL);
++            if (outBytes <= 0) break;
++            totalA += (size_t)outBytes;
++            if (totalA + 1 >= sizeof(filterA) - 1) break;
++            filterA[totalA++] = '\0';
++            f += l + 1;
++        }
++    }
++
++    pathA[0] = '\0';
++    rc = vstpoc_pick_a(titleA, filterA, initDirA, pathA, sizeof(pathA));
++    if (rc < 0) return FALSE;
++    *did_run = 1;
++    if (rc == 0) return FALSE;
++
++    chars = MultiByteToWideChar(CP_UTF8, 0, pathA, -1,
++                                ofn->lpstrFile, (int)ofn->nMaxFile);
++    if (chars <= 0) {
++        if (ofn->nMaxFile > 0) ofn->lpstrFile[0] = 0;
++        return FALSE;
++    }
++    if (ofn->lpstrFileTitle && ofn->nMaxFileTitle > 0) {
++        slash = NULL;
++        for (p = ofn->lpstrFile; *p; ++p) {
++            if (*p == '\\') slash = p;
++        }
++        basename = slash ? slash + 1 : ofn->lpstrFile;
++        blen = lstrlenW(basename);
++        if (blen + 1 > (int)ofn->nMaxFileTitle) blen = (int)ofn->nMaxFileTitle - 1;
++        memcpy(ofn->lpstrFileTitle, basename, blen * sizeof(WCHAR));
++        ofn->lpstrFileTitle[blen] = 0;
++    }
++    return TRUE;
++}

@@ -1,0 +1,169 @@
+From 95b092d32f86fd9268295a9223826542016e2f8a Mon Sep 17 00:00:00 2001
+From: Kamil Lulko <kamil.lulko@gmail.com>
+Date: Fri, 22 May 2026 05:07:44 +0200
+Subject: [PATCH 4/6] =?UTF-8?q?fex-pivot:=20wine=20patch=20022=20=E2=80=94?=
+ =?UTF-8?q?=20synthetic=20adapter=20for=20Android=20iphlpapi?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Android's SELinux untrusted_app domain blocks netlink sockets and
+/proc/net/* reads, so wine's adapter enumeration via nsiproxy.sys
+returns ERROR_FILE_NOT_FOUND (or 0 adapters). License-checking
+plugins (TH-U, etc.) call GetAdaptersAddresses to fingerprint
+hardware via MAC address — an empty list means they reject the
+system with "not enough information to generate license request".
+
+Synthesize one Ethernet-class adapter when enumeration fails:
+- MAC: derived from VSTPOC_FAKE_MAC env var (launcher can pass
+  ANDROID_ID-derived bytes for per-device fingerprint) OR a fixed
+  fallback (02:ab:cd:ef:01:23) if env not set
+- DnsSuffix: allocated separately (adapters_addresses_free calls
+  heap_free on it explicitly, so it must be its own block)
+- Strings: AdapterName, Description, FriendlyName in the main block
+- Type: MIB_IF_TYPE_ETHERNET, status: IfOperStatusUp, speeds: 100Mbps
+
+Verified: TH-U Premium license activation succeeded with this patch.
+Server returned ~11.5KB license XML, evalp-11000.xml written to
+AppData/Roaming/Overloud/TH-U/.
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+---
+ dlls/iphlpapi/iphlpapi_main.c | 114 ++++++++++++++++++++++++++++++++++
+ 1 file changed, 114 insertions(+)
+
+diff --git a/dlls/iphlpapi/iphlpapi_main.c b/dlls/iphlpapi/iphlpapi_main.c
+index 78000a62..46cab36b 100644
+--- a/dlls/iphlpapi/iphlpapi_main.c
++++ b/dlls/iphlpapi/iphlpapi_main.c
+@@ -1319,6 +1319,109 @@ err:
+     return err;
+ }
+ 
++/* vstpoc patch (022-iphlpapi-fake-adapter-android):
++ * On Android, the untrusted_app SELinux domain blocks netlink sockets and
++ * /proc/net/* reads, so wine's adapter enumeration via nsiproxy.sys returns
++ * 0 adapters. License-checking plugins (TH-U, etc.) need a non-empty
++ * adapter list with a stable MAC address to generate hardware fingerprints.
++ *
++ * Synthesize one Ethernet-class adapter with MAC derived from
++ * VSTPOC_FAKE_MAC env var (set by the launcher from Android's ANDROID_ID,
++ * which is stable per-device-and-install). If env not set, use a fixed MAC.
++ *
++ * Parse "VSTPOC_FAKE_MAC=hexhexhexhexhexhex" (12 hex chars, no separators)
++ * into a 6-byte MAC. */
++static BOOL vstpoc_get_fake_mac( UCHAR mac[6] )
++{
++    char buf[32];
++    DWORD n;
++    int i;
++
++    n = GetEnvironmentVariableA( "VSTPOC_FAKE_MAC", buf, sizeof(buf) );
++    if (n < 12 || n >= sizeof(buf))
++    {
++        /* fallback: stable but non-locally-administered */
++        mac[0] = 0x02; mac[1] = 0xab; mac[2] = 0xcd;
++        mac[3] = 0xef; mac[4] = 0x01; mac[5] = 0x23;
++        return TRUE;
++    }
++    for (i = 0; i < 6; i++)
++    {
++        char hi = buf[i*2], lo = buf[i*2+1];
++        UCHAR h = (hi >= '0' && hi <= '9') ? hi - '0' :
++                  (hi >= 'a' && hi <= 'f') ? hi - 'a' + 10 :
++                  (hi >= 'A' && hi <= 'F') ? hi - 'A' + 10 : 0;
++        UCHAR l = (lo >= '0' && lo <= '9') ? lo - '0' :
++                  (lo >= 'a' && lo <= 'f') ? lo - 'a' + 10 :
++                  (lo >= 'A' && lo <= 'F') ? lo - 'A' + 10 : 0;
++        mac[i] = (h << 4) | l;
++    }
++    /* Set the locally-administered bit, clear multicast bit */
++    mac[0] = (mac[0] & 0xfc) | 0x02;
++    return TRUE;
++}
++
++static DWORD vstpoc_synthesize_fake_adapter( ULONG flags, IP_ADAPTER_ADDRESSES **info, ULONG *count )
++{
++    IP_ADAPTER_ADDRESSES *aa;
++    static const WCHAR descW[] = L"vstpoc Android synthetic adapter";
++    static const WCHAR friendlyW[] = L"Ethernet";
++    static const WCHAR emptyW[] = L"";
++    static const char nameA[] = "{00000000-0000-0000-0000-000000000001}";
++    SIZE_T desc_size = sizeof(descW);
++    SIZE_T friendly_size = sizeof(friendlyW);
++    SIZE_T empty_size = sizeof(emptyW);
++    SIZE_T name_size = sizeof(nameA);
++    /* Allocate DnsSuffix separately — adapters_addresses_free() calls
++     * heap_free(aa->DnsSuffix) explicitly, so it must be its own heap block.
++     * Other strings can share the main adapter block. */
++    SIZE_T needed = sizeof(*aa) + desc_size + friendly_size + name_size;
++    char *str_ptr;
++    WCHAR *dns_suffix;
++
++    aa = heap_alloc_zero( needed );
++    if (!aa) return ERROR_NOT_ENOUGH_MEMORY;
++
++    dns_suffix = heap_alloc( empty_size );
++    if (!dns_suffix)
++    {
++        heap_free( aa );
++        return ERROR_NOT_ENOUGH_MEMORY;
++    }
++    memcpy( dns_suffix, emptyW, empty_size );
++    aa->DnsSuffix = dns_suffix;
++
++    str_ptr = (char *)(aa + 1);
++    aa->Length = sizeof(*aa);
++    aa->IfIndex = 1;
++    aa->Next = NULL;
++
++    memcpy( str_ptr, nameA, name_size );
++    aa->AdapterName = str_ptr;
++    str_ptr += name_size;
++
++    memcpy( str_ptr, descW, desc_size );
++    aa->Description = (WCHAR *)str_ptr;
++    str_ptr += desc_size;
++
++    memcpy( str_ptr, friendlyW, friendly_size );
++    aa->FriendlyName = (WCHAR *)str_ptr;
++
++    aa->PhysicalAddressLength = 6;
++    vstpoc_get_fake_mac( aa->PhysicalAddress );
++
++    aa->Mtu = 1500;
++    aa->IfType = MIB_IF_TYPE_ETHERNET;
++    aa->OperStatus = IfOperStatusUp;
++    aa->TransmitLinkSpeed = 100000000;
++    aa->ReceiveLinkSpeed = 100000000;
++    aa->ConnectionType = NET_IF_CONNECTION_DEDICATED;
++
++    *info = aa;
++    *count = 1;
++    return ERROR_SUCCESS;
++}
++
+ ULONG WINAPI DECLSPEC_HOTPATCH GetAdaptersAddresses( ULONG family, ULONG flags, void *reserved,
+                                                      IP_ADAPTER_ADDRESSES *aa, ULONG *size )
+ {
+@@ -1330,6 +1433,17 @@ ULONG WINAPI DECLSPEC_HOTPATCH GetAdaptersAddresses( ULONG family, ULONG flags,
+     if (!size) return ERROR_INVALID_PARAMETER;
+ 
+     err = adapters_addresses_alloc( family, flags, &info, &count );
++    /* vstpoc patch (022): if adapter enumeration failed (netlink blocked
++     * on Android — typically returns ERROR_FILE_NOT_FOUND from
++     * NsiAllocateAndGetTable when the kernel module isn't reachable,
++     * or ERROR_NO_DATA when interfaces are empty) or returned 0 adapters,
++     * synthesize a fake one so plugins that fingerprint hardware via MAC
++     * don't reject the system. */
++    if (err != ERROR_SUCCESS || count == 0)
++    {
++        err = vstpoc_synthesize_fake_adapter( flags, &info, &count );
++        ERR( "vstpoc-iphlpapi: synthesized fake adapter err=0x%lx count=%lu\n", err, count );
++    }
+     if (err) return err;
+ 
+     needed = adapters_addresses_size( info );
+-- 
+2.43.0
+

@@ -1,0 +1,31 @@
+diff --git a/dlls/combase/marshal.c b/dlls/combase/marshal.c
+index NN..MM 100644
+--- a/dlls/combase/marshal.c
++++ b/dlls/combase/marshal.c
+@@ -911,8 +911,24 @@ HRESULT marshal_object(struct apartment *apt, STDOBJREF *stdobjref, REFIID riid,
+                     ERR("Failed to create an IRpcStubBuffer from IPSFactory for %s with error %#lx\n",
+                         debugstr_guid(riid), hr);
+             }else {
+-                WARN("couldn't get IPSFactory buffer for interface %s\n", debugstr_guid(riid));
+-                hr = E_NOINTERFACE;
++                /* vstpoc patch (010-combase-null-stub-fallback): no
++                 * ProxyStubClsid32 registered for this interface →
++                 * upstream returns E_NOINTERFACE, which kills RegisterDragDrop
++                 * (IDropTarget) and apartment_get_local_server_stream
++                 * (IServiceProvider) and any other "register and store"
++                 * marshal. Most VST plugins call these defensively and don't
++                 * actually USE the marshalled stream unless drag/drop
++                 * happens or the apartment becomes a real local server.
++                 *
++                 * Fall through with stub=NULL and hr=S_OK so the OBJREF
++                 * gets written to the stream and the caller continues. If
++                 * someone later tries to invoke through the OBJREF the
++                 * RPC dispatch will fail (NULL stub), but that's a hot
++                 * code path we don't expect plugins to hit. */
++                WARN("couldn't get IPSFactory buffer for interface %s, using NULL stub fallback\n",
++                     debugstr_guid(riid));
++                stub = NULL;
++                hr = S_OK;
+             }
+
+         }

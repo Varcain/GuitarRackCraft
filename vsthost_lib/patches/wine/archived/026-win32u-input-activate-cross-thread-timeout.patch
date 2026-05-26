@@ -1,0 +1,20 @@
+# SUPERSEDED by patches/wine/027-win32u-input-cross-thread-async.patch
+#
+# Patch 026 wrapped cross-thread set_focus_window / set_active_window
+# `send_message` calls in `send_message_timeout(..., SMTO_NORMAL, 2000, FALSE)`
+# to break the JUCE-popup-close deadlock where the previous-foreground
+# owner thread is stuck mid-C++-destructor. It worked but left the
+# sender stalled for ~16s per popup interaction (8 cross-thread sends ×
+# 2 s each) — user-perceived as a hang.
+#
+# Patch 027 replaces those sites with `send_focus_message_async()`, a
+# helper that uses `NtUserMessageCall(..., NtUserSendNotifyMessage, FALSE)`
+# for cross-thread sends (matching wine's own `set_foreground_window`
+# pattern and real Windows behaviour). Sender returns immediately;
+# receiver processes the message in its own pump as ISMEX_NOTIFY.
+#
+# Patch 027 includes a fallback to 026's 2 s send_message_timeout
+# path, gated by env var `WINE_VSTPOC_SYNC_FOCUS=1`, so 026's behaviour
+# is still available for emergency rollback without a wine rebuild.
+#
+# Do NOT apply this patch standalone — apply 027 instead.

@@ -202,3 +202,13 @@ if(LV2_AVAILABLE)
         ${ZIX_LIB}
     )
 endif()
+
+# VST hosting via :vsthost_lib (full flavor only — set by HAS_VST_HOST CMake
+# arg from app/build.gradle.kts productFlavors.full.externalNativeBuild).
+# When this define is set, NativeBridge.cpp:nativeInit will call
+# vsthost::createVstFactory and register the result with PluginRegistry.
+if(HAS_VST_HOST)
+    find_package(vsthost_lib REQUIRED CONFIG)
+    target_link_libraries(guitarrackcraft vsthost_lib::vsthost)
+    target_compile_definitions(guitarrackcraft PRIVATE HAS_VST_HOST=1)
+endif()

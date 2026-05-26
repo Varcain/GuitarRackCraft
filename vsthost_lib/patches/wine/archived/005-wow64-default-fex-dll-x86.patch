@@ -1,0 +1,16 @@
+diff --git a/dlls/wow64/syscall.c b/dlls/wow64/syscall.c
+index d2a977e..ccae93e 100644
+--- a/dlls/wow64/syscall.c
++++ b/dlls/wow64/syscall.c
+@@ -744,7 +744,10 @@ static const WCHAR *get_cpu_dll_name(void)
+     {
+     case IMAGE_FILE_MACHINE_I386:
+         RtlInitUnicodeString( &nameW, L"\\Registry\\Machine\\Software\\Microsoft\\Wow64\\x86" );
+-        ret = (native_machine == IMAGE_FILE_MACHINE_ARM64 ? L"xtajit.dll" : L"wow64cpu.dll");
++        /* Default the ARM64 host's x86-emulation DLL to FEX-Emu's
++         * libwow64fex.dll instead of Microsoft's xtajit.dll (which we
++         * don't ship). Matches patch 003 for the ARM64EC / x86_64 case. */
++        ret = (native_machine == IMAGE_FILE_MACHINE_ARM64 ? L"libwow64fex.dll" : L"wow64cpu.dll");
+         break;
+     case IMAGE_FILE_MACHINE_ARMNT:
+         RtlInitUnicodeString( &nameW, L"\\Registry\\Machine\\Software\\Microsoft\\Wow64\\arm" );

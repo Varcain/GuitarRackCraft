@@ -1,0 +1,134 @@
+diff --git a/dlls/win32u/input.c b/dlls/win32u/input.c
+index 2f1a76d6..7e196c16 100644
+--- a/dlls/win32u/input.c
++++ b/dlls/win32u/input.c
+@@ -1914,6 +1914,42 @@ BOOL WINAPI NtUserReleaseCapture(void)
+     return set_capture_window( 0, 0, &previous );
+ }
+ 
++/* vstpoc patch 027: cross-thread focus/activation messages must be
++ * fire-and-forget on real Windows (cross-thread WM_SETFOCUS / WM_KILLFOCUS
++ * / WM_NCACTIVATE / WM_ACTIVATE / WM_ACTIVATEAPP use SendNotifyMessage
++ * semantics). Patch 026 used send_message_timeout with a 2s deadline,
++ * but that still stalls the sender for up to 2s × N sites per popup
++ * interaction (~16s observed on JUCE-7 plugins). Mirror the proven
++ * pattern wine itself uses in set_foreground_window — NtUserMessageCall
++ * with NtUserSendNotifyMessage — so cross-thread sends never block.
++ *
++ * Same-thread sends stay synchronous: the WindowProc must run before
++ * the caller continues (e.g. WM_SETFOCUS feeding back into edit controls).
++ *
++ * Rollback gate WINE_VSTPOC_SYNC_FOCUS=1 restores patch 026's
++ * send_message_timeout path for emergency debugging without a rebuild. */
++static BOOL vstpoc_sync_focus( void )
++{
++    static int checked = 0, sync = 0;
++    if (!checked)
++    {
++        const char *e = getenv("WINE_VSTPOC_SYNC_FOCUS");
++        sync = (e && *e && *e != '0');
++        checked = 1;
++    }
++    return sync;
++}
++
++static void send_focus_message_async( HWND hwnd, UINT msg, WPARAM wp, LPARAM lp )
++{
++    if (get_window_thread( hwnd, NULL ) == GetCurrentThreadId())
++        send_message( hwnd, msg, wp, lp );
++    else if (vstpoc_sync_focus())
++        send_message_timeout( hwnd, msg, wp, lp, SMTO_NORMAL, 2000, FALSE );
++    else
++        NtUserMessageCall( hwnd, msg, wp, lp, 0, NtUserSendNotifyMessage, FALSE );
++}
++
+ /*****************************************************************
+  *		set_focus_window
+  *
+@@ -1936,12 +1972,13 @@ static HWND set_focus_window( HWND hwnd )
+ 
+     if (previous)
+     {
+-        send_message( previous, WM_KILLFOCUS, (WPARAM)hwnd, 0 );
++        /* vstpoc 027: async cross-thread, sync same-thread. See helper. */
++        send_focus_message_async( previous, WM_KILLFOCUS, (WPARAM)hwnd, 0 );
+ 
+         ime_hwnd = get_default_ime_window( previous );
+         if (ime_hwnd)
+-            send_message( ime_hwnd, WM_IME_INTERNAL, IME_INTERNAL_DEACTIVATE,
+-                          HandleToUlong(previous) );
++            send_focus_message_async( ime_hwnd, WM_IME_INTERNAL, IME_INTERNAL_DEACTIVATE,
++                                      HandleToUlong(previous) );
+ 
+         if (hwnd != get_focus()) return previous;  /* changed by the message */
+     }
+@@ -1949,12 +1986,12 @@ static HWND set_focus_window( HWND hwnd )
+     {
+         ime_hwnd = get_default_ime_window( hwnd );
+         if (ime_hwnd)
+-            send_message( ime_hwnd, WM_IME_INTERNAL, IME_INTERNAL_ACTIVATE,
+-                          HandleToUlong(hwnd) );
++            send_focus_message_async( ime_hwnd, WM_IME_INTERNAL, IME_INTERNAL_ACTIVATE,
++                                      HandleToUlong(hwnd) );
+ 
+         NtUserNotifyWinEvent( EVENT_OBJECT_FOCUS, hwnd, OBJID_CLIENT, 0 );
+ 
+-        send_message( hwnd, WM_SETFOCUS, (WPARAM)previous, 0 );
++        send_focus_message_async( hwnd, WM_SETFOCUS, (WPARAM)previous, 0 );
+     }
+     return previous;
+ }
+@@ -1982,9 +2019,11 @@ BOOL set_active_window( HWND hwnd, HWND *prev, BOOL mouse, BOOL focus, DWORD new
+ 
+     if (is_window( previous ))
+     {
+-        send_message( previous, WM_NCACTIVATE, FALSE, (LPARAM)hwnd );
+-        send_message( previous, WM_ACTIVATE,
+-                      MAKEWPARAM( WA_INACTIVE, is_iconic(previous) ), (LPARAM)hwnd );
++        /* vstpoc 027: async cross-thread, sync same-thread. See helper. */
++        send_focus_message_async( previous, WM_NCACTIVATE, FALSE, (LPARAM)hwnd );
++        send_focus_message_async( previous, WM_ACTIVATE,
++                                  MAKEWPARAM( WA_INACTIVE, is_iconic(previous) ),
++                                  (LPARAM)hwnd );
+     }
+ 
+     SERVER_START_REQ( set_active_window )
+@@ -2024,7 +2063,9 @@ BOOL set_active_window( HWND hwnd, HWND *prev, BOOL mouse, BOOL focus, DWORD new
+                 for (phwnd = list; *phwnd; phwnd++)
+                 {
+                     if (get_window_thread( *phwnd, NULL ) == old_thread)
+-                        send_message( *phwnd, WM_ACTIVATEAPP, 0, new_active_thread_id );
++                        /* vstpoc 027: cross-thread broadcast — by construction. */
++                        send_focus_message_async( *phwnd, WM_ACTIVATEAPP, 0,
++                                                  new_active_thread_id );
+                 }
+             }
+             if (new_thread)
+@@ -2032,7 +2073,8 @@ BOOL set_active_window( HWND hwnd, HWND *prev, BOOL mouse, BOOL focus, DWORD new
+                 for (phwnd = list; *phwnd; phwnd++)
+                 {
+                     if (get_window_thread( *phwnd, NULL ) == new_thread)
+-                        send_message( *phwnd, WM_ACTIVATEAPP, 1, old_thread );
++                        send_focus_message_async( *phwnd, WM_ACTIVATEAPP, 1,
++                                                  old_thread );
+                 }
+             }
+             free( list );
+@@ -2041,10 +2083,13 @@ BOOL set_active_window( HWND hwnd, HWND *prev, BOOL mouse, BOOL focus, DWORD new
+ 
+     if (is_window(hwnd))
+     {
+-        send_message( hwnd, WM_NCACTIVATE, hwnd == NtUserGetForegroundWindow(), (LPARAM)previous );
+-        send_message( hwnd, WM_ACTIVATE,
+-                      MAKEWPARAM( mouse ? WA_CLICKACTIVE : WA_ACTIVE, is_iconic(hwnd) ),
+-                      (LPARAM)previous );
++        /* vstpoc 027: helper picks sync vs async by thread match. */
++        send_focus_message_async( hwnd, WM_NCACTIVATE,
++                                  hwnd == NtUserGetForegroundWindow(),
++                                  (LPARAM)previous );
++        send_focus_message_async( hwnd, WM_ACTIVATE,
++                                  MAKEWPARAM( mouse ? WA_CLICKACTIVE : WA_ACTIVE, is_iconic(hwnd) ),
++                                  (LPARAM)previous );
+         if (NtUserGetAncestor( hwnd, GA_PARENT ) == get_desktop_window())
+             NtUserPostMessage( get_desktop_window(), WM_PARENTNOTIFY, WM_NCACTIVATE, (LPARAM)hwnd );
+     }

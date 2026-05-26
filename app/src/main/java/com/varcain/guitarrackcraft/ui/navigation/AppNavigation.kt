@@ -35,6 +35,8 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.varcain.guitarrackcraft.ui.browser.PluginBrowserScreen
 import com.varcain.guitarrackcraft.ui.modgui.ModguiScreen
 import com.varcain.guitarrackcraft.ui.rack.RackScreen
+import com.varcain.guitarrackcraft.ui.vst.VST_MANAGER_ROUTE
+import com.varcain.guitarrackcraft.ui.vst.vstManagerRoute
 import com.varcain.guitarrackcraft.ui.rack.RackViewModel
 import com.varcain.guitarrackcraft.ui.recordings.RecordingsScreen
 import com.varcain.guitarrackcraft.ui.settings.AudioSettingsScreen
@@ -93,6 +95,7 @@ fun AppNavigation(
             onNavigateToTone3000 = { tag, gear, platform, sourcePluginIndex, sourceSlot ->
                 navController.navigate(Screen.Tone3000.route(tag, gear, platform, sourcePluginIndex, sourceSlot))
             },
+            onNavigateToVstManager = { navController.navigate(VST_MANAGER_ROUTE) },
             onReplacePlugin = { replaceIndex ->
                 navController.navigate(Screen.Browser.route(replaceIndex))
             },
@@ -110,6 +113,8 @@ fun AppNavigation(
             composable(Screen.Rack.route) {
                 // Empty — RackScreen is always composed above
             }
+            // VST manager (full flavor only — playstore stub is a no-op).
+            vstManagerRoute(navController)
             composable(
                 route = Screen.Modgui.route,
                 arguments = listOf(

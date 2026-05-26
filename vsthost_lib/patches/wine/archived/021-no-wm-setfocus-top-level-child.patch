@@ -1,0 +1,26 @@
+diff --git a/dlls/win32u/message.c b/dlls/win32u/message.c
+index 5402c90d..e46dcd7f 100644
+--- a/dlls/win32u/message.c
++++ b/dlls/win32u/message.c
+@@ -2709,9 +2709,18 @@ static BOOL process_mouse_message( MSG *msg, UINT hw_id, ULONG_PTR extra_info, H
+                      * deferred-focus check ((gotMouseActivate|gotSetFocus)
+                      * on the upcoming WM_LBUTTONDOWN). */
+                     if (top_level_child) {
+-                        send_message( hwndTop, WM_SETFOCUS, 0, 0 );
+-                        ERR( "vstpoc: forced WM_SETFOCUS to %p (skipped SetForeground)\n",
+-                             hwndTop );
++                        /* Skip both set_foreground_window AND any
++                         * synthesized WM_SETFOCUS — real Windows doesn't
++                         * send WM_SETFOCUS for child window clicks
++                         * unless focus actually changes. Synthesizing
++                         * it triggered JUCE 7 plugins (TH-U) to enter
++                         * handleFocusGain → bringModalComponentsToFront
++                         * → cross-thread SetWindowPos chain which
++                         * deadlocked on nested JUCE peers. JUCE 8
++                         * plugins (AmpCraft, X50II) manage focus
++                         * internally via Component::currentlyFocusedComponent
++                         * and don't need wine to fire window-level
++                         * focus events. */
+                     } else {
+                         if (!set_foreground_window( hwndTop, TRUE )) eat_msg = TRUE;
+                     }
