@@ -354,6 +354,40 @@ def main() -> int:
 
     print(f"packed {len(entries)} libs ({total_bytes/1024/1024:.1f} MB total) → {out_jni}")
     print(f"manifest → {out_manifest}")
+
+    # --- wine NLS tarball -----------------------------------------------------
+    # WineSetup.kt extracts this into <wineRoot>/share/wine at runtime.
+    # The .nls files are wine's codepage conversion tables; without them
+    # plugins doing MultiByteToWideChar (most do) crash on first use.
+    wine_src_nls = repo / "external/wine-upstream/nls"
+    out_nls_tar = repo / "src/main/assets/wine-fex-nls.tar.gz"
+    if wine_src_nls.exists():
+        with tarfile.open(out_nls_tar, "w:gz") as tf:
+            tf.add(wine_src_nls, arcname="nls", filter=lambda ti:
+                ti if ti.name.endswith(".nls") or ti.isdir() else None)
+        print(f"NLS tarball → {out_nls_tar} ({out_nls_tar.stat().st_size/1024:.0f} KB)")
+    else:
+        print(f"WARN: wine NLS source dir not found at {wine_src_nls}", file=sys.stderr)
+
+    # --- wine fonts ----------------------------------------------------------
+    # fetch-x11-libs.sh collects Liberation + DejaVu TTFs into toolchain/
+    # wine-fonts/. Stage them into assets/wine-fonts/ for WineSetup.kt's
+    # seedFonts() to copy into each wineprefix's drive_c/windows/Fonts.
+    src_fonts = repo / "toolchain/wine-fonts"
+    out_fonts = repo / "src/main/assets/wine-fonts"
+    if src_fonts.exists():
+        out_fonts.mkdir(parents=True, exist_ok=True)
+        # Wipe stale fonts so renames upstream don't leave orphans.
+        for stale in out_fonts.glob("*.ttf"):
+            stale.unlink()
+        count = 0
+        for ttf in src_fonts.glob("*.ttf"):
+            shutil.copy2(ttf, out_fonts / ttf.name)
+            count += 1
+        print(f"fonts → {out_fonts} ({count} files)")
+    else:
+        print(f"WARN: toolchain/wine-fonts not found; run fetch-x11-libs.sh first", file=sys.stderr)
+
     return 0
 
 

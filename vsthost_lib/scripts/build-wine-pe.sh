@@ -19,7 +19,7 @@ cd "$repo_root"
 # both builds. Idempotent reset + apply. See apply-wine-patches.sh.
 "$(dirname "$0")/apply-wine-patches.sh"
 
-export PATH="${repo_root}/toolchain/llvm-mingw/bin:$PATH"
+export PATH="${repo_root}/external/llvm-mingw/install/bin:$PATH"
 
 build_dir="external/wine-upstream/build-arm64ec"
 mkdir -p "$build_dir"
@@ -27,9 +27,15 @@ cd "$build_dir"
 
 if [ ! -f Makefile ]; then
   echo "=== configure wine PE-side (arm64ec + aarch64) ==="
+  # --disable-win16: avoid wine's 16-bit emulation layer. Two reasons:
+  # (1) FEX-Emu doesn't translate 16-bit code, so even if we built it the
+  #     plugins couldn't use it. (2) llvm-mingw's clang 21.1-rc2 crashes
+  #     compiling dlls/krnl386.exe16/selector.c (16-bit segment register
+  #     inline asm). Disabling the whole subsystem sidesteps the bug.
   ../configure \
     --enable-archs=arm64ec,aarch64,i386 \
     --with-mingw=clang \
+    --disable-win16 \
     --without-x \
     --with-freetype \
     --without-alsa \

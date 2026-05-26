@@ -125,3 +125,15 @@
 [submodule "vsthost_lib/external/llvm-mingw"]
 	path = vsthost_lib/external/llvm-mingw
 	url = https://github.com/mstorsjo/llvm-mingw.git
+[submodule "vsthost_lib/external/vst3sdk"]
+	path = vsthost_lib/external/vst3sdk
+	url = https://github.com/steinbergmedia/vst3sdk.git
+[submodule "vsthost_lib/external/dxvk"]
+	path = vsthost_lib/external/dxvk
+	url = https://github.com/doitsujin/dxvk.git
+[submodule "vsthost_lib/external/Vulkan-Headers"]
+	path = vsthost_lib/external/Vulkan-Headers
+	url = https://github.com/KhronosGroup/Vulkan-Headers.git
+[submodule "vsthost_lib/external/glslang"]
+	path = vsthost_lib/external/glslang
+	url = https://github.com/KhronosGroup/glslang.git

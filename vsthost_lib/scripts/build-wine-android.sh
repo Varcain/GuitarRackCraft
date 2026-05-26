@@ -30,7 +30,7 @@ TOOLCHAIN="$NDK/toolchains/llvm/prebuilt/$HOST_TAG"
 export PATH="$TOOLCHAIN/bin:$PATH"
 # also keep llvm-mingw on PATH so the PE-side build still works from this
 # same shell environment (mingw triple won't collide with NDK clang).
-export PATH="$repo_root/toolchain/llvm-mingw/bin:$PATH"
+export PATH="$repo_root/external/llvm-mingw/install/bin:$PATH"
 
 export CC="$TOOLCHAIN/bin/${TARGET}${API}-clang"
 export CXX="$TOOLCHAIN/bin/${TARGET}${API}-clang++"
@@ -77,11 +77,15 @@ if [ ! -f Makefile ]; then
   # glibc). Headers from /usr/include/X11 copied into toolchain/
   # x11-headers/ (arch-agnostic). Libs from .deb packages staged under
   # toolchain/x11-libs/. Re-stage with scripts/fetch-x11-libs.sh.
+  # --disable-win16: see comment in build-wine-pe.sh — clang 21.1-rc2 crashes
+  # on dlls/krnl386.exe16/selector.c (16-bit inline asm) and we don't need
+  # Win16 anyway (FEX-Emu doesn't translate it).
   ../configure \
     --host="$TARGET" \
     --with-wine-tools=../build-arm64ec \
     --enable-archs=arm64ec,aarch64,i386 \
     --with-mingw=clang \
+    --disable-win16 \
     --disable-wineandroid_drv \
     --disable-tests \
     --x-includes="$repo_root/toolchain/x11-headers" \

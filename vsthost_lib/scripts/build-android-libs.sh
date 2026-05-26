@@ -33,10 +33,20 @@ export STRIP="$TOOLCHAIN/bin/llvm-strip"
 
 cache=.cache/sources
 install_root="$repo_root/toolchain/android-libs"
-mkdir -p "$install_root"
+mkdir -p "$install_root" "$cache"
+
+fetch_tarball() {
+    local name="$1" url="$2"
+    if [ ! -f "$cache/$name" ]; then
+        echo "[+] fetch $name"
+        curl -fSL --retry 3 -o "$cache/$name" "$url"
+    fi
+}
 
 # --- libpng ----------------------------------------------------------------
 png_ver=1.6.43
+fetch_tarball "libpng-${png_ver}.tar.xz" \
+    "https://download.sourceforge.net/libpng/libpng-${png_ver}.tar.xz"
 png_src="$cache/libpng-${png_ver}"
 if [ ! -d "$png_src" ]; then
     tar xJf "$cache/libpng-${png_ver}.tar.xz" -C "$cache"
@@ -55,6 +65,8 @@ popd >/dev/null
 
 # --- freetype --------------------------------------------------------------
 ft_ver=2.13.3
+fetch_tarball "freetype-${ft_ver}.tar.xz" \
+    "https://download.savannah.gnu.org/releases/freetype/freetype-${ft_ver}.tar.xz"
 ft_src="$cache/freetype-${ft_ver}"
 if [ ! -d "$ft_src" ]; then
     tar xJf "$cache/freetype-${ft_ver}.tar.xz" -C "$cache"

@@ -14,9 +14,10 @@
 #   5.  build-wine-pe.sh      — wine PE DLLs (ARM64X); produces wine-tools
 #   6.  build-wine-android.sh — wine Unix side for arm64 Bionic
 #   7.  build-fex-pe.sh       — FEX-Emu PE DLLs (libarm64ecfex / libwow64fex)
-#   8.  build-vst-host.sh     — vst_host.exe + vst_host_x86.exe (PE guests)
-#   9.  build-uihost-stub.sh  — touch-keyboard COM stubs
-#   10. pack-wine-fex.py      — stage everything into src/main/{jniLibs,assets}
+#   8.  build-dxvk.sh         — DXVK D3D-to-Vulkan translation DLLs
+#   9.  build-vst-host.sh     — vst_host.exe + vst_host_x86.exe (PE guests)
+#   10. build-uihost-stub.sh  — touch-keyboard COM stubs
+#   11. pack-wine-fex.py      — stage everything into src/main/{jniLibs,assets}
 #
 # Steps not invoked here (run manually if needed):
 #   - build-vst3-host.sh — requires external/vst3sdk/ (not a submodule yet;
@@ -82,13 +83,16 @@ run_step build-wine-android.sh
 step 7  "build-fex-pe (FEX-Emu PE DLLs)"
 run_step build-fex-pe.sh
 
-step 8  "build-vst-host (vst_host.exe + vst_host_x86.exe)"
+step 8  "build-dxvk (DXVK D3D-to-Vulkan translation)"
+run_step build-dxvk.sh
+
+step 9  "build-vst-host (vst_host.exe + vst_host_x86.exe)"
 run_step build-vst-host.sh
 
-step 9  "build-uihost-stub (touch-keyboard COM stubs)"
+step 10 "build-uihost-stub (touch-keyboard COM stubs)"
 run_step build-uihost-stub.sh
 
-step 10 "pack-wine-fex (stage everything into src/main/jniLibs + assets)"
+step 11 "pack-wine-fex (stage everything into src/main/jniLibs + assets)"
 python3 "$REPO/scripts/pack-wine-fex.py" --repo-root "$REPO"
 
 elapsed=$(( $(date +%s) - start ))

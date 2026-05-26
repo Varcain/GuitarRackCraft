@@ -15,7 +15,7 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$repo_root"
 
-export PATH="${repo_root}/toolchain/llvm-mingw/bin:$PATH"
+export PATH="${repo_root}/external/llvm-mingw/install/bin:$PATH"
 
 # Sanity checks.
 which arm64ec-w64-mingw32-clang aarch64-w64-mingw32-clang > /dev/null || {

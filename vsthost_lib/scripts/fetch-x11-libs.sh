@@ -39,7 +39,7 @@ PKG_LIST=(
   "libxcb_1.17.0-1_aarch64.deb       pool/main/libx/libxcb/libxcb_1.17.0-1_aarch64.deb"
   "libxext_1.3.7_aarch64.deb         pool/main/libx/libxext/libxext_1.3.7_aarch64.deb"
   "libxrender_0.9.12-1_aarch64.deb   pool/main/libx/libxrender/libxrender_0.9.12-1_aarch64.deb"
-  "libxi_1.8.2-1_aarch64.deb         pool/main/libx/libxi/libxi_1.8.2-1_aarch64.deb"
+  "libxi_1.8.3_aarch64.deb           pool/main/libx/libxi/libxi_1.8.3_aarch64.deb"
   "libxfixes_6.0.2_aarch64.deb       pool/main/libx/libxfixes/libxfixes_6.0.2_aarch64.deb"
   "libxrandr_1.5.5_aarch64.deb       pool/main/libx/libxrandr/libxrandr_1.5.5_aarch64.deb"
   "libxcursor_1.2.3-1_aarch64.deb    pool/main/libx/libxcursor/libxcursor_1.2.3-1_aarch64.deb"

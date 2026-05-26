@@ -48,13 +48,15 @@ src/main/assets/wine-fonts/
 src/main/jniLibs/arm64-v8a/libwine_proot.so.orig
 src/main/jniLibs/arm64-v8a/libwine_proot.so.patched
 
-# Submodule build outputs — wine, FEX, llvm-mingw live as submodules at
-# external/{wine-upstream,fex-upstream,llvm-mingw}; their inner build dirs
-# should never be staged into the parent index.
+# Submodule build outputs — wine, FEX, llvm-mingw, DXVK, vst3sdk all
+# live as submodules under external/. Their inner build dirs should
+# never be staged into the parent index.
 external/wine-upstream/build-*/
 external/fex-upstream/build-*/
 external/llvm-mingw/install/
 external/llvm-mingw/build/
+external/dxvk/build-*/
+external/dxvk/install-*/
 # Other external-tree caches (not submodules; pulled by other build scripts)
 toolchain/x11-headers/
 toolchain/x11-libs/
@@ -62,7 +64,6 @@ toolchain/android-libs/
 toolchain/wine-fonts/
 toolchain/gnutls-android-arm64/
 external/gnutls-deps/
-external/vst3sdk/
 
 # User-supplied test plugins (not part of the repo)
 WagnerSharp_x64.dll

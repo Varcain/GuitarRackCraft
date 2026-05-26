@@ -29,7 +29,23 @@ export LDFLAGS="-L$PREFIX/lib"
 export PKG_CONFIG_PATH="$PREFIX/lib/pkgconfig"
 
 deps_dir="$repo_root/external/gnutls-deps"
+mkdir -p "$deps_dir"
 cd "$deps_dir"
+
+# Fetch upstream tarballs if not already cached. Versions pinned for
+# reproducibility; bump when upstream releases.
+fetch_tarball() {
+    local name="$1" url="$2"
+    if [ ! -f "$name" ]; then
+        echo "[+] fetch $name"
+        curl -fSL --retry 3 -o "$name" "$url"
+    fi
+}
+fetch_tarball gmp-6.3.0.tar.xz         "https://gmplib.org/download/gmp/gmp-6.3.0.tar.xz"
+fetch_tarball nettle-3.10.tar.gz       "https://ftp.gnu.org/gnu/nettle/nettle-3.10.tar.gz"
+fetch_tarball libtasn1-4.20.0.tar.gz   "https://ftp.gnu.org/gnu/libtasn1/libtasn1-4.20.0.tar.gz"
+fetch_tarball libunistring-1.2.tar.xz  "https://ftp.gnu.org/gnu/libunistring/libunistring-1.2.tar.xz"
+fetch_tarball gnutls-3.8.6.tar.xz      "https://www.gnupg.org/ftp/gcrypt/gnutls/v3.8/gnutls-3.8.6.tar.xz"
 
 build_pkg() {
     local archive=$1; local dir=$2; local extra_conf="${3:-}"
@@ -91,6 +107,7 @@ if [ ! -f "$PREFIX/.built.gnutls" ]; then
         --without-p11-kit --disable-libdane --disable-cxx --disable-guile \
         --without-tpm --without-tpm2 \
         --without-zlib --without-brotli --without-zstd \
+        --without-idn \
         --disable-nls --with-pic \
         --with-included-libtasn1=no --with-included-unistring=no \
         --disable-doc \
