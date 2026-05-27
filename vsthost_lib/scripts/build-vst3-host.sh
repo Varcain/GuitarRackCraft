@@ -38,7 +38,6 @@ SDK_SRCS=(
     "$SDK/public.sdk/source/vst/hosting/processdata.cpp"
     "$SDK/public.sdk/source/vst/vstinitiids.cpp"
     "$SDK/public.sdk/source/common/commoniids.cpp"
-    "$SDK/public.sdk/source/common/commonstringconvert.cpp"
     "$SDK/public.sdk/source/vst/utility/stringconvert.cpp"
     "$SDK/pluginterfaces/base/funknown.cpp"
     "$SDK/pluginterfaces/base/conststringtable.cpp"

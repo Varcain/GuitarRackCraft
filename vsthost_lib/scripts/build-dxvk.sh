@@ -23,6 +23,25 @@ if [ ! -f "$DXVK_DIR/meson.build" ]; then
     exit 1
 fi
 
+# --- apply DXVK patches ----------------------------------------------------
+# DXVK 2.5.3 is the last release that works on Adreno (no VK_KHR_maintenance5
+# requirement). It needs one patch to compile against newer llvm-mingw
+# (D3DDEVINFO_RESOURCEMANAGER redefinition). Idempotent reset + apply.
+PATCH_DIR="$repo_root/patches/dxvk"
+if [ -d "$PATCH_DIR" ]; then
+    git -C "$DXVK_DIR" reset --hard HEAD >/dev/null
+    for p in "$PATCH_DIR"/[0-9]*.patch; do
+        [ -f "$p" ] || continue
+        if git -C "$DXVK_DIR" apply --check "$p" 2>/dev/null; then
+            git -C "$DXVK_DIR" apply "$p"
+            echo "[+] dxvk patch: $(basename "$p")"
+        else
+            echo "error: dxvk patch failed to apply: $(basename "$p")" >&2
+            exit 1
+        fi
+    done
+fi
+
 if [ ! -d "$VK_HEADERS/vulkan" ]; then
     echo "error: Vulkan-Headers submodule not initialized at $VK_HEADERS" >&2
     echo "  run: git submodule update --init --recursive vsthost_lib/external/Vulkan-Headers" >&2

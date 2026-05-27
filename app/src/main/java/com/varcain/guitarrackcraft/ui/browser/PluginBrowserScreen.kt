@@ -416,11 +416,31 @@ fun PluginItem(
                 }
 
                 Spacer(modifier = Modifier.height(4.dp))
-                Text(
-                    text = plugin.guiTypes.joinToString(", ") { it.displayName },
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
-                )
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    // Format badge: makes VST2 vs VST3 (or LV2) immediately
+                    // distinguishable when two plugins share the same display
+                    // name (e.g. AmpCraft.dll + AmpCraft.vst3 imported into
+                    // the same library).
+                    Surface(
+                        shape = androidx.compose.foundation.shape.RoundedCornerShape(4.dp),
+                        color = MaterialTheme.colorScheme.secondaryContainer,
+                    ) {
+                        Text(
+                            text = plugin.format,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSecondaryContainer,
+                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                        )
+                    }
+                    Text(
+                        text = plugin.guiTypes.joinToString(", ") { it.displayName },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+                    )
+                }
             }
 
             // Favorite star

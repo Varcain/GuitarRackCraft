@@ -265,6 +265,18 @@ static DWORD WINAPI editor_thread_proc(LPVOID arg)
     ShowWindow(parent, SW_SHOW);
     UpdateWindow(parent);
 
+    /* Publish editor size BEFORE attached(). attached() can block for many
+     * seconds while the plugin loads its assets (AmpCraft scans Kazrog IR
+     * directories — observed 5–10s). Writing editor_width here gives the
+     * Android-side VstInlineEditor the dimensions it needs to mount the
+     * SurfaceView immediately; the plugin then renders into the already-
+     * attached surface once attached() completes. */
+    if (g_shm) {
+        g_shm->editor_width  = (int32_t)ctx->width;
+        g_shm->editor_height = (int32_t)ctx->height;
+        __sync_synchronize();
+    }
+
     LOG("editor: calling attached(hwnd=%p, HWND)\n", parent);
     tresult ar = ctx->view->attached((void*)parent, kPlatformTypeHWND);
     LOG("editor: attached result=0x%x\n", (unsigned)ar);
@@ -273,13 +285,6 @@ static DWORD WINAPI editor_thread_proc(LPVOID arg)
         LOG("editor: attach failed, destroying host window\n");
         DestroyWindow(parent);
         return 1;
-    }
-
-    /* Publish editor size so the Android side sizes its SurfaceView correctly. */
-    if (g_shm) {
-        g_shm->editor_width  = (int32_t)ctx->width;
-        g_shm->editor_height = (int32_t)ctx->height;
-        __sync_synchronize();
     }
 
     LOG("editor: entering message pump\n");
