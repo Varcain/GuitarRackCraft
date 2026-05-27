@@ -26,41 +26,71 @@ import java.io.File
 import java.util.UUID
 
 /**
- * Drives the "Install from .exe" flow. Mirrors vstpoc's HostViewModel.runInstaller
- * state machine but scoped to GuitarRackCraft's vsthost_lib integration:
+ * Drives both the "Install from .exe" flow and the "Launch executable"
+ * flow (relaunching a previously-registered manager .exe to install more
+ * plugins). The two share the wineprefix + X11 + PICK plumbing — only the
+ * front of the state machine differs.
  *
- *   IDLE → PREPARING (clone wineprefix)
- *        → RUNNING (wine spawns the .exe; user clicks through the wizard)
- *        → DRAINING (~2s settle after wine exits)
- *        → DISCOVERING (walk the prefix for new VST2/VST3 DLLs)
- *        → PICK (user checks which discovered plugins to import)
- *        → IDLE (copy picks into per-plugin dirs + registry.json; cleanup template)
+ *   INSTALL mode:
+ *     IDLE → PREPARING (clone wineprefix from base)
+ *          → RUNNING (wine spawns the .exe; user clicks through the wizard)
+ *          → DRAINING → DISCOVERING → PICK → IDLE
  *
- * The installer wizard renders on X11 [INSTALLER_DISPLAY_NUMBER] (99) — the
- * VstInstallerScreen mounts an EditorSurfaceView on that display while
- * RUNNING. Audio chain must be stopped first because we use big-core
- * affinity that the audio thread also wants.
+ *   LAUNCH mode (re-run a registered manager exe against its existing prefix):
+ *     IDLE → RUNNING (no PREPARING — prefix already populated)
+ *          → DRAINING → DISCOVERING → PICK → IDLE
+ *
+ * In LAUNCH mode the manager's prefix is preserved across the run; we
+ * snapshot the set of VST DLLs in the prefix BEFORE launching so that
+ * after-run discovery only surfaces newly-installed plugins (everything
+ * already in the snapshot was either part of the base manager install or
+ * already imported in a previous LAUNCH session).
  */
 class VstInstallerViewModel(app: Application) : AndroidViewModel(app) {
 
     enum class State { IDLE, PREPARING, RUNNING, DRAINING, DISCOVERING, PICK }
 
+    enum class Mode { INSTALL, LAUNCH }
+
+    /** What kind of artifact the user can pick at the end of a session.
+     *  EXECUTABLEs are only ever produced in INSTALL mode (managers are
+     *  detected at first install, then re-launched via LAUNCH mode where
+     *  re-detecting them as new managers would just confuse the user). */
+    enum class Kind { VST2, VST3, EXECUTABLE }
+
     data class Session(
+        val mode: Mode,
         val id: String,
         val displayName: String,
+        /** INSTALL: path of the staged installer file the user picked.
+         *  LAUNCH:  absolute path of the registered manager .exe inside its prefix. */
         val stagedExePath: String,
+        /** INSTALL: path of the one-shot template prefix (deleted after PICK).
+         *  LAUNCH:  path of the registered manager's permanent prefix (preserved). */
         val templatePrefixPath: String,
         val displayNumber: Int,
         val winePid: Int = -1,
+        /** LAUNCH-only: absolute paths of VST DLLs that already existed in the
+         *  prefix when the manager was launched. Used to compute the "new VSTs"
+         *  diff after the manager exits, so the user only sees freshly-installed
+         *  plugins in the PICK list. */
+        val prefixVstSnapshot: Set<String> = emptySet(),
     )
 
     data class DiscoveredPlugin(
         val absPath: String,
         val relToPrefix: String,
         val displayName: String,
-        val isVst3: Boolean,
+        val kind: Kind,
         val is64Bit: Boolean,
-    )
+        /** File size in bytes — informational, shown next to executable
+         *  candidates so the user can tell a manager exe (~10MB+) from a
+         *  helper stub (~50KB). */
+        val sizeBytes: Long = 0L,
+    ) {
+        val isVst3: Boolean get() = kind == Kind.VST3
+        val isExecutable: Boolean get() = kind == Kind.EXECUTABLE
+    }
 
     private val _state = MutableStateFlow(State.IDLE)
     val state: StateFlow<State> = _state.asStateFlow()
@@ -89,6 +119,7 @@ class VstInstallerViewModel(app: Application) : AndroidViewModel(app) {
         val installerId = UUID.randomUUID().toString().take(8)
         val templatePath = "${ctx.filesDir.absolutePath}/wineprefix_installer_$installerId"
         _session.value = Session(
+            mode = Mode.INSTALL,
             id = installerId,
             displayName = displayName,
             stagedExePath = stagedExePath,
@@ -104,163 +135,293 @@ class VstInstallerViewModel(app: Application) : AndroidViewModel(app) {
                 bailOut("Installer setup failed: couldn't clone wineprefix.")
                 return@launch
             }
-            val setup = WineSetup.ensure(ctx)
-            // CRITICAL: bring up the X server on display 99 BEFORE forking
-            // wine. Wine's winex11.drv calls XOpenDisplay at startup; if the
-            // TCP port isn't listening yet it disables X11 rendering for
-            // the lifetime of the subprocess. We use the same screen-sized
-            // virtual root the RunningOverlay composable expects so wine's
-            // default window-positioning lands the wizard in view (otherwise
-            // a 4K virtual root pushes the centred wizard offscreen).
-            withContext(Dispatchers.IO) {
-                NativeBridge.nativeStartX11Server(INSTALLER_DISPLAY_NUMBER,
-                                                 INSTALLER_SCREEN_W, INSTALLER_SCREEN_H)
-                NativeBridge.nativeSetX11PluginSize(INSTALLER_DISPLAY_NUMBER,
-                                                   INSTALLER_SCREEN_W, INSTALLER_SCREEN_H)
-                // Freeze the framebuffer at 1920x1080. Otherwise wine's
-                // wizard CreateWindow (typically 500x350) triggers slot
-                // promotion / claim-slot in X11NativeDisplay, shrinks the
-                // framebuffer to wizard size, and the wizard renders into
-                // a tiny letterboxed region the user can barely see.
-                NativeBridge.nativeSetX11FramebufferFrozen(INSTALLER_DISPLAY_NUMBER, true)
-            }
-            val pid = withContext(Dispatchers.IO) {
-                NativeBridge.nativeStartInstaller(
-                    exePath = stagedExePath,
-                    prefixPath = templatePath,
-                    displayNumber = INSTALLER_DISPLAY_NUMBER,
-                    wineBinary = setup.wineBinary.absolutePath,
-                    wineserverBinary = setup.wineServer.absolutePath,
-                    wineDllPath = setup.wineDllPath.absolutePath,
-                    nativeLibDir = setup.nativeLibraryDir.absolutePath,
-                    cacheDir = ctx.cacheDir.absolutePath,
-                )
-            }
-            if (pid <= 0) {
-                bailOut("Failed to launch installer (wine returned $pid). Check vst_host_installer.log.")
-                return@launch
-            }
-            _session.value = _session.value?.copy(winePid = pid)
-            _state.value = State.RUNNING
-            Log.i(TAG, "install: wine pid=$pid running '$stagedExePath'")
-
-            // Poll until the installer exits.
-            while (true) {
-                val r = withContext(Dispatchers.IO) { NativeBridge.nativeWaitInstaller(pid) }
-                if (r == -2) {
-                    delay(500)
-                    continue
-                }
-                Log.i(TAG, "install: wine exited code=$r")
-                break
-            }
-
-            _state.value = State.DRAINING
-            delay(2_000)  // let wineserver write its last registry entries
-
-            _state.value = State.DISCOVERING
-            val found = withContext(Dispatchers.IO) { discoverPlugins(templatePath) }
-            _discovered.value = found
-            if (found.isEmpty()) {
-                bailOut("Installer finished but no VST DLLs were found in the prefix.")
-                return@launch
-            }
-            _state.value = State.PICK
-            Log.i(TAG, "install: ${found.size} plugin candidate(s) — awaiting user picks")
+            runWineSession(ctx, stagedExePath, templatePath)
         }
     }
 
-    /** Confirm the user's picks: for each pick, clone the INSTALLER TEMPLATE
-     *  to a per-plugin wineprefix so all support files (IRs, presets,
-     *  license keys, registry entries) the installer wrote travel with the
-     *  plugin. The plugin's dllPath points INSIDE that prefix at the same
-     *  relative location the installer chose — so when the runtime spawns
-     *  wine against this prefix, the plugin finds its own files at the
-     *  exact paths it baked into its binary.
+    /** Relaunch a previously-registered manager .exe against its existing
+     *  wineprefix. The manager renders in the same fullscreen overlay the
+     *  installer uses; on exit the prefix is re-scanned for newly-installed
+     *  VSTs (diff against pre-launch snapshot) which the user can pick from. */
+    fun launchExecutable(exe: VstExecutableEntry) {
+        if (_state.value != State.IDLE) {
+            Log.w(TAG, "launchExecutable called while state=${_state.value}; ignoring")
+            return
+        }
+        val ctx = getApplication<Application>()
+        // Show a session immediately (spinner-ish state) so the UI flips
+        // to the overlay; snapshot the prefix on IO then advance to RUNNING.
+        _session.value = Session(
+            mode = Mode.LAUNCH,
+            id = exe.uuid,
+            displayName = exe.displayName,
+            stagedExePath = exe.exePath,
+            templatePrefixPath = exe.prefixPath,
+            displayNumber = INSTALLER_DISPLAY_NUMBER,
+        )
+        _state.value = State.PREPARING
+        watchJob = viewModelScope.launch {
+            withContext(Dispatchers.IO) {
+                // CRITICAL: kill any wineserver still running on this prefix
+                // BEFORE applying seeds. wineserver caches the registry in
+                // memory and rewrites system.reg from its cache on shutdown
+                // — that would silently undo seeds we write to disk while
+                // it's running. Killing it first means the next wine launch
+                // starts a fresh wineserver that reads our updated registry.
+                VstHostSetup.killWineserversForPrefix(exe.prefixPath)
+                // Re-apply seeds on every launch — they're idempotent (each
+                // checks for a version marker before writing) and this is the
+                // cheapest way to upgrade prefixes registered before a new
+                // seed was added (e.g., the Session Manager\Environment seed
+                // landed after the IK Product Manager + Native Access etc.
+                // managers had already been registered).
+                VstHostSetup.applyPluginPrefixSeeds(ctx, File(exe.prefixPath))
+            }
+            val snapshot = withContext(Dispatchers.IO) { snapshotPrefixVsts(exe.prefixPath) }
+            _session.value = _session.value?.copy(prefixVstSnapshot = snapshot)
+            Log.i(TAG, "launch: starting manager '${exe.displayName}' uuid=${exe.uuid} " +
+                       "prefix=${exe.prefixPath} preexisting VSTs=${snapshot.size}")
+            runWineSession(ctx, exe.exePath, exe.prefixPath)
+        }
+    }
+
+    /** Common spawn + wait + drain + discover + pick flow. Called by both
+     *  installFromExe (after PREPARING) and launchExecutable (no PREPARING). */
+    private suspend fun runWineSession(ctx: Context, exePath: String, prefixPath: String) {
+        val setup = WineSetup.ensure(ctx)
+        // CRITICAL: bring up the X server on display 99 BEFORE forking
+        // wine. Wine's winex11.drv calls XOpenDisplay at startup; if the
+        // TCP port isn't listening yet it disables X11 rendering for
+        // the lifetime of the subprocess.
+        withContext(Dispatchers.IO) {
+            NativeBridge.nativeStartX11Server(INSTALLER_DISPLAY_NUMBER,
+                                             INSTALLER_SCREEN_W, INSTALLER_SCREEN_H)
+            NativeBridge.nativeSetX11PluginSize(INSTALLER_DISPLAY_NUMBER,
+                                               INSTALLER_SCREEN_W, INSTALLER_SCREEN_H)
+            // Freeze the framebuffer at INSTALLER_SCREEN_W×INSTALLER_SCREEN_H —
+            // otherwise wine's wizard CreateWindow (typically 500x350)
+            // triggers slot promotion / claim-slot in X11NativeDisplay,
+            // shrinks the framebuffer to wizard size, and the wizard
+            // renders into a tiny letterboxed region.
+            NativeBridge.nativeSetX11FramebufferFrozen(INSTALLER_DISPLAY_NUMBER, true)
+        }
+        val pid = withContext(Dispatchers.IO) {
+            NativeBridge.nativeStartInstaller(
+                exePath = exePath,
+                prefixPath = prefixPath,
+                displayNumber = INSTALLER_DISPLAY_NUMBER,
+                wineBinary = setup.wineBinary.absolutePath,
+                wineserverBinary = setup.wineServer.absolutePath,
+                wineDllPath = setup.wineDllPath.absolutePath,
+                nativeLibDir = setup.nativeLibraryDir.absolutePath,
+                cacheDir = ctx.cacheDir.absolutePath,
+            )
+        }
+        if (pid <= 0) {
+            bailOut("Failed to launch wine (returned $pid). Check vst_host_installer.log.")
+            return
+        }
+        _session.value = _session.value?.copy(winePid = pid)
+        _state.value = State.RUNNING
+        Log.i(TAG, "session: wine pid=$pid running '$exePath'")
+
+        // Poll until wine exits.
+        while (true) {
+            val r = withContext(Dispatchers.IO) { NativeBridge.nativeWaitInstaller(pid) }
+            if (r == -2) {
+                delay(500)
+                continue
+            }
+            Log.i(TAG, "session: wine exited code=$r")
+            break
+        }
+
+        _state.value = State.DRAINING
+        delay(2_000)  // let wineserver write its last registry entries
+
+        _state.value = State.DISCOVERING
+        val session = _session.value ?: run { reset(); return }
+        val found = withContext(Dispatchers.IO) {
+            discoverItems(session.templatePrefixPath, session.mode, session.prefixVstSnapshot)
+        }
+        _discovered.value = found
+        if (found.isEmpty()) {
+            // INSTALL: nothing got installed (bail). LAUNCH: no NEW VSTs after the
+            // manager run — that's fine, user just closed the manager without
+            // installing anything new. Reset silently.
+            if (session.mode == Mode.INSTALL) {
+                bailOut("Installer finished but no VST DLLs were found in the prefix.")
+            } else {
+                Log.i(TAG, "launch: no new VSTs found after manager run; resetting")
+                reset()
+            }
+            return
+        }
+        _state.value = State.PICK
+        Log.i(TAG, "session: ${found.size} candidate(s) — awaiting user picks")
+    }
+
+    /** Confirm the user's picks.
      *
-     *  Trade-off: each pick gets its own full copy of the template (~500 MB
-     *  for TH-U). For multi-plugin suites where many plugins share data
-     *  (Native Instruments, IK Multimedia) this duplicates the dataset N
-     *  times. A future optimisation could symlink shared subtrees; for now
-     *  simplicity wins. */
+     *  For each VST pick: clone the active prefix to a per-plugin
+     *  wineprefix_v<uuid> so the plugin's support files (IRs, presets, license
+     *  keys, registry entries the installer wrote) travel with it.
+     *
+     *  For each EXECUTABLE pick (INSTALL mode only): clone the active prefix
+     *  to wineprefix_e<uuid> so the manager exe has its own permanent prefix
+     *  going forward — relaunching it from VstManagerScreen will operate
+     *  against this prefix, NOT against a fresh template.
+     *
+     *  Trade-off: each pick gets its own full copy of the prefix (~500 MB
+     *  for TH-U; multi-GB for Native Access). For multi-plugin suites this
+     *  duplicates the dataset N times. A future optimisation could symlink
+     *  shared subtrees; for now simplicity wins. */
     fun confirmPicks(picks: List<DiscoveredPlugin>) {
         val ctx = getApplication<Application>()
         val current = _session.value ?: return
         viewModelScope.launch {
             withContext(Dispatchers.IO) {
-                val existing = VstRegistry.read(ctx).toMutableList()
-                val templateDir = File(current.templatePrefixPath)
+                val existingVsts = VstRegistry.read(ctx).toMutableList()
+                val existingExes = VstExecutableRegistry.read(ctx).toMutableList()
+                val sourcePrefix = File(current.templatePrefixPath)
                 for (p in picks) {
-                    val uuid = UUID.randomUUID().toString()
-                    val prefixDir = File(ctx.filesDir, "wineprefix_v$uuid")
-                    if (prefixDir.exists()) prefixDir.deleteRecursively()
-                    // Symlink-preserving clone — drive_c contents + dosdevices
-                    // symlinks survive (`c:` → ../drive_c, `z:` → /). Without
-                    // this both symlinks would dereference and break wine's
-                    // path resolution.
-                    VstHostSetup.copyPrefix(templateDir, prefixDir)
-                    // Apply the same idempotent seeds ensurePluginPrefix would —
-                    // DXVK, Common Controls SxS, Win7 spoof, etc. — so the
-                    // cloned prefix has the same runtime tweaks a fresh
-                    // per-plugin prefix gets via the standard import flow.
-                    VstHostSetup.applyPluginPrefixSeeds(ctx, prefixDir)
-                    // Map the plugin's path from template prefix → per-plugin
-                    // prefix at the same relative location. p.relToPrefix is
-                    // already "<templatePrefix-relative>/drive_c/.../foo.dll".
-                    val pluginInPrefix = File(prefixDir, p.relToPrefix)
-                    if (!pluginInPrefix.exists()) {
-                        Log.w(TAG, "confirmPicks: plugin missing after clone " +
-                                   "(uuid=$uuid, rel=${p.relToPrefix})")
-                        prefixDir.deleteRecursively()
-                        continue
+                    when (p.kind) {
+                        Kind.EXECUTABLE -> registerExecutablePick(ctx, sourcePrefix, p, existingExes)
+                        else -> registerVstPick(ctx, sourcePrefix, p, existingVsts)
                     }
-                    existing += VstRegistryEntry(
-                        uuid = uuid,
-                        displayName = p.displayName,
-                        format = if (p.isVst3) "VST3" else "VST2",
-                        dllPath = pluginInPrefix.absolutePath,
-                        is64Bit = p.is64Bit,
-                    )
-                    Log.i(TAG, "confirmPicks: registered $uuid (${p.displayName}) " +
-                               "at $pluginInPrefix")
                 }
-                VstRegistry.write(ctx, existing)
-                // Template now redundant — each pick has its own clone.
-                templateDir.deleteRecursively()
+                VstRegistry.write(ctx, existingVsts)
+                VstExecutableRegistry.write(ctx, existingExes)
+
+                // INSTALL mode: delete the one-shot template (each pick has
+                // its own clone now). LAUNCH mode: preserve the manager's
+                // prefix — it still belongs to the registered manager.
+                if (current.mode == Mode.INSTALL) {
+                    sourcePrefix.deleteRecursively()
+                }
             }
             runCatching { NativeEngine.getInstance().nativeRefreshPluginRegistry() }
             reset()
         }
     }
 
-    /** Cancel: SIGTERM the installer, wipe template, reset state. */
+    private fun registerVstPick(
+        ctx: Context,
+        sourcePrefix: File,
+        p: DiscoveredPlugin,
+        out: MutableList<VstRegistryEntry>,
+    ) {
+        val uuid = UUID.randomUUID().toString()
+        val prefixDir = File(ctx.filesDir, "wineprefix_v$uuid")
+        if (prefixDir.exists()) prefixDir.deleteRecursively()
+        VstHostSetup.copyPrefix(sourcePrefix, prefixDir)
+        VstHostSetup.applyPluginPrefixSeeds(ctx, prefixDir)
+        val pluginInPrefix = File(prefixDir, p.relToPrefix)
+        if (!pluginInPrefix.exists()) {
+            Log.w(TAG, "registerVstPick: plugin missing after clone " +
+                       "(uuid=$uuid, rel=${p.relToPrefix})")
+            prefixDir.deleteRecursively()
+            return
+        }
+        out += VstRegistryEntry(
+            uuid = uuid,
+            displayName = p.displayName,
+            format = if (p.isVst3) "VST3" else "VST2",
+            dllPath = pluginInPrefix.absolutePath,
+            is64Bit = p.is64Bit,
+        )
+        Log.i(TAG, "confirmPicks: VST $uuid (${p.displayName}) at $pluginInPrefix")
+    }
+
+    private fun registerExecutablePick(
+        ctx: Context,
+        sourcePrefix: File,
+        p: DiscoveredPlugin,
+        out: MutableList<VstExecutableEntry>,
+    ) {
+        val uuid = UUID.randomUUID().toString()
+        val prefixDir = File(ctx.filesDir, "wineprefix_e$uuid")
+        if (prefixDir.exists()) prefixDir.deleteRecursively()
+        VstHostSetup.copyPrefix(sourcePrefix, prefixDir)
+        VstHostSetup.applyPluginPrefixSeeds(ctx, prefixDir)
+        val exeInPrefix = File(prefixDir, p.relToPrefix)
+        if (!exeInPrefix.exists()) {
+            Log.w(TAG, "registerExecutablePick: exe missing after clone " +
+                       "(uuid=$uuid, rel=${p.relToPrefix})")
+            prefixDir.deleteRecursively()
+            return
+        }
+        out += VstExecutableEntry(
+            uuid = uuid,
+            displayName = p.displayName,
+            exePath = exeInPrefix.absolutePath,
+            prefixPath = prefixDir.absolutePath,
+        )
+        Log.i(TAG, "confirmPicks: EXE $uuid (${p.displayName}) at $exeInPrefix")
+    }
+
+    /** Close the wine session — semantics depend on mode + current state.
+     *
+     *  - INSTALL + (PREPARING/RUNNING/DRAINING/DISCOVERING): hard cancel.
+     *    SIGTERM wine, delete the template, reset.
+     *  - INSTALL + PICK: "Discard all" — user reviewed candidates and chose
+     *    none. Still delete the template + reset (no point keeping a clone
+     *    around with no registered VSTs in it).
+     *  - LAUNCH + RUNNING: graceful close (X = "close the manager"). SIGTERM
+     *    wine; the watchJob's nativeWaitInstaller loop sees the exit and
+     *    proceeds through DRAINING → DISCOVERING → PICK so the user can
+     *    import any newly-installed VSTs. Prefix preserved.
+     *  - LAUNCH + PICK: user discarded the new-VSTs list. Reset; prefix
+     *    preserved. */
     fun cancel() {
         val s = _session.value ?: return
-        Log.i(TAG, "install: cancelling pid=${s.winePid}")
-        watchJob?.cancel()
-        if (s.winePid > 0) {
-            viewModelScope.launch(Dispatchers.IO) {
-                NativeBridge.nativeKillInstaller(s.winePid)
+        val currentState = _state.value
+        Log.i(TAG, "cancel: pid=${s.winePid} mode=${s.mode} state=$currentState")
+        when {
+            s.mode == Mode.LAUNCH && currentState == State.RUNNING -> {
+                // Ask wine to exit; runWineSession's poll loop handles the rest.
+                if (s.winePid > 0) {
+                    viewModelScope.launch(Dispatchers.IO) {
+                        NativeBridge.nativeKillInstaller(s.winePid)
+                    }
+                }
+            }
+            s.mode == Mode.LAUNCH -> {
+                // PICK / DRAINING / DISCOVERING — wine already exited (or about
+                // to). Just reset; the manager's prefix stays.
+                watchJob?.cancel()
+                reset()
+            }
+            else -> {
+                // INSTALL: hard cancel regardless of state.
+                watchJob?.cancel()
+                if (s.winePid > 0 && currentState != State.PICK) {
+                    viewModelScope.launch(Dispatchers.IO) {
+                        NativeBridge.nativeKillInstaller(s.winePid)
+                    }
+                }
+                viewModelScope.launch(Dispatchers.IO) {
+                    File(s.templatePrefixPath).deleteRecursively()
+                }
+                reset()
             }
         }
-        viewModelScope.launch(Dispatchers.IO) {
-            File(s.templatePrefixPath).deleteRecursively()
-        }
-        reset()
     }
 
     private fun bailOut(reason: String) {
-        Log.e(TAG, "install: $reason")
+        Log.e(TAG, "session: $reason")
         _errorMessage.value = reason
-        val templatePath = _session.value?.templatePrefixPath
-        viewModelScope.launch(Dispatchers.IO) {
-            if (templatePath != null) File(templatePath).deleteRecursively()
+        val s = _session.value
+        if (s != null && s.mode == Mode.INSTALL) {
+            viewModelScope.launch(Dispatchers.IO) {
+                File(s.templatePrefixPath).deleteRecursively()
+            }
         }
         reset()
     }
 
     private fun reset() {
-        // Unfreeze so a future install starts from a clean placeholder.
+        // Unfreeze so a future session starts from a clean placeholder.
         runCatching {
             NativeBridge.nativeSetX11FramebufferFrozen(INSTALLER_DISPLAY_NUMBER, false)
         }
@@ -288,6 +449,7 @@ class VstInstallerViewModel(app: Application) : AndroidViewModel(app) {
             WineSetup.seedCommonControlsManifests(dst)
             WineSetup.seedProgramFilesDirs(dst)
             WineSetup.seedDisableMenubuilder(dst)
+            WineSetup.seedDefaultEnvironment(dst)
             true
         }.getOrElse {
             Log.e(TAG, "prepareTemplate failed", it)
@@ -295,36 +457,105 @@ class VstInstallerViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    /** Walk the template prefix's drive_c/ for VST candidate files. Filters
-     *  to PE files exporting VSTPluginMain or GetPluginFactory. Skips wine
-     *  builtins in system32/syswow64 (cheap early bail). */
-    private fun discoverPlugins(templatePath: String): List<DiscoveredPlugin> {
-        val driveC = File(templatePath, "drive_c")
+    /** Snapshot the set of VST DLL/VST3 absolute paths currently in [prefixPath].
+     *  Used to compute the "newly installed since launch" diff after a LAUNCH
+     *  session ends. Cheap directory walk — no PE inspection (we don't need
+     *  to confirm VST-ness here, just identity for diffing). */
+    private fun snapshotPrefixVsts(prefixPath: String): Set<String> {
+        val driveC = File(prefixPath, "drive_c")
+        if (!driveC.exists()) return emptySet()
+        val out = mutableSetOf<String>()
+        driveC.walkTopDown().forEach { f ->
+            if (!f.isFile) return@forEach
+            val n = f.name.lowercase()
+            if (n.endsWith(".dll") || n.endsWith(".vst3")) {
+                out += f.absolutePath
+            }
+        }
+        return out
+    }
+
+    /** Walk the prefix's drive_c/ for VST candidate files AND (in INSTALL mode)
+     *  executable candidates. Filters to PE files exporting VSTPluginMain or
+     *  GetPluginFactory (for VSTs) or PE EXEs over a small size threshold (for
+     *  executables). Skips wine builtins in system32/syswow64.
+     *
+     *  In LAUNCH mode: VSTs are filtered against [vstSnapshot] so only NEW
+     *  plugins surface, and executable discovery is skipped (the manager is
+     *  already registered — no need to re-detect it). */
+    private fun discoverItems(
+        prefixPath: String,
+        mode: Mode,
+        vstSnapshot: Set<String>,
+    ): List<DiscoveredPlugin> {
+        val driveC = File(prefixPath, "drive_c")
         if (!driveC.exists()) return emptyList()
         val out = mutableListOf<DiscoveredPlugin>()
         driveC.walkTopDown().forEach { f ->
             if (!f.isFile) return@forEach
             val lowerName = f.name.lowercase()
-            if (!lowerName.endsWith(".dll") && !lowerName.endsWith(".vst3")) return@forEach
-            val rel = f.relativeTo(File(templatePath)).path
+            val rel = f.relativeTo(File(prefixPath)).path
             if (rel.contains("/system32/") || rel.contains("/syswow64/")) return@forEach
-            val flags = runCatching {
-                NativeBridge.nativeInspectPluginExports(f.absolutePath)
-            }.getOrDefault(0)
-            val isValidPe = (flags and PeFlag.VALID) != 0 && (flags and PeFlag.IS_DLL) != 0
-            val isVst2 = (flags and PeFlag.HAS_VSTPLUGINMAIN) != 0
-            val isVst3 = (flags and PeFlag.HAS_VST3_FACTORY) != 0
-            if (!isValidPe || (!isVst2 && !isVst3)) return@forEach
-            out += DiscoveredPlugin(
-                absPath = f.absolutePath,
-                relToPrefix = rel,
-                displayName = f.nameWithoutExtension,
-                isVst3 = isVst3,
-                is64Bit = (flags and PeFlag.IS_64) != 0,
-            )
+
+            when {
+                lowerName.endsWith(".dll") || lowerName.endsWith(".vst3") -> {
+                    if (mode == Mode.LAUNCH && f.absolutePath in vstSnapshot) return@forEach
+                    val flags = runCatching {
+                        NativeBridge.nativeInspectPluginExports(f.absolutePath)
+                    }.getOrDefault(0)
+                    val isValidPe = (flags and PeFlag.VALID) != 0 && (flags and PeFlag.IS_DLL) != 0
+                    val isVst2 = (flags and PeFlag.HAS_VSTPLUGINMAIN) != 0
+                    val isVst3 = (flags and PeFlag.HAS_VST3_FACTORY) != 0
+                    if (!isValidPe || (!isVst2 && !isVst3)) return@forEach
+                    out += DiscoveredPlugin(
+                        absPath = f.absolutePath,
+                        relToPrefix = rel,
+                        displayName = f.nameWithoutExtension,
+                        kind = if (isVst3) Kind.VST3 else Kind.VST2,
+                        is64Bit = (flags and PeFlag.IS_64) != 0,
+                        sizeBytes = f.length(),
+                    )
+                }
+                lowerName.endsWith(".exe") -> {
+                    if (mode == Mode.LAUNCH) return@forEach
+                    if (isLikelyHelperOrUninstaller(lowerName)) return@forEach
+                    if (f.length() < EXE_MIN_BYTES) return@forEach
+                    val flags = runCatching {
+                        NativeBridge.nativeInspectPluginExports(f.absolutePath)
+                    }.getOrDefault(0)
+                    val isValidPe = (flags and PeFlag.VALID) != 0
+                    val isExe = isValidPe && (flags and PeFlag.IS_DLL) == 0
+                    if (!isExe) return@forEach
+                    out += DiscoveredPlugin(
+                        absPath = f.absolutePath,
+                        relToPrefix = rel,
+                        displayName = f.nameWithoutExtension,
+                        kind = Kind.EXECUTABLE,
+                        is64Bit = (flags and PeFlag.IS_64) != 0,
+                        sizeBytes = f.length(),
+                    )
+                }
+            }
         }
-        Log.i(TAG, "discover[$templatePath]: ${out.size} candidates")
+        Log.i(TAG, "discover[$prefixPath, mode=$mode]: ${out.size} candidates " +
+                   "(${out.count { it.kind != Kind.EXECUTABLE }} VST, " +
+                   "${out.count { it.kind == Kind.EXECUTABLE }} exe)")
         return out
+    }
+
+    /** Conservative filter: drop the most obvious "definitely-not-a-manager"
+     *  candidates so the user's PICK list isn't drowned in uninstaller stubs
+     *  and Visual C++ redistributables. Anything not matched here still shows
+     *  up — defaulting to unchecked — so the user can scroll the full list
+     *  if their actual manager has an unusual name. */
+    private fun isLikelyHelperOrUninstaller(lowerName: String): Boolean {
+        return lowerName.startsWith("unins") ||
+                lowerName.startsWith("uninstall") ||
+                lowerName.startsWith("vc_redist") ||
+                lowerName.startsWith("vcredist") ||
+                lowerName.startsWith("dotnet") ||
+                lowerName == "regsvr32.exe" ||
+                lowerName == "rundll32.exe"
     }
 
     companion object {
@@ -351,5 +582,12 @@ class VstInstallerViewModel(app: Application) : AndroidViewModel(app) {
          *      easily readable */
         const val INSTALLER_SCREEN_W = 640
         const val INSTALLER_SCREEN_H = 480
+
+        /** Minimum size for an .exe to be considered as a manager candidate.
+         *  Most legitimate managers are >1 MB (Inno installers themselves are
+         *  ~500KB stubs but real manager exes contain UI assets). 200 KB is
+         *  conservative — drops the smallest helper stubs without hiding
+         *  modest single-file managers. */
+        private const val EXE_MIN_BYTES = 200L * 1024L
     }
 }

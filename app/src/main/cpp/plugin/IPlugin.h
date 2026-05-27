@@ -204,6 +204,23 @@ public:
      */
     virtual int32_t getEditorWidth()  const { return 0; }
     virtual int32_t getEditorHeight() const { return 0; }
+
+    /**
+     * Cumulative count of audio under-runs (output ring empty when the
+     * audio thread asked for samples). LV2/in-process plugins always
+     * return 0 — they share the audio thread so there's no producer/
+     * consumer asymmetry. VST plugins run in a wine subprocess and can
+     * fall behind the audio thread; this counter exposes that.
+     */
+    virtual int32_t getUnderrunCount() const { return 0; }
+
+    /**
+     * PID of the plugin's processing subprocess if it runs out-of-process
+     * (VST via wine), or -1 if the plugin runs in-process (LV2).
+     * Returned PID is used to sample /proc/<pid>/stat for CPU accounting —
+     * without it, the displayed CPU% misses VST work entirely.
+     */
+    virtual int getSubprocessPid() const { return -1; }
 };
 
 } // namespace guitarrackcraft

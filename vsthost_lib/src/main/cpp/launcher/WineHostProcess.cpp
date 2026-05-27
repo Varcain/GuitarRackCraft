@@ -192,20 +192,78 @@ void WineHostProcess::setupWineEnvChild(const Config& cfg) {
     }
     ::setenv("HODLL64",      "libarm64ecfex.dll",             1);
     ::setenv("HODLL",        "libwow64fex.dll",               1);
-    /* vstpoc experiment 2026-05-23: force FEX-Emu to fully revalidate every
-     * JIT block before execution. If TH-U's drag-drop +2-byte mid-instruction
-     * landing is from stale translation-cache entries (FEX issue #5328 type
-     * mechanism), this masks it. Default is "mtrack" (memory-tracking-based
-     * invalidation); "full" is slower but ironclad. Drop back to default if
-     * the experiment is inconclusive. */
-    ::setenv("FEX_SMCCHECKS", "full", 1);
-    /* vstpoc experiment 2026-05-23 (hypothesis 1 — FEX memory ordering):
-     * Half-barrier TSO optimization can leave aligned loadstores
-     * non-atomic in rare cases (per FEX config docs). Force strict
-     * barriers to test whether TH-U's drag-drop NULL deref is a
-     * stale-read race that FEX's TSO emulation isn't catching. */
-    ::setenv("FEX_HALFBARRIERTSOENABLED", "0", 1);
-    ::setenv("FEX_VECTORTSOENABLED", "1", 1);
+
+    /* FEX-Emu code caching: redirect the cache/data/config dirs into our
+     * app cacheDir (writable) and write a Config.json that enables the
+     * WIP code-cache feature. Without these:
+     *   - FEX picks up GetCacheDirectory() = LOCALAPPDATA/.../fex-emu/
+     *     or falls through to "." (relative to wine's CWD) → cache
+     *     ends up at unwritable paths, FEX silently skips persistence
+     *     and pays the JIT-compile cost on every run.
+     *   - FEX's non-path options (EnableCodeCachingWIP, SMCChecks,
+     *     TSO flags) aren't readable from env vars — they live in
+     *     Config.json under <config_dir>/Config.json.
+     *
+     * On this version of FEX the relevant config knob is the
+     * EnableCodeCachingWIP (WIP = work-in-progress). The old
+     * AOTIRCapture/Save/Load options have been replaced.
+     *
+     * Path layout: cacheDir/fex_aot/{config,data,cache}/. */
+    {
+        const std::string fexRoot = cfg.cacheDir + "/fex_aot";
+        const std::string configDir = fexRoot + "/config/";
+        const std::string dataDir   = fexRoot + "/data/";
+        const std::string cacheDir  = fexRoot + "/cache/";
+        ::mkdir(fexRoot.c_str(),   0700);
+        ::mkdir(configDir.c_str(), 0700);
+        ::mkdir(dataDir.c_str(),   0700);
+        ::mkdir(cacheDir.c_str(),  0700);
+
+        /* Write Config.json on first launch (idempotent — same content
+         * each time). FEX reads it from <config_dir>/Config.json. */
+        const std::string configFile = configDir + "Config.json";
+        FILE* f = std::fopen(configFile.c_str(), "w");
+        if (f) {
+            std::fputs(
+                "{\n"
+                "  \"Config\": {\n"
+                "    \"EnableCodeCachingWIP\": \"1\",\n"
+                "    \"EnableLazyCodeCachingWIP\": \"1\",\n"
+                "    \"EnableCodeCacheValidation\": \"1\"\n"
+                "  }\n"
+                "}\n", f);
+            std::fclose(f);
+        }
+        ::setenv("FEX_APP_CONFIG_LOCATION", configDir.c_str(), 1);
+        ::setenv("FEX_APP_DATA_LOCATION",   dataDir.c_str(),   1);
+        ::setenv("FEX_APP_CACHE_LOCATION",  cacheDir.c_str(),  1);
+    }
+    /* FEX_SMCCHECKS: SMC (self-modifying code) detection mode. "full"
+     * revalidates every JIT block before execution — ~3-5× perf cost
+     * (memory: feedback_fex_smcchecks_full_perf). "mtrack" is the FEX
+     * default (memory-tracking-based invalidation); much faster, correct
+     * for code that doesn't legitimately rewrite itself mid-stream.
+     *
+     * Was set to "full" 2026-05-23 as a stale-cache experiment for TH-U
+     * drag-drop NULL deref. That hypothesis didn't pan out (the crash
+     * was a pre-existing TH-U bug, not FEX cache staleness) — so the
+     * 3-5× tax was being paid for nothing. Reverted 2026-05-27 after
+     * audio-breakup diagnosis with Helix Native showed the JIT cost was
+     * eating real-time deadlines even at moderate CPU. */
+    ::setenv("FEX_SMCCHECKS", "mtrack", 1);
+    /* FEX TSO config: leave at defaults.
+     *   FEX_HALFBARRIERTSOENABLED=1 (default) — half-barrier optimisation
+     *     on; faster than the strict-barrier path.
+     *   FEX_VECTORTSOENABLED=0 (default) — vector-load/store TSO off;
+     *     faster, fine for plugins that don't rely on cross-thread SIMD
+     *     memory ordering.
+     *
+     * Both were forced to slow modes on 2026-05-23 as a memory-ordering
+     * hypothesis for TH-U's drag-drop NULL deref — gdb later confirmed
+     * (feedback_thu_deep_deadlock) the bug was a JUCE-internal deadlock,
+     * not a FEX TSO race. The slow settings were paying a real-time
+     * deadline tax for nothing. Reverted 2026-05-27 after Helix Native
+     * showed audio stuttering under the combined FEX overhead. */
 
     /* vstpoc patch 025: cycle detector synthesizes 0-replies for stuck
      * focus messages. Helps popup-button-click on JUCE-7, but causes
@@ -221,6 +279,20 @@ void WineHostProcess::setupWineEnvChild(const Config& cfg) {
                       "127.0.0.1:%d", cfg.displayNumber);
         ::setenv("DISPLAY", displayBuf, 1);
     }
+
+    // Set Windows-style PATH/COMSPEC in the Linux env. Wine inherits the
+    // Linux process env when constructing the Windows process environment
+    // for the first wine subprocess; child wine processes spawned via
+    // wineserver inherit from the parent. Without this, Electron apps that
+    // call Node's spawnSync (IK Multimedia Product Manager, Native Access)
+    // fail at startup with "spawnSync cmd.exe ENOENT" because libuv walks
+    // PATH to find cmd.exe and the Linux PATH (/system/bin:/system/xbin:…)
+    // has nothing Windows-style. Linux PATH isn't needed once wine has
+    // exec'd — wineserver/wine use absolute paths via WINELOADER /
+    // WINESERVER / WINEDLLPATH for everything else.
+    ::setenv("PATH", "C:\\windows\\system32;C:\\windows;C:\\windows\\System32\\Wbem", 1);
+    ::setenv("COMSPEC", "C:\\windows\\system32\\cmd.exe", 1);
+    ::setenv("PATHEXT", ".COM;.EXE;.BAT;.CMD;.VBS;.VBE;.JS;.JSE;.WSF;.WSH;.MSC", 1);
 }
 
 /* Run `wine wineboot.exe -i` once per WINEPREFIX to populate default
@@ -463,6 +535,40 @@ bool WineHostProcess::start() {
         ::setenv("HODLL64",      "libarm64ecfex.dll",             1);
         ::setenv("HODLL",        "libwow64fex.dll",               1);
 
+        /* FEX-Emu code caching — same setup as setupWineEnvChild. MUST be
+         * duplicated here because the actual vst_host fork uses this
+         * inline env block, not setupWineEnvChild (see
+         * feedback_winehostprocess_dup_env). FEX picks up paths from
+         * FEX_APP_{CONFIG,DATA,CACHE}_LOCATION env vars; everything else
+         * (EnableCodeCachingWIP etc) goes via Config.json in the config
+         * dir. */
+        {
+            const std::string fexRoot   = cfg_.cacheDir + "/fex_aot";
+            const std::string configDir = fexRoot + "/config/";
+            const std::string dataDir   = fexRoot + "/data/";
+            const std::string cacheDir  = fexRoot + "/cache/";
+            ::mkdir(fexRoot.c_str(),   0700);
+            ::mkdir(configDir.c_str(), 0700);
+            ::mkdir(dataDir.c_str(),   0700);
+            ::mkdir(cacheDir.c_str(),  0700);
+            const std::string configFile = configDir + "Config.json";
+            FILE* f = std::fopen(configFile.c_str(), "w");
+            if (f) {
+                std::fputs(
+                    "{\n"
+                    "  \"Config\": {\n"
+                    "    \"EnableCodeCachingWIP\": \"1\",\n"
+                    "    \"EnableLazyCodeCachingWIP\": \"1\",\n"
+                    "    \"EnableCodeCacheValidation\": \"1\"\n"
+                    "  }\n"
+                    "}\n", f);
+                std::fclose(f);
+            }
+            ::setenv("FEX_APP_CONFIG_LOCATION", configDir.c_str(), 1);
+            ::setenv("FEX_APP_DATA_LOCATION",   dataDir.c_str(),   1);
+            ::setenv("FEX_APP_CACHE_LOCATION",  cacheDir.c_str(),  1);
+        }
+
         // Point wine at the in-process X11 server (TCP loopback on
         // 127.0.0.1:6000+N, served by our X11NativeDisplay #N). Use TCP
         // form so winex11 doesn't bother with the /tmp/.X11-unix socket.
@@ -677,6 +783,25 @@ bool WineHostProcess::start() {
                 std::strerror(errno));
         } else {
             std::fprintf(stderr, "[launcher] nice=0 set (was -10 — see Fix A.1)\n");
+        }
+
+        // chdir to primaryExe's parent so Windows apps that look for
+        // sibling resource files via CWD-relative paths can find them.
+        // Qt apps use applicationDirPath() (exe-relative, not CWD-relative)
+        // but many non-Qt apps — installers, license-checkers, IK Multimedia
+        // Product Manager — call LoadLibraryA("foo.dll") or fopen("config.ini")
+        // expecting CWD to be the exe's directory. Without this the child
+        // inherits the app process's working dir which is something like
+        // /data/user/0/com.varcain.guitarrackcraft (or /), no resources there.
+        if (!cfg_.primaryExe.empty()) {
+            auto slash = cfg_.primaryExe.find_last_of('/');
+            if (slash != std::string::npos) {
+                std::string dir = cfg_.primaryExe.substr(0, slash);
+                if (::chdir(dir.c_str()) != 0) {
+                    std::fprintf(stderr, "[launcher] chdir(%s) failed: %s\n",
+                        dir.c_str(), std::strerror(errno));
+                }
+            }
         }
 
         // execve the wine binary directly.

@@ -509,6 +509,19 @@ int main(int argc, char** argv)
         if (ctrlCP) ctrlCP->release();
     }
 
+    /* Tell the plugin our channel layout BEFORE setActive. Without this
+     * the plugin uses its default arrangement — Helix Native defaults to
+     * mono input, so feeding it 2 channels via process() produces broken
+     * output (no xruns reported because the audio thread still meets its
+     * deadlines, but the samples themselves are garbage). 1 stereo in +
+     * 1 stereo out matches our shm ring layout. */
+    {
+        SpeakerArrangement inSA  = SpeakerArr::kStereo;
+        SpeakerArrangement outSA = SpeakerArr::kStereo;
+        tresult arrRes = processor->setBusArrangements(&inSA, 1, &outSA, 1);
+        LOG("setBusArrangements(stereo,stereo) returned 0x%x\n", (unsigned)arrRes);
+    }
+
     /* Audio setup. Use the same 48k/512 the launcher uses by default. */
     ProcessSetup setup;
     setup.processMode        = kRealtime;
@@ -525,8 +538,9 @@ int main(int argc, char** argv)
     if (component->setActive(true) != kResultOk) {
         LOG("setActive(true) failed\n");
     }
-    if (processor->setProcessing(true) != kResultOk) {
-        LOG("setProcessing(true) failed (some plugins return error here but still work)\n");
+    {
+        tresult procRes = processor->setProcessing(true);
+        LOG("setProcessing(true) returned 0x%x (kResultOk=0)\n", (unsigned)procRes);
     }
 
     /* Spawn editor thread if we have a controller. */
@@ -599,6 +613,17 @@ int main(int argc, char** argv)
     float in_l[blockFrames], in_r[blockFrames];
     float out_l[blockFrames], out_r[blockFrames];
     MSG audio_msg;
+    /* Audio-loop timing stats: how often the loop spun waiting for input,
+     * how often the output ring was full, how long process() took. Logged
+     * every ~5 seconds so we can diagnose stuttering despite "no xruns". */
+    uint64_t stats_blocks = 0;
+    uint64_t stats_wait_loops = 0;
+    uint64_t stats_out_full = 0;
+    uint64_t stats_partial_pushes = 0;
+    uint64_t stats_dropped_frames = 0;
+    uint64_t stats_process_us_total = 0;
+    uint64_t stats_process_us_max = 0;
+    DWORD stats_last_log = GetTickCount();
     while (g_shm && !g_shm->stop_flag) {
         /* Drain wine-internal messages targeted at the main thread (system
          * windows, COM messages, etc.). Without this, plugins that send
@@ -612,6 +637,7 @@ int main(int argc, char** argv)
         uint64_t it = __atomic_load_n(&g_shm->audio_in_tail, __ATOMIC_RELAXED);
         uint64_t available = ih - it;
         if (available < (uint64_t)blockFrames) {
+            ++stats_wait_loops;
             Sleep(1);
             continue;
         }
@@ -634,7 +660,12 @@ int main(int argc, char** argv)
         }
         __atomic_store_n(&g_shm->audio_in_tail, it + blockFrames, __ATOMIC_RELEASE);
 
+        DWORD t0 = GetTickCount();
         process_block(processor, in_l, in_r, out_l, out_r, blockFrames);
+        DWORD t1 = GetTickCount();
+        uint64_t proc_us = (uint64_t)(t1 - t0) * 1000;  /* ms*1000 ≈ us */
+        stats_process_us_total += proc_us;
+        if (proc_us > stats_process_us_max) stats_process_us_max = proc_us;
 
         /* Push block to output ring (speaker). Consumer = launcher.
          * Match vst_host.c's behavior: partial-push whatever fits and drop
@@ -652,9 +683,32 @@ int main(int argc, char** argv)
         }
         __atomic_store_n(&g_shm->audio_head, oh + push, __ATOMIC_RELEASE);
         if (g_shm) g_shm->guest_frames_produced += push;
+        ++stats_blocks;
+        if (push < (uint64_t)blockFrames) {
+            ++stats_partial_pushes;
+            stats_dropped_frames += (uint64_t)blockFrames - push;
+        }
         /* If the host isn't consuming, throttle so we don't spin on a full
          * ring (matches vst_host.c line 1009). */
-        if (space < (uint64_t)blockFrames) Sleep(1);
+        if (space < (uint64_t)blockFrames) { ++stats_out_full; Sleep(1); }
+
+        DWORD now = GetTickCount();
+        if (now - stats_last_log >= 5000) {
+            LOG("audio stats: blocks=%llu wait_loops=%llu out_full=%llu "
+                "partial=%llu dropped_frames=%llu proc_us avg=%llu max=%llu\n",
+                (unsigned long long)stats_blocks,
+                (unsigned long long)stats_wait_loops,
+                (unsigned long long)stats_out_full,
+                (unsigned long long)stats_partial_pushes,
+                (unsigned long long)stats_dropped_frames,
+                (unsigned long long)(stats_blocks ? stats_process_us_total / stats_blocks : 0),
+                (unsigned long long)stats_process_us_max);
+            stats_blocks = stats_wait_loops = stats_out_full = 0;
+            stats_partial_pushes = stats_dropped_frames = 0;
+            stats_process_us_total = 0;
+            stats_process_us_max = 0;
+            stats_last_log = now;
+        }
     }
 
     LOG("stop_flag set; shutting down\n");

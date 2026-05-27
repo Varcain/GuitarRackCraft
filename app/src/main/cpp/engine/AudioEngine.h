@@ -24,6 +24,7 @@
 #include <atomic>
 #include <memory>
 #include <string>
+#include <unordered_map>
 #include <vector>
 #include "plugin/PluginChain.h"
 #include "AudioRecorder.h"
@@ -202,6 +203,25 @@ private:
     std::atomic<bool> outputClipping_{false};
     float inputPeakHold_{0.0f};
     float outputPeakHold_{0.0f};
+
+    // Aggregated subprocess (wine VST) load + xruns. Sampled periodically
+    // from the audio callback (every ~1s) so the UI's getCpuLoad / xrun
+    // metrics include VSTs that run out-of-process. Without this, a Helix
+    // Native that's saturating the wine subprocess shows 1% CPU and 0
+    // xruns because the audio thread itself is idle — the wine subprocess
+    // is the bottleneck and it isn't measured here.
+    std::atomic<float>   vstCpuLoad_{0.0f};
+    std::atomic<int32_t> vstUnderruns_{0};
+    /** Per-plugin last-sampled jiffies counter, keyed by subprocess pid.
+     *  Lives in audio-callback context — only touched at periodic-sample
+     *  cadence (not every callback). */
+    std::unordered_map<int, uint64_t> vstLastJiffies_;
+    /** Wall-time when vstLastJiffies_ was last updated (clock_gettime ns). */
+    uint64_t vstLastSampleNs_{0};
+    /** Audio-callback counter so we sample subprocesses every N callbacks
+     *  (~1Hz) rather than every block — reading /proc is cheap but not
+     *  free, and the value is for human-facing UI. */
+    uint32_t vstSampleCounter_{0};
 
     static constexpr float kClippingThreshold = 0.99f;
     static constexpr float kPeakDecay = 0.95f;
