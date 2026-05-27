@@ -105,6 +105,28 @@ object VstHostSetup {
         }
     }
 
+    /** Public symlink-preserving copy (reused by the installer flow to
+     *  clone the base prefix into a one-shot template). */
+    fun copyPrefix(src: File, dst: File) = copyDirectoryTree(src, dst)
+
+    /** Idempotent seed application on an EXISTING prefix. Called from the
+     *  installer flow's confirmPicks after the template is cloned to the
+     *  per-plugin prefix — the seeds (DXVK DLLs, UI host stub, Win7 spoof,
+     *  Common Controls SxS manifests) need to land on the per-plugin
+     *  prefix the same way ensurePluginPrefix lands them on a fresh
+     *  base-cloned prefix. Safe to call on a prefix that already had
+     *  these seeds applied; each helper is idempotent. */
+    fun applyPluginPrefixSeeds(context: Context, prefix: File) {
+        WineSetup.seedWindowsVersion(prefix)
+        WineSetup.seedDisableDirect3D(prefix)
+        WineSetup.seedDisableMenubuilder(prefix)
+        WineSetup.installDxvk(context, prefix)
+        WineSetup.seedActivatableClasses(prefix)
+        WineSetup.seedCommonControlsManifests(prefix)
+        WineSetup.seedProgramFilesDirs(prefix)
+        WineSetup.installUiHostStub(context, prefix)
+    }
+
     /** Recursive copy that PRESERVES SYMLINKS — critical for wineprefix
      *  clones because dosdevices/c: and dosdevices/z: are symlinks
      *  (-> ../drive_c, -> /) and wine's path resolution requires them as

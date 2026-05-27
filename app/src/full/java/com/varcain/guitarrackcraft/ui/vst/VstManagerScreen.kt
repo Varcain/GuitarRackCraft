@@ -26,6 +26,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.varcain.guitarrackcraft.engine.NativeEngine
 import com.varcain.guitarrackcraft.engine.RackManager
+import androidx.lifecycle.viewmodel.compose.viewModel
 import com.varcain.vsthost.NativeBridge
 import com.varcain.vsthost.PeFlag
 import kotlinx.coroutines.Dispatchers
@@ -52,6 +53,48 @@ fun VstManagerScreen(onNavigateBack: () -> Unit) {
     var importingName by remember { mutableStateOf<String?>(null) }
 
     var setupInProgress by remember { mutableStateOf(false) }
+
+    // Installer flow: full-screen overlay while installerVm.state != IDLE.
+    val installerVm: VstInstallerViewModel = viewModel()
+    val installerState by installerVm.state.collectAsState()
+    val installerError by installerVm.errorMessage.collectAsState()
+    LaunchedEffect(installerError) {
+        installerError?.let {
+            Toast.makeText(context, it, Toast.LENGTH_LONG).show()
+            installerVm.consumeError()
+            // Re-read in case the installer's PICK phase wrote new entries.
+            entries = VstRegistry.read(context)
+        }
+    }
+    LaunchedEffect(installerState) {
+        // PICK→IDLE transition writes the picked plugins; refresh.
+        if (installerState == VstInstallerViewModel.State.IDLE) {
+            entries = VstRegistry.read(context)
+        }
+    }
+    if (installerState != VstInstallerViewModel.State.IDLE) {
+        VstInstallerScreen(installerVm)
+        return
+    }
+
+    val exePickerLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri: Uri? ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        scope.launch {
+            setupInProgress = true
+            val staged = withContext(Dispatchers.IO) {
+                if (!VstHostSetup.ensureWineRoot(context)) return@withContext null
+                stageInstaller(context, uri)
+            }
+            setupInProgress = false
+            if (staged == null) {
+                Toast.makeText(context, "Couldn't stage the installer file", Toast.LENGTH_LONG).show()
+                return@launch
+            }
+            installerVm.installFromExe(staged.absolutePath, staged.nameWithoutExtension)
+        }
+    }
 
     val pickerLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocument()
@@ -151,6 +194,14 @@ fun VstManagerScreen(onNavigateBack: () -> Unit) {
             ) {
                 Text(if (setupInProgress) "Setting up wine…" else "Import VST…")
             }
+            Spacer(Modifier.height(8.dp))
+            OutlinedButton(
+                onClick = { exePickerLauncher.launch(arrayOf("*/*")) },
+                enabled = !setupInProgress,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("Install from .exe…")
+            }
             if (setupInProgress) {
                 Spacer(Modifier.height(8.dp))
                 LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
@@ -193,6 +244,27 @@ private fun VstRow(
             Icon(Icons.Default.Delete, contentDescription = "Remove ${entry.displayName}")
         }
     }
+}
+
+/** Copy the picked .exe URI into a stable on-disk path that wine can read.
+ *  Wine resolves Z:\ to / so any absolute path works; we keep installers
+ *  in filesDir/installers/<uuid>.exe to avoid littering and to give the
+ *  installer view-model something to delete on cleanup. */
+private fun stageInstaller(context: Context, uri: Uri): File? {
+    val cr = context.contentResolver
+    val displayName = cr.query(uri, null, null, null, null)?.use { c ->
+        val idx = c.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
+        if (c.moveToFirst() && idx >= 0) c.getString(idx) else "installer.exe"
+    } ?: "installer.exe"
+    val safeStem = displayName.removeSuffix(".exe").take(64).ifEmpty { "installer" }
+    val dir = File(context.filesDir, "installers").apply { mkdirs() }
+    val target = File(dir, "${UUID.randomUUID().toString().take(8)}-${safeStem}.exe")
+    return runCatching {
+        cr.openInputStream(uri)?.use { input ->
+            target.outputStream().use { input.copyTo(it) }
+        } ?: return null
+        target
+    }.getOrNull()
 }
 
 /** Find the rack position of the VST with [uuid] (if added) and launch

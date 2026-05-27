@@ -19,6 +19,40 @@ object NativeBridge {
      *  up wine+FEX per file. Implementation: util/PeExports.cpp. */
     external fun nativeInspectPluginExports(path: String): Int
 
+    // ── Installer subprocess ─────────────────────────────────────────────
+    /** Spawn `wine <exePath>` against [prefixPath] (a wineprefix dir, usually
+     *  a one-shot clone of the base prefix) with the wizard rendering to
+     *  the in-process X server's slot [displayNumber]. Returns the wine
+     *  child PID, or -1 on launch failure / installer already running.
+     *
+     *  Wire-format mirrors [nativeRunWineboot] — the caller passes paths
+     *  resolved from WineSetup.ensure(). The installer's wizard windows
+     *  show up in the SurfaceView bound to [displayNumber]; touch + key
+     *  events flow through nativeInjectX11{Touch,Key} the same way as for
+     *  plugin editors. */
+    external fun nativeStartInstaller(
+        exePath: String,
+        prefixPath: String,
+        displayNumber: Int,
+        wineBinary: String,
+        wineserverBinary: String,
+        wineDllPath: String,
+        nativeLibDir: String,
+        cacheDir: String,
+    ): Int
+
+    /** Non-blocking poll for the installer started via [nativeStartInstaller].
+     *    -1   no installer is registered / pid mismatch
+     *    -2   still running — call again later
+     *    >=0  installer exited with this code (or 128+signo if killed)
+     *  Poll from a coroutine until you get something other than -2. */
+    external fun nativeWaitInstaller(pid: Int): Int
+
+    /** SIGTERM the running installer; SIGKILL after a grace period. Used
+     *  by the Cancel button on VstInstallerScreen. No-op if [pid] doesn't
+     *  match the registered installer. */
+    external fun nativeKillInstaller(pid: Int)
+
     // ── Wineboot one-shot ────────────────────────────────────────────────
     /** Run `wine wineboot.exe --update` against [prefixPath] synchronously.
      *
@@ -68,6 +102,16 @@ object NativeBridge {
      *  framebuffer is sized correctly and the renderLoop letterboxes the
      *  actual editor instead of clipping it. */
     external fun nativeSetX11PluginSize(displayNumber: Int, width: Int, height: Int)
+
+    /** Freeze the X server's framebuffer on this display against the
+     *  slot-promotion + claim-slot codepaths that would otherwise shrink
+     *  it to the first wine window's bounds. Used by the installer flow:
+     *  the wizard window is typically ~500x350 but we want the user to
+     *  see the wine virtual desktop at 1920x1080 with the wizard centered
+     *  inside. Without this freeze, the X server "promotes" the wizard
+     *  and the framebuffer collapses to wizard size, hiding the desktop
+     *  context (and making the wizard's own positioning look broken). */
+    external fun nativeSetX11FramebufferFrozen(displayNumber: Int, frozen: Boolean)
 
     /** Inject a pointer event into display N's plugin window.
      *  action: 0 = ButtonPress(1),  1 = ButtonRelease(1),
