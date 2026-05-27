@@ -40,7 +40,18 @@ public:
                std::string nativeLibDir);
     ~VstFactory() override;
 
+    // Primary format used as the cache key in PluginRegistry. Doesn't
+    // restrict creation — see acceptsFormat below.
     std::string getFormat() const override { return "VST2"; }
+
+    // VstFactory enumerates both .dll (VST2) and .vst3 (VST3) plugins
+    // from the same registry.json. Accept both so PluginRegistry routes
+    // VST3:<uuid> here too — WineHostProcess auto-switches between
+    // vst_host.exe and vst3_host.exe based on the plugin file extension.
+    bool acceptsFormat(const std::string& format) const override {
+        return format == "VST2" || format == "VST3";
+    }
+
     bool initialize() override;
     std::vector<guitarrackcraft::PluginInfo> enumeratePlugins() override;
     std::unique_ptr<guitarrackcraft::IPlugin> createPlugin(const std::string& pluginId) override;

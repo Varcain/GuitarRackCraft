@@ -38,10 +38,13 @@ bool PluginRegistry::initializeAll() {
             continue;
         }
 
-        // Cache plugin info
+        // Cache plugin info. Use the PluginInfo's own format (not the
+        // factory's primary format) so multi-format factories — VstFactory
+        // serving both VST2 and VST3 — produce correct "FORMAT:id" keys.
         auto plugins = factory->enumeratePlugins();
         for (const auto& plugin : plugins) {
-            std::string fullId = factory->getFormat() + ":" + plugin.id;
+            const std::string& fmt = plugin.format.empty() ? factory->getFormat() : plugin.format;
+            std::string fullId = fmt + ":" + plugin.id;
             pluginCache_[fullId] = plugin;
         }
     }
@@ -70,9 +73,11 @@ std::unique_ptr<IPlugin> PluginRegistry::createPlugin(const std::string& pluginI
     std::string format = pluginId.substr(0, colonPos);
     std::string id = pluginId.substr(colonPos + 1);
 
-    // Find factory for this format
+    // Find factory for this format. Multi-format factories (e.g. VstFactory
+    // serving both VST2 and VST3) override acceptsFormat to claim more than
+    // one format string.
     for (const auto& factory : factories_) {
-        if (factory->getFormat() == format) {
+        if (factory->acceptsFormat(format)) {
             return factory->createPlugin(id);
         }
     }

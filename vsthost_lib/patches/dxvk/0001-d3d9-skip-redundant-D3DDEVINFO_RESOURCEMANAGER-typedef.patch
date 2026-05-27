@@ -1,0 +1,14 @@
+diff --git a/src/d3d9/d3d9_include.h b/src/d3d9/d3d9_include.h
+index df35f10f..3ee93e7c 100644
+--- a/src/d3d9/d3d9_include.h
++++ b/src/d3d9/d3d9_include.h
+@@ -49,7 +49,8 @@
+ #endif
+ 
+ // MinGW headers are broken. Who'dve guessed?
+-#ifndef _MSC_VER
++// GRC patch: newer llvm-mingw (>=20250730) provides this typedef; disable the redefine.
++#if 0
+ typedef struct _D3DDEVINFO_RESOURCEMANAGER
+ {
+   char dummy;

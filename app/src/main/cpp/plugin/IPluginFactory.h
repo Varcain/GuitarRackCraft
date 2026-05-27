@@ -36,8 +36,22 @@ public:
 
     /**
      * Get the plugin format identifier (e.g., "LV2", "CLAP", "VST3").
+     * For factories that handle a single format this is the only routing
+     * key. Factories that handle multiple formats (e.g. one VST factory
+     * spawning both VST2 and VST3 plugins) should override [acceptsFormat]
+     * to accept all of them — getFormat() still names the primary one
+     * for `format:id` cache keying.
      */
     virtual std::string getFormat() const = 0;
+
+    /**
+     * Return true iff this factory can create plugins of the given format.
+     * Default: matches getFormat() exactly. Multi-format factories override
+     * to accept additional format strings.
+     */
+    virtual bool acceptsFormat(const std::string& format) const {
+        return format == getFormat();
+    }
 
     /**
      * Enumerate all available plugins from this factory.
