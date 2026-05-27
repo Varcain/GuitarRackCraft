@@ -667,18 +667,94 @@ object WineSetup {
 
     fun seedWindowsVersion(winePrefix: File) {
         val userReg = File(winePrefix, "user.reg")
-        if (!userReg.exists()) return
-        val text = userReg.readText()
-        // The double-backslash matches the on-disk reg format.
-        if (text.contains("\"Version\"=\"win7\"")) return
-        val body = """
+        // STRIP any existing `Software\Wine\Version=winNN` entry. Wine's
+        // ntdll/version.c:482 hardcodes the build number for each named
+        // version (e.g. win11 → 10.0.22000 RTM). When that key is set, wine
+        // IGNORES our Software\Microsoft\Windows NT\CurrentVersion seed
+        // (which has the more accurate build 22621 for Win11 22H2). Modern
+        // Inno-Setup installers like TONEX 1.12 check
+        // dwBuildNumber >= 22621 via GetVersionExW; with the hardcoded
+        // 22000 they reject the OS as "wrong Windows version".
+        //
+        // Removing the key entirely makes wine fall through to its registry-
+        // read fallback (get_nt_registry_version), which reads our
+        // CurrentMajor/Minor/BuildNumber values directly. Result: GetVersionEx
+        // returns 10.0.22621 — what every modern installer expects.
+        if (userReg.exists()) {
+            val text = userReg.readText()
+            val versionLines = text.lines().filter {
+                it.trim().matches(Regex("^\"Version\"=\"win\\w+\"$"))
+            }
+            if (versionLines.isNotEmpty()) {
+                val cleaned = text.lines()
+                    .filterNot { it.trim().matches(Regex("^\"Version\"=\"win\\w+\"$")) }
+                    .joinToString("\n")
+                userReg.writeText(cleaned)
+                Log.i(TAG, "stripped Software\\Wine\\Version (was: $versionLines) " +
+                           "so wine reads registry block instead of hardcoded build")
+            }
+        }
 
-[Software\\Wine]
-"Version"="win7"
+        /* Wine's Software\Wine\Version setting tells wine WHICH Windows
+         * version to spoof, but it does NOT auto-populate the
+         * Software\Microsoft\Windows NT\CurrentVersion keys that many
+         * installers query directly (instead of GetVersionExW). On a
+         * vanilla prefix those keys are empty; modern installers (TONEX,
+         * Native Access, recent AmpliTube) probe ProductName /
+         * CurrentMajorVersionNumber and reject the install if blank or
+         * if the value doesn't reflect Windows 10+. Write the canonical
+         * Win10 22H2 (build 19045) values to system.reg so version
+         * checks pass. */
+        val systemReg = File(winePrefix, "system.reg")
+        if (!systemReg.exists()) return
+        val sysText = systemReg.readText()
+        if (sysText.contains("vstpoc-win11-currentversion-v1")) return
+        /* Use wine's internal `hex(4):` format for dword values instead of
+         * the plain `dword:` form. wineserver's reg parser strips unknown
+         * dword entries during the load/save round-trip (we observed
+         * CurrentMajorVersionNumber + CurrentMinorVersionNumber going
+         * missing after the first wine launch even though ProductName /
+         * EditionID etc. survived). The hex(4) form is what wineserver
+         * itself writes out, so the round-trip preserves it.
+         *
+         * Win10 build 19045 = 0x4A65. Little-endian dword: 65,4a,00,00. */
+        /* Use wine's internal `hex(4):` format for dword values instead of
+         * the plain `dword:` form. wineserver's reg parser strips unknown
+         * dword entries during the load/save round-trip; the hex(4) form
+         * is what wineserver itself writes out, so the round-trip
+         * preserves it. Win10 build 19045 = 0x4A65. */
+        val sysBody = """
+
+#vstpoc-win11-currentversion-v1
+[Software\\Microsoft\\Windows NT\\CurrentVersion]
+"ProductName"="Windows 11 Pro"
+"CurrentVersion"="10.0"
+"CurrentMajorVersionNumber"=hex(4):0a,00,00,00
+"CurrentMinorVersionNumber"=hex(4):00,00,00,00
+"CurrentBuild"="22621"
+"CurrentBuildNumber"="22621"
+"UBR"=hex(4):ce,07,00,00
+"BuildLab"="22621.ni_release.220506-1250"
+"BuildLabEx"="22621.1.amd64fre.ni_release.220506-1250"
+"EditionID"="Professional"
+"InstallationType"="Client"
+"ProductId"="00000-00000-00000-00000"
+"ReleaseId"="2009"
+"DisplayVersion"="22H2"
+"SoftwareType"="System"
+"PathName"="C:\\\\windows"
+"SystemRoot"="C:\\\\windows"
+
+#vstpoc-amd64-arch-v1
+[System\\CurrentControlSet\\Control\\Session Manager\\Environment]
+"PROCESSOR_ARCHITECTURE"="AMD64"
+"PROCESSOR_IDENTIFIER"="Intel64 Family 6 Model 158 Stepping 9, GenuineIntel"
+"PROCESSOR_LEVEL"="6"
+"PROCESSOR_REVISION"="9e09"
 
 """
-        userReg.appendText(body)
-        Log.i(TAG, "seeded Windows version=win7 in ${userReg.absolutePath}")
+        systemReg.appendText(sysBody)
+        Log.i(TAG, "seeded Windows NT CurrentVersion (Win10 22H2/19045) in ${systemReg.absolutePath}")
     }
 
     /** Disable wine's Direct3D DLLs so GPU-rendering plugins fall back to

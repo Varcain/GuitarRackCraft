@@ -1,0 +1,78 @@
+From: Kamil Lulko <limakzagan@gmail.com>
+Subject: ntdll/unix: spoof AMD64 as native machine in SystemSupportedProcessorArchitectures
+
+Pre-Windows-on-ARM installers (notably IK Multimedia TONEX 1.12 via Inno
+Setup 6.4.2) call IsWow64Process2 to detect the native machine and exit
+early with "wrong Windows version" if it's ARM64 — even though FEX-Emu
+would happily translate their x86_64 PE code at load time.
+
+Patch 0009 added AMD64 to supported_machines (so the supported list
+includes x64). This patch separately spoofs AMD64 as the *native* entry
+in the SystemSupportedProcessorArchitectures reply. The actual native
+(server-side supported_machines[0]) remains ARM64, so wine's internal PE
+loader keeps finding aarch64-windows DLLs in system32/. The lie is purely
+in what we tell user-mode code via IsWow64Process2 / GetSystemInfo paths.
+
+The real native (ARM64) is still listed in the reply, just as a non-
+native wow64 entry — so callers that do enumerate supported machines
+still see ARM64 listed.
+
+diff --git a/dlls/ntdll/unix/system.c b/dlls/ntdll/unix/system.c
+--- a/dlls/ntdll/unix/system.c
++++ b/dlls/ntdll/unix/system.c
+@@ -3866,18 +3866,42 @@
+         memset( machines, 0, len );
+
+-        /* native machine */
+-        machines[0].Machine = supported_machines[0];
++        /* fex-pivot: on ARM64 with FEX, the REAL native is ARM64 but we want
++         * IsWow64Process2 / SystemSupportedProcessorArchitectures to report
++         * AMD64 as native — pre-Windows-on-ARM installers (IK TONEX 1.12 /
++         * Inno Setup 6.4.2) reject the OS if native_machine=ARM64, even
++         * though FEX-Emu would translate their x86_64 code transparently.
++         * Wine's internal loader keeps using the real native_machine
++         * (server-side supported_machines[0]=ARM64) so aarch64-windows
++         * system DLLs still load — only the user-facing reply lies. */
++        USHORT presented_native = supported_machines[0];
++        if (supported_machines[0] == IMAGE_FILE_MACHINE_ARM64)
++        {
++            for (i = 1; i < supported_machines_count; i++)
++            {
++                if (supported_machines[i] == IMAGE_FILE_MACHINE_AMD64)
++                {
++                    presented_native = IMAGE_FILE_MACHINE_AMD64;
++                    break;
++                }
++            }
++        }
++
++        /* native machine (presented to caller) */
++        machines[0].Machine = presented_native;
+         machines[0].UserMode = 1;
+         machines[0].KernelMode = 1;
+         machines[0].Native = 1;
+-        machines[0].Process = (supported_machines[0] == machine || is_machine_64bit( machine ));
++        machines[0].Process = (presented_native == machine || is_machine_64bit( machine ));
+         machines[0].WoW64Container = 0;
+         machines[0].ReservedZero0 = 0;
+-        /* wow64 machines */
+-        for (i = 1; i < supported_machines_count; i++)
++        /* wow64 machines (skip the one we promoted to native, demote the
++         * REAL native to a wow64 entry so callers still see ARM64 listed) */
+         {
+-            machines[i].Machine = supported_machines[i];
+-            machines[i].UserMode = 1;
+-            machines[i].Process = supported_machines[i] == machine;
+-            machines[i].WoW64Container = 1;
++            ULONG out = 1;
++            for (i = 0; i < supported_machines_count; i++)
++            {
++                if (supported_machines[i] == presented_native) continue;
++                machines[out].Machine = supported_machines[i];
++                machines[out].UserMode = 1;
++                machines[out].Process = supported_machines[i] == machine;
++                machines[out].WoW64Container = 1;
++                out++;
++            }
+         }
+         ret = STATUS_SUCCESS;

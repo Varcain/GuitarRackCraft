@@ -94,14 +94,18 @@ fun VstManagerScreen(onNavigateBack: () -> Unit) {
     }
 
     val exePickerLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.OpenDocument()
-    ) { uri: Uri? ->
-        if (uri == null) return@rememberLauncherForActivityResult
+        // Multi-select so users can pick an installer .exe TOGETHER with its
+        // companion .bin files (e.g. Inno Setup multi-part installers like
+        // TONEX). SAF won't let us walk to siblings from a single URI, so the
+        // user has to select them all in one picker pass.
+        ActivityResultContracts.OpenMultipleDocuments()
+    ) { uris: List<Uri> ->
+        if (uris.isEmpty()) return@rememberLauncherForActivityResult
         scope.launch {
             setupInProgress = true
             val staged = withContext(Dispatchers.IO) {
                 if (!VstHostSetup.ensureWineRoot(context)) return@withContext null
-                stageInstaller(context, uri)
+                stageInstaller(context, uris)
             }
             setupInProgress = false
             if (staged == null) {
@@ -266,6 +270,13 @@ fun VstManagerScreen(onNavigateBack: () -> Unit) {
             ) {
                 Text("Install from .exe…")
             }
+            Spacer(Modifier.height(4.dp))
+            Text(
+                "For multi-part installers (Inno Setup, NSIS with .bin payloads), " +
+                "select the .exe AND its companion .bin files together.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
             if (setupInProgress) {
                 Spacer(Modifier.height(8.dp))
                 LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
@@ -335,25 +346,45 @@ private fun ExecutableRow(
     }
 }
 
-/** Copy the picked .exe URI into a stable on-disk path that wine can read.
- *  Wine resolves Z:\ to / so any absolute path works; we keep installers
- *  in filesDir/installers/<uuid>.exe to avoid littering and to give the
- *  installer view-model something to delete on cleanup. */
-private fun stageInstaller(context: Context, uri: Uri): File? {
+/** Copy the picked installer URIs into a single staging directory under
+ *  filesDir/installers/<uuid>/ that wine can read.
+ *
+ *  Accepts multiple URIs because multi-part Inno Setup installers (e.g.
+ *  TONEX) ship as `<basename>.exe` + `<basename>-1.bin` + `<basename>-2.bin`
+ *  and the .exe will fail to start (with a misleading "wrong Windows
+ *  version" error) if the .bin files aren't found next to it. Filenames
+ *  are PRESERVED so Inno's basename-matching logic finds the bins.
+ *
+ *  Returns the staged .exe File (the first .exe among the picks, or the
+ *  first URI if none has an .exe extension). */
+private fun stageInstaller(context: Context, uris: List<Uri>): File? {
+    if (uris.isEmpty()) return null
     val cr = context.contentResolver
-    val displayName = cr.query(uri, null, null, null, null)?.use { c ->
-        val idx = c.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
-        if (c.moveToFirst() && idx >= 0) c.getString(idx) else "installer.exe"
-    } ?: "installer.exe"
-    val safeStem = displayName.removeSuffix(".exe").take(64).ifEmpty { "installer" }
-    val dir = File(context.filesDir, "installers").apply { mkdirs() }
-    val target = File(dir, "${UUID.randomUUID().toString().take(8)}-${safeStem}.exe")
-    return runCatching {
-        cr.openInputStream(uri)?.use { input ->
-            target.outputStream().use { input.copyTo(it) }
-        } ?: return null
-        target
-    }.getOrNull()
+    val dir = File(context.filesDir, "installers/${UUID.randomUUID().toString().take(8)}")
+        .apply { mkdirs() }
+
+    fun displayNameOf(u: Uri): String =
+        cr.query(u, null, null, null, null)?.use { c ->
+            val idx = c.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
+            if (c.moveToFirst() && idx >= 0) c.getString(idx) else null
+        } ?: "file.bin"
+
+    var exeFile: File? = null
+    for (u in uris) {
+        val name = displayNameOf(u).replace('/', '_').replace('\\', '_')
+        val target = File(dir, name)
+        runCatching {
+            cr.openInputStream(u)?.use { input ->
+                target.outputStream().use { input.copyTo(it) }
+            }
+        }.getOrNull() ?: continue
+        if (exeFile == null && name.endsWith(".exe", ignoreCase = true)) {
+            exeFile = target
+        }
+    }
+    // Fallback: if no .exe was picked, use the first staged file (lets us
+    // surface a clear error from the installer flow rather than a NPE here).
+    return exeFile ?: dir.listFiles()?.firstOrNull()
 }
 
 /** Find the rack position of the VST with [uuid] (if added) and launch
