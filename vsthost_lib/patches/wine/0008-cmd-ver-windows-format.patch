@@ -1,0 +1,13 @@
+diff --git a/programs/cmd/cmd.rc b/programs/cmd/cmd.rc
+index 90091090e11..57f1bbcc8cd 100644
+--- a/programs/cmd/cmd.rc
++++ b/programs/cmd/cmd.rc
+@@ -389,7 +389,7 @@ Enter HELP <command> for further information on any of the above commands.\n"
+   WCMD_VOLUMEPROMPT, "Volume label (11 characters, <Enter> for none)?"
+   WCMD_ANYKEY,"Press any key to continue... "
+   WCMD_CONSTITLE,"Wine Command Prompt"
+-  WCMD_VERSION,"Microsoft Windows %1!S!\n"
++  WCMD_VERSION,"Microsoft Windows [Version %1!S!]\n"
+   WCMD_MOREPROMPT, "More? "
+   WCMD_LINETOOLONG, "The input line is too long.\n"
+   WCMD_VOLUMELABEL, "Volume in drive %1!c! is %2\n"

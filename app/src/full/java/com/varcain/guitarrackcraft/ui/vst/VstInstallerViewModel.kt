@@ -450,6 +450,17 @@ class VstInstallerViewModel(app: Application) : AndroidViewModel(app) {
             WineSetup.seedProgramFilesDirs(dst)
             WineSetup.seedDisableMenubuilder(dst)
             WineSetup.seedDefaultEnvironment(dst)
+            /* Seed the spoofed Windows version. Without this, modern IK
+             * installers (TONEX, recent AmpliTube) fail at launch with
+             * "This program does not support the version of Windows your
+             * computer is running" — their PE header's
+             * MajorOperatingSystemVersion is 10.0 and wine's default
+             * Windows-version reporting on a fresh prefix isn't high
+             * enough to satisfy that check. seedWindowsVersion writes
+             * Win10 to user.reg's Software\Wine\Version, which wine reads
+             * to answer GetVersionEx() / RtlGetVersion() and to gate the
+             * PE loader's version check. */
+            WineSetup.seedWindowsVersion(dst)
             true
         }.getOrElse {
             Log.e(TAG, "prepareTemplate failed", it)

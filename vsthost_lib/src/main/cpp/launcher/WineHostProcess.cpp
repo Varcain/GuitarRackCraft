@@ -598,6 +598,13 @@ bool WineHostProcess::start() {
         // VECTORTSO=0 (fast).
         // ::setenv("FEX_HALFBARRIERTSOENABLED", "0", 1);
         // ::setenv("FEX_VECTORTSOENABLED",      "1", 1);
+
+        /* Electron verbose logging — for diagnosing manager early-exit
+         * issues. Electron writes JS console output to stderr when this
+         * is set; uncaught native-module exceptions and renderer-process
+         * crashes get traced too. Cheap, only emits on errors. */
+        ::setenv("ELECTRON_ENABLE_LOGGING", "1", 1);
+        ::setenv("ELECTRON_ENABLE_STACK_DUMPING", "1", 1);
         /* vstpoc 2026-05-25 (later 3): MULTIBLOCK=0 was tried for TH-U
          * VST2 drag-drop crash, didn't help. VST3 path works without
          * it. Reverting to default (true = multi-block JIT) for perf. */
@@ -699,7 +706,12 @@ bool WineHostProcess::start() {
         // just for this role; the plugin role keeps the lean default
         // so audio doesn't underrun.
         if (cfg_.logSuffix == "installer") {
-            ::setenv("WINEDEBUG", "-all,err+all,trace+loaddll,trace+module", 1);
+            // +ver captures every OS-version query — cheap (init-only) and
+            // useful for diagnosing version-check failures. +reg would also
+            // help but explodes log size (every registry hit), so leave it
+            // off; flip on temporarily when version-spoof tuning is needed.
+            ::setenv("WINEDEBUG",
+                     "-all,err+all,trace+loaddll,trace+module,trace+ver", 1);
         } else {
             /* Build-time toggle for submenu / X11 driver tracing. Enable
              * temporarily when diagnosing menu-related bugs; flip back to

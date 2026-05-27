@@ -1,0 +1,40 @@
+From: Kamil Lulko <limakzagan@gmail.com>
+Subject: server: advertise AMD64 in supported_machines on aarch64 (FEX-Emu enables x86_64 PE)
+
+Vanilla wine on aarch64 lists [ARM64, I386, ARMNT] in supported_machines —
+no AMD64 because the upstream loader can't natively run x86_64 PE. We DO
+support x86_64 PE in this build via FEX-Emu's libarm64ecfex.dll, which
+translates AMD64 machine code to ARM64 at the PE-DLL load path.
+
+Add IMAGE_FILE_MACHINE_AMD64 to the aarch64 list (keep ARM64 first so the
+internal wine loader still locates aarch64-windows system DLLs in
+system32/). RtlWow64IsWowGuestMachineSupported(AMD64) now returns TRUE so
+modern installers (notably IK Multimedia TONEX 1.12, Inno Setup 6.4.2)
+detect x86_64 as supported.
+
+The native-machine spoof for pre-Windows-on-ARM installers that read
+IsWow64Process2's native_machine and reject ARM64 is a separate patch
+(see 0010-…-amd64-spoof-iswow64process2.patch).
+
+diff --git a/server/registry.c b/server/registry.c
+--- a/server/registry.c
++++ b/server/registry.c
+@@ -1855,8 +1855,18 @@ static void init_supported_machines(void)
+ #elif defined(__arm__)
+     if (prefix_type == PREFIX_32BIT) supported_machines[count++] = IMAGE_FILE_MACHINE_ARMNT;
+ #elif defined(__aarch64__)
+     if (prefix_type == PREFIX_64BIT)
+     {
++        /* ARM64 first because it's the REAL native — wine's PE loader
++         * looks for aarch64-windows/ntdll.dll etc. in system32 via
++         * native_machine, so swapping would break the bootstrap. AMD64
++         * is added so RtlWow64IsWowGuestMachineSupported(AMD64) returns
++         * TRUE (FEX-Emu translates x86_64 PE on the fly). User-facing
++         * IsWow64Process2 / SystemSupportedProcessorArchitectures lie
++         * separately in dlls/ntdll/unix/system.c (so pre-WoA installers
++         * see Native=AMD64). */
+         supported_machines[count++] = IMAGE_FILE_MACHINE_ARM64;
++        supported_machines[count++] = IMAGE_FILE_MACHINE_AMD64;
+         supported_machines[count++] = IMAGE_FILE_MACHINE_I386;
+         supported_machines[count++] = IMAGE_FILE_MACHINE_ARMNT;
+     }
