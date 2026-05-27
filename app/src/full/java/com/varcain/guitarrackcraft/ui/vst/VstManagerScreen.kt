@@ -285,36 +285,40 @@ object VstRegistry {
 
         val uuid = UUID.randomUUID().toString()
         val pluginDir = File(pluginsDir(context), uuid).apply { mkdirs() }
-        val targetFile = File(pluginDir, "plugin.dll")
-
+        // Inspect first to learn VST2 vs VST3, then save with the right extension.
+        // The launcher (WineHostProcess.cpp) auto-switches between vst_host.exe
+        // and vst3_host.exe based on whether the first plugin path ends in
+        // ".vst3" — so the extension is load-bearing, not cosmetic.
+        val tmpFile = File(pluginDir, "plugin.tmp")
         cr.openInputStream(uri)?.use { input ->
-            targetFile.outputStream().use { input.copyTo(it) }
+            tmpFile.outputStream().use { input.copyTo(it) }
         } ?: return ImportResult.Err("Could not open picked file")
 
-        val flags = NativeBridge.nativeInspectPluginExports(targetFile.absolutePath)
+        val flags = NativeBridge.nativeInspectPluginExports(tmpFile.absolutePath)
         val isValidPe = (flags and PeFlag.VALID) != 0 && (flags and PeFlag.IS_DLL) != 0
         val isVst2    = (flags and PeFlag.HAS_VSTPLUGINMAIN) != 0
         val isVst3    = (flags and PeFlag.HAS_VST3_FACTORY) != 0
         val is64Bit   = (flags and PeFlag.IS_64) != 0
 
         if (!isValidPe) {
-            targetFile.delete(); pluginDir.delete()
+            tmpFile.delete(); pluginDir.delete()
             return ImportResult.Err("Not a valid Windows PE file")
         }
         if (!isVst2 && !isVst3) {
-            targetFile.delete(); pluginDir.delete()
+            tmpFile.delete(); pluginDir.delete()
             return ImportResult.Err("File is a DLL but exports no VST entry point")
         }
-        if (isVst3) {
-            targetFile.delete(); pluginDir.delete()
-            return ImportResult.Err("VST3 support coming soon — pick a VST2 .dll")
-        }
+
+        // VST3 plugins are stored with .vst3 extension so vst3_host.exe gets
+        // selected by the launcher. VST2 keeps .dll.
+        val targetFile = File(pluginDir, if (isVst3) "plugin.vst3" else "plugin.dll")
+        tmpFile.renameTo(targetFile)
 
         val stem = displayName.removeSuffix(".dll").removeSuffix(".vst3")
         val entry = VstRegistryEntry(
             uuid = uuid,
             displayName = stem,
-            format = "VST2",
+            format = if (isVst3) "VST3" else "VST2",
             dllPath = targetFile.absolutePath,
             is64Bit = is64Bit,
         )
