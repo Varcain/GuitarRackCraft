@@ -615,6 +615,18 @@ int main(int argc, char** argv)
             Sleep(1);
             continue;
         }
+        /* Cap latency. Same logic as vst_host.c: if the launcher has
+         * produced more than 4 blocks of input that we haven't consumed
+         * yet, fast-forward the tail to leave 2 blocks of headroom. Without
+         * this, any one-time drift at startup (FEX JIT warmup, wineserver
+         * boot, plugin's first-process() doing setup work) becomes
+         * permanent input-side latency. VST3 hadn't had this cap; that's
+         * why AmpCraft VST3 felt noticeably more delayed than AmpCraft VST2
+         * even though both run through the same shm ring with the same
+         * block size. */
+        if (available > (uint64_t)blockFrames * 4) {
+            it = ih - (uint64_t)blockFrames * 2;
+        }
         for (int i = 0; i < blockFrames; i++) {
             uint64_t idx = (it + i) & (VSTPOC_AUDIO_RING_FRAMES - 1);
             in_l[i] = g_shm->audio_in[idx * VSTPOC_CHANNELS + 0];
@@ -624,21 +636,25 @@ int main(int argc, char** argv)
 
         process_block(processor, in_l, in_r, out_l, out_r, blockFrames);
 
-        /* Push block to output ring (speaker). Consumer = launcher. */
+        /* Push block to output ring (speaker). Consumer = launcher.
+         * Match vst_host.c's behavior: partial-push whatever fits and drop
+         * the remainder, rather than dropping the whole block. Coarse
+         * whole-block drops add audible glitches; partial pushes only lose
+         * the tail samples that wouldn't have made it anyway. */
         uint64_t oh = __atomic_load_n(&g_shm->audio_head, __ATOMIC_RELAXED);
         uint64_t ot = __atomic_load_n(&g_shm->audio_tail, __ATOMIC_ACQUIRE);
-        if (oh - ot >= VSTPOC_AUDIO_RING_FRAMES - blockFrames) {
-            /* Output ring full — drop the block rather than block (avoids
-             * the audio thread stalling). Matches vst_host.c behavior. */
-            continue;
-        }
-        for (int i = 0; i < blockFrames; i++) {
+        uint64_t space = (uint64_t)VSTPOC_AUDIO_RING_FRAMES - (oh - ot);
+        uint64_t push  = space < (uint64_t)blockFrames ? space : (uint64_t)blockFrames;
+        for (uint64_t i = 0; i < push; i++) {
             uint64_t idx = (oh + i) & (VSTPOC_AUDIO_RING_FRAMES - 1);
             g_shm->audio[idx * VSTPOC_CHANNELS + 0] = out_l[i];
             g_shm->audio[idx * VSTPOC_CHANNELS + 1] = out_r[i];
         }
-        __atomic_store_n(&g_shm->audio_head, oh + blockFrames, __ATOMIC_RELEASE);
-        if (g_shm) g_shm->guest_frames_produced += blockFrames;
+        __atomic_store_n(&g_shm->audio_head, oh + push, __ATOMIC_RELEASE);
+        if (g_shm) g_shm->guest_frames_produced += push;
+        /* If the host isn't consuming, throttle so we don't spin on a full
+         * ring (matches vst_host.c line 1009). */
+        if (space < (uint64_t)blockFrames) Sleep(1);
     }
 
     LOG("stop_flag set; shutting down\n");
