@@ -631,6 +631,40 @@ object WineSetup {
      *  legacy GetDpiForMonitor / SetProcessDPIAware path that wine handles
      *  fine. Idempotent — appends [Software\\Wine] with Version=win7 if not
      *  already present in user.reg. */
+    /** Seed PATH, ComSpec, PATHEXT, TEMP, TMP into system.reg's
+     *  Session Manager\Environment key. Without these, Electron-based apps
+     *  (IK Multimedia Product Manager, Native Access, etc.) fail at first
+     *  launch — Node's libuv resolves cmd.exe via the Windows-side PATH env
+     *  var when spawnSync is called from JS; with no PATH, lookup returns
+     *  ENOENT and the JS code throws "spawnSync cmd.exe ENOENT" before any
+     *  UI shows.
+     *
+     *  VST plugins don't typically spawn child processes, so they never hit
+     *  this — which is why the gap stayed hidden until executable hosting
+     *  landed. Idempotent via the v1 marker. */
+    fun seedDefaultEnvironment(winePrefix: File) {
+        val systemReg = File(winePrefix, "system.reg")
+        if (!systemReg.exists()) return
+        val marker = "vstpoc-default-env-v1"
+        val text = systemReg.readText()
+        if (text.contains(marker)) return
+        val body = """
+
+#$marker
+[System\\CurrentControlSet\\Control\\Session Manager\\Environment]
+"ComSpec"="C:\\windows\\system32\\cmd.exe"
+"Path"=str(2):"C:\\windows\\system32;C:\\windows;C:\\windows\\System32\\Wbem"
+"PATHEXT"=".COM;.EXE;.BAT;.CMD;.VBS;.VBE;.JS;.JSE;.WSF;.WSH;.MSC"
+"TEMP"=str(2):"C:\\windows\\temp"
+"TMP"=str(2):"C:\\windows\\temp"
+"OS"="Windows_NT"
+"windir"=str(2):"C:\\windows"
+
+"""
+        systemReg.appendText(body)
+        Log.i(TAG, "seeded default Session Manager\\Environment in ${systemReg.absolutePath}")
+    }
+
     fun seedWindowsVersion(winePrefix: File) {
         val userReg = File(winePrefix, "user.reg")
         if (!userReg.exists()) return

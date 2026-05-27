@@ -17,6 +17,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.OpenInNew
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -44,12 +45,25 @@ data class VstRegistryEntry(
     val is64Bit: Boolean,
 )
 
+/** One installed "manager" / launcher .exe (IK Multimedia Product Manager,
+ *  Native Access, etc.) as persisted in filesDir/vst_plugins/executables.json.
+ *  Each registered exe has its own permanent wineprefix at [prefixPath] —
+ *  re-launching the manager from VstManagerScreen runs against that prefix so
+ *  the manager remembers its login state, downloaded products, etc. */
+data class VstExecutableEntry(
+    val uuid: String,
+    val displayName: String,
+    val exePath: String,     // absolute path of the .exe inside its wineprefix
+    val prefixPath: String,  // absolute path of the wineprefix itself
+)
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun VstManagerScreen(onNavigateBack: () -> Unit) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var entries by remember { mutableStateOf(VstRegistry.read(context)) }
+    var executables by remember { mutableStateOf(VstExecutableRegistry.read(context)) }
     var importingName by remember { mutableStateOf<String?>(null) }
 
     var setupInProgress by remember { mutableStateOf(false) }
@@ -67,9 +81,11 @@ fun VstManagerScreen(onNavigateBack: () -> Unit) {
         }
     }
     LaunchedEffect(installerState) {
-        // PICK→IDLE transition writes the picked plugins; refresh.
+        // PICK→IDLE transition writes the picked plugins; refresh both lists
+        // (PICK can register VSTs, executables, or both).
         if (installerState == VstInstallerViewModel.State.IDLE) {
             entries = VstRegistry.read(context)
+            executables = VstExecutableRegistry.read(context)
         }
     }
     if (installerState != VstInstallerViewModel.State.IDLE) {
@@ -151,19 +167,23 @@ fun VstManagerScreen(onNavigateBack: () -> Unit) {
         Column(
             modifier = Modifier.padding(padding).fillMaxSize().padding(16.dp)
         ) {
-            Text(
-                "Imported VSTs",
-                style = MaterialTheme.typography.titleMedium
-            )
-            Spacer(Modifier.height(8.dp))
-            if (entries.isEmpty()) {
-                Text(
-                    "No VSTs imported yet. Tap Import below to pick a .dll or .vst3 file.",
-                    style = MaterialTheme.typography.bodyMedium
-                )
-            } else {
-                LazyColumn(modifier = Modifier.weight(1f)) {
-                    items(entries, key = { it.uuid }) { e ->
+            LazyColumn(modifier = Modifier.weight(1f)) {
+                item {
+                    Text(
+                        "Imported VSTs",
+                        style = MaterialTheme.typography.titleMedium
+                    )
+                    Spacer(Modifier.height(8.dp))
+                }
+                if (entries.isEmpty()) {
+                    item {
+                        Text(
+                            "No VSTs imported yet. Tap Import below to pick a .dll or .vst3 file.",
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                    }
+                } else {
+                    items(entries, key = { "vst-${it.uuid}" }) { e ->
                         VstRow(
                             entry = e,
                             onOpenEditor = {
@@ -178,6 +198,50 @@ fun VstManagerScreen(onNavigateBack: () -> Unit) {
                                         runCatching {
                                             NativeEngine.getInstance().nativeRefreshPluginRegistry()
                                         }
+                                    }
+                                }
+                            }
+                        )
+                        Divider()
+                    }
+                }
+                item {
+                    Spacer(Modifier.height(16.dp))
+                    Text(
+                        "Executables",
+                        style = MaterialTheme.typography.titleMedium
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        "Plugin managers (IK Multimedia, Native Access, etc.). Launch one " +
+                        "to install more plugins; closing the manager scans its prefix and " +
+                        "prompts you to import any newly-installed VSTs.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(Modifier.height(8.dp))
+                }
+                if (executables.isEmpty()) {
+                    item {
+                        Text(
+                            "No managers registered. Use \"Install from .exe…\" below; " +
+                            "any manager-style .exe found in the install will appear here.",
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                    }
+                } else {
+                    items(executables, key = { "exe-${it.uuid}" }) { e ->
+                        ExecutableRow(
+                            entry = e,
+                            onLaunch = {
+                                installerVm.launchExecutable(e)
+                            },
+                            onRemove = {
+                                scope.launch(Dispatchers.IO) {
+                                    VstExecutableRegistry.remove(context, e.uuid)
+                                    val updated = VstExecutableRegistry.read(context)
+                                    withContext(Dispatchers.Main) {
+                                        executables = updated
                                     }
                                 }
                             }
@@ -239,6 +303,31 @@ private fun VstRow(
         }
         IconButton(onClick = onOpenEditor) {
             Icon(Icons.Default.OpenInNew, contentDescription = "Open ${entry.displayName} editor")
+        }
+        IconButton(onClick = onRemove) {
+            Icon(Icons.Default.Delete, contentDescription = "Remove ${entry.displayName}")
+        }
+    }
+}
+
+@Composable
+private fun ExecutableRow(
+    entry: VstExecutableEntry,
+    onLaunch: () -> Unit,
+    onRemove: () -> Unit,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(entry.displayName, style = MaterialTheme.typography.bodyLarge,
+                 maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text("Executable",
+                 style = MaterialTheme.typography.bodySmall)
+        }
+        IconButton(onClick = onLaunch) {
+            Icon(Icons.Default.PlayArrow, contentDescription = "Launch ${entry.displayName}")
         }
         IconButton(onClick = onRemove) {
             Icon(Icons.Default.Delete, contentDescription = "Remove ${entry.displayName}")
@@ -439,4 +528,83 @@ object VstRegistry {
 sealed class ImportResult {
     data class Ok(val uuid: String, val displayName: String) : ImportResult()
     data class Err(val reason: String)                       : ImportResult()
+}
+
+/** Filesystem + JSON I/O for the executable (manager) registry. Sibling of
+ *  [VstRegistry] but kept in a separate file so the native side's
+ *  VstFactory::loadRegistry() doesn't have to parse around it. */
+object VstExecutableRegistry {
+    private const val DIR_NAME = "vst_plugins"
+    private const val REGISTRY_FILE = "executables.json"
+
+    fun registryFile(context: Context): File =
+        File(context.filesDir, "$DIR_NAME/$REGISTRY_FILE")
+
+    fun read(context: Context): List<VstExecutableEntry> {
+        val f = registryFile(context)
+        if (!f.exists()) return emptyList()
+        val body = f.readText()
+        val arrStart = body.indexOf("\"executables\"").takeIf { it >= 0 } ?: return emptyList()
+        val arrOpen = body.indexOf('[', arrStart).takeIf { it >= 0 } ?: return emptyList()
+        val entries = mutableListOf<VstExecutableEntry>()
+        var i = arrOpen + 1
+        while (i < body.length) {
+            val obj = body.indexOf('{', i).takeIf { it >= 0 } ?: break
+            val objEnd = body.indexOf('}', obj).takeIf { it >= 0 } ?: break
+            val o = body.substring(obj, objEnd + 1)
+            val uuid = extractString(o, "uuid")
+            val name = extractString(o, "displayName")
+            val exe  = extractString(o, "exePath")
+            val pre  = extractString(o, "prefixPath")
+            if (uuid.isNotEmpty() && exe.isNotEmpty() && pre.isNotEmpty()) {
+                entries.add(VstExecutableEntry(uuid, name, exe, pre))
+            }
+            i = objEnd + 1
+        }
+        return entries
+    }
+
+    fun write(context: Context, entries: List<VstExecutableEntry>) {
+        val f = registryFile(context).also { it.parentFile?.mkdirs() }
+        val sb = StringBuilder("{\n  \"executables\": [\n")
+        entries.forEachIndexed { idx, e ->
+            sb.append("    {")
+            sb.append("\"uuid\":\"${esc(e.uuid)}\",")
+            sb.append("\"displayName\":\"${esc(e.displayName)}\",")
+            sb.append("\"exePath\":\"${esc(e.exePath)}\",")
+            sb.append("\"prefixPath\":\"${esc(e.prefixPath)}\"")
+            sb.append("}")
+            if (idx < entries.lastIndex) sb.append(",")
+            sb.append("\n")
+        }
+        sb.append("  ]\n}\n")
+        f.writeText(sb.toString())
+    }
+
+    fun remove(context: Context, uuid: String) {
+        val all = read(context)
+        val target = all.firstOrNull { it.uuid == uuid } ?: return
+        write(context, all.filter { it.uuid != uuid })
+        // The executable's prefix is permanent (unlike installer templates),
+        // so deleting the registry entry also deletes the prefix on disk —
+        // otherwise we'd leak gigabytes of orphaned wineprefix data.
+        File(target.prefixPath).deleteRecursively()
+    }
+
+    private fun esc(s: String): String =
+        s.replace("\\", "\\\\").replace("\"", "\\\"")
+
+    private fun extractString(s: String, key: String): String {
+        val needle = "\"$key\""
+        var p = s.indexOf(needle); if (p < 0) return ""
+        p = s.indexOf(':', p);     if (p < 0) return ""
+        p = s.indexOf('"', p);     if (p < 0) return ""
+        ++p
+        val sb = StringBuilder()
+        while (p < s.length && s[p] != '"') {
+            if (s[p] == '\\' && p + 1 < s.length) { sb.append(s[p + 1]); p += 2 }
+            else                                   { sb.append(s[p]);     ++p    }
+        }
+        return sb.toString()
+    }
 }

@@ -63,6 +63,13 @@ public:
      *  param state, which is also the standalone-vstpoc behaviour today. */
     bool restoreState(const guitarrackcraft::PluginState& state) override;
 
+    int32_t getUnderrunCount() const override {
+        return underruns_.load(std::memory_order_relaxed);
+    }
+    int getSubprocessPid() const override {
+        return guest_ ? guest_->pid() : -1;
+    }
+
 private:
     RegistryEntry entry_;
     std::string filesDir_;

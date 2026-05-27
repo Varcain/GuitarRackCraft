@@ -25,7 +25,10 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
+#include <ctime>
+#include <unistd.h>
 #include <algorithm>
 #include <thread>
 
@@ -150,13 +153,26 @@ float AudioEngine::getOutputLevel() const {
 }
 
 float AudioEngine::getCpuLoad() const {
-    return cpuLoad_.load();
+    /* Audio-thread load (cpuLoad_) measures chain.process() wall time vs
+     * buffer duration. For LV2 plugins (in-process), that's the real
+     * processing cost. For VST plugins (out-of-process via wine), it
+     * measures only the shm push/pull — the wine subprocess does the
+     * actual work on different threads in another address space. Reporting
+     * the max of the two captures the bottleneck either way. */
+    return std::max(cpuLoad_.load(), vstCpuLoad_.load());
 }
 
 int32_t AudioEngine::getXRunCount() const {
-    if (!outputStream_) return 0;
-    auto result = outputStream_->getXRunCount();
-    return result ? result.value() : 0;
+    int32_t oboeXruns = 0;
+    if (outputStream_) {
+        auto result = outputStream_->getXRunCount();
+        oboeXruns = result ? result.value() : 0;
+    }
+    /* Oboe-side xruns only happen when the audio thread itself misses a
+     * deadline. VST plugins under wine zero-fill on their own (the audio
+     * thread sees full buffers, just silent) — so Oboe never knows. Add
+     * the per-plugin underrun counter so the UI's "xruns" reflects both. */
+    return oboeXruns + vstUnderruns_.load();
 }
 
 bool AudioEngine::isInputClipping() const {
@@ -394,6 +410,75 @@ oboe::DataCallbackResult AudioEngine::onAudioReady(
         double processMs = std::chrono::duration<double, std::milli>(t1 - t0).count();
         float load = static_cast<float>(processMs / bufferDurationMs);
         if (load > 1.0f) load = 1.0f;
+
+        /* Sample subprocess (wine VST) CPU + xruns every ~1s of audio
+         * callbacks. The plain cpuLoad_ measurement above misses VST work
+         * entirely because the wine subprocess runs in a different
+         * address space — getCpuLoad() returns ~1% with a CPU-pinned
+         * Helix Native loaded. Sampling rate is human-display rate, not
+         * audio rate, so once per second is plenty. */
+        constexpr uint32_t kSampleEveryNCallbacks = 100;
+        if (++vstSampleCounter_ >= kSampleEveryNCallbacks) {
+            vstSampleCounter_ = 0;
+            struct timespec ts{};
+            clock_gettime(CLOCK_MONOTONIC, &ts);
+            uint64_t nowNs = (uint64_t)ts.tv_sec * 1'000'000'000ULL + ts.tv_nsec;
+            uint64_t totalDeltaJiffies = 0;
+            int32_t totalUnderruns = 0;
+            const size_t n = chain_.getSize();
+            for (size_t i = 0; i < n; ++i) {
+                guitarrackcraft::IPlugin* p = chain_.getPlugin((int)i);
+                if (!p) continue;
+                totalUnderruns += p->getUnderrunCount();
+                int pid = p->getSubprocessPid();
+                if (pid <= 0) continue;
+                /* /proc/<pid>/stat fields utime (14) + stime (15) are
+                 * cumulative jiffies (typically 100Hz on Android) since
+                 * subprocess start. Read both, sum, diff against last
+                 * sample to derive jiffies-per-wall-second. */
+                char path[64];
+                std::snprintf(path, sizeof(path), "/proc/%d/stat", pid);
+                FILE* f = std::fopen(path, "r");
+                if (!f) continue;
+                char buf[512];
+                size_t got = std::fread(buf, 1, sizeof(buf) - 1, f);
+                std::fclose(f);
+                if (got == 0) continue;
+                buf[got] = 0;
+                /* Skip past "comm" (in parens — name can contain spaces),
+                 * then we're at field 3 (state). utime is field 14,
+                 * stime is field 15. */
+                char* p2 = std::strrchr(buf, ')');
+                if (!p2) continue;
+                unsigned long long fields[16] = {0};
+                int read = std::sscanf(p2 + 1,
+                    " %*c %*d %*d %*d %*d %*d %*u %*u %*u %*u %*u %llu %llu",
+                    &fields[13], &fields[14]);
+                if (read != 2) continue;
+                uint64_t cur = fields[13] + fields[14];
+                auto it = vstLastJiffies_.find(pid);
+                if (it != vstLastJiffies_.end()) {
+                    totalDeltaJiffies += cur - it->second;
+                    it->second = cur;
+                } else {
+                    vstLastJiffies_[pid] = cur;
+                }
+            }
+            if (vstLastSampleNs_ > 0 && nowNs > vstLastSampleNs_) {
+                uint64_t elapsedNs = nowNs - vstLastSampleNs_;
+                /* sysconf(_SC_CLK_TCK) is the jiffies-per-second on this
+                 * system; on Android it's 100. Compute fraction of one
+                 * CPU's wall time the subprocesses used in aggregate. */
+                long clk = sysconf(_SC_CLK_TCK);
+                if (clk <= 0) clk = 100;
+                double secs = (double)elapsedNs / 1.0e9;
+                double frac = ((double)totalDeltaJiffies / (double)clk) / secs;
+                if (frac > 1.0) frac = 1.0;
+                vstCpuLoad_.store((float)frac);
+            }
+            vstLastSampleNs_ = nowNs;
+            vstUnderruns_.store(totalUnderruns);
+        }
         cpuLoad_.store(load);
     }
 

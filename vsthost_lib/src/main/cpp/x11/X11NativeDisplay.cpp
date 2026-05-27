@@ -741,10 +741,22 @@ struct X11NativeDisplay::Impl {
         static std::atomic<uint32_t> sNextResourceIdBase{0x00100000};
         uint32_t myBase = sNextResourceIdBase.fetch_add(0x00100000,
                                                         std::memory_order_relaxed);
+        // Installer-mode quirk: when fbSizeFrozen is set, the caller pinned
+        // the framebuffer to a known size (e.g. 640x480) and expects wine to
+        // place its wizard window inside that. The plain width/height fields
+        // hold the SurfaceView pixel dimensions (~1920x1440) — if we report
+        // those, wine centers the wizard at SurfaceView center, which is
+        // outside the framebuffer and the wizard disappears. Report the
+        // framebuffer size instead so wine's default centering lands inside.
+        int reportW = width, reportH = height;
+        if (fbSizeFrozen && pluginWidth > 0 && pluginHeight > 0) {
+            reportW = pluginWidth;
+            reportH = pluginHeight;
+        }
         auto reply = X11ConnectionHandler::buildConnectionReply(
-            byteOrder_, width, height, myBase);
-        LOGI("X11 conn: assigned resource_id_base=0x%08x to fd=%d",
-             (unsigned)myBase, clientFd);
+            byteOrder_, reportW, reportH, myBase);
+        LOGI("X11 conn: assigned resource_id_base=0x%08x to fd=%d (screen=%dx%d frozen=%d)",
+             (unsigned)myBase, clientFd, reportW, reportH, fbSizeFrozen ? 1 : 0);
         // xrep-tagged hex dump so we can diff against the Java server's
         // setup reply byte-for-byte.
         {
@@ -1127,10 +1139,41 @@ struct X11NativeDisplay::Impl {
             }
             const int px = lastPointerX.load(std::memory_order_relaxed);
             const int py = lastPointerY.load(std::memory_order_relaxed);
+            constexpr uint16_t kShiftMask = 1 << 0;
+            constexpr uint16_t kCtrlMask  = 1 << 2;
+            constexpr uint8_t  kShiftLKc  = 65;  // XK_Shift_L in our kJavaKeymapPayload
+            constexpr uint8_t  kCtrlLKc   = 67;  // XK_Control_L in our kJavaKeymapPayload
             for (auto& k : keysPending) {
                 const uint8_t type = (k.action == 0) ? KeyPress : KeyRelease;
-                // sendEvent's stateOverride param injects the modifier bits.
+                /* Wine's win32u/winex11.drv tracks modifier state per-thread
+                 * by listening for SHIFT/CTRL key press/release events — it
+                 * does NOT derive the modifier state from the `state` field
+                 * of subsequent KeyPress events. Result: typing "A" via just
+                 * `KeyPress(keycode=24, state=Shift)` lands as lowercase "a"
+                 * because wine thinks no modifier is down. Discovered
+                 * 2026-05-27 by diffing the on-the-wire POST body Helix
+                 * Native sends: the user typed "Dy70fE4BIEmd" but Line 6
+                 * received "dy70fe4biemd".
+                 *
+                 * Fix: wrap each shifted/ctrl'd key with a synthetic press
+                 * of the modifier on KeyPress, release on KeyRelease. Wine
+                 * then sees the modifier go down → updates its tracked
+                 * state → ToUnicode returns the correct shifted char. */
+                if (type == KeyPress) {
+                    if (k.state & kShiftMask)
+                        sendEvent(KeyPress, target, px, py, kShiftLKc, seq, 0);
+                    if (k.state & kCtrlMask)
+                        sendEvent(KeyPress, target, px, py, kCtrlLKc, seq,
+                                  k.state & kShiftMask);
+                }
                 sendEvent(type, target, px, py, k.keycode, seq, k.state);
+                if (type == KeyRelease) {
+                    if (k.state & kCtrlMask)
+                        sendEvent(KeyRelease, target, px, py, kCtrlLKc, seq,
+                                  k.state & kShiftMask);
+                    if (k.state & kShiftMask)
+                        sendEvent(KeyRelease, target, px, py, kShiftLKc, seq, 0);
+                }
             }
             static thread_local int dbgK = 0;
             if (++dbgK <= 20) {
@@ -2377,8 +2420,20 @@ struct X11NativeDisplay::Impl {
                             sendError(9 /*BadDrawable*/, seq, drawable);
                             break;
                         }
-                        int geoWidth = width;
-                        int geoHeight = height;
+                        /* Installer mode: when fbSizeFrozen + pluginWidth/Height
+                         * are set, use those as the root-window geometry too
+                         * (matches the screen size we reported in the setup
+                         * reply). Otherwise wine's wizard-centering math uses
+                         * the SurfaceView dimensions and the wizard lands
+                         * outside the framebuffer. */
+                        int geoWidth, geoHeight;
+                        if (fbSizeFrozen && pluginWidth > 0 && pluginHeight > 0) {
+                            geoWidth = pluginWidth;
+                            geoHeight = pluginHeight;
+                        } else {
+                            geoWidth = width;
+                            geoHeight = height;
+                        }
                         const char* source = "surface-default";
                         /* Check if querying a child window with stored size */
                         {
