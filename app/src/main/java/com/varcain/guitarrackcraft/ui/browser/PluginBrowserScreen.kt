@@ -38,6 +38,7 @@ import androidx.compose.material.icons.outlined.Star
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.produceState
@@ -55,6 +56,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.varcain.guitarrackcraft.engine.PluginInfo
 import com.varcain.guitarrackcraft.engine.UiType
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -71,6 +73,10 @@ fun PluginBrowserScreen(
     val errorMessage by viewModel.errorMessage.collectAsState()
     val addFailureMessage by viewModel.addFailureMessage.collectAsState()
     val favorites by viewModel.favorites.collectAsState()
+
+    // Scope for kicking off add/replace plugin operations off the main thread.
+    // VST activate (wine fork + guest_ready wait) blocks for several seconds.
+    val addPluginScope = rememberCoroutineScope()
 
     val snackbarHostState = remember { SnackbarHostState() }
 
@@ -200,12 +206,18 @@ fun PluginBrowserScreen(
                                                 isFavorite = favorites.contains(plugin.fullId),
                                                 onToggleFavorite = { viewModel.toggleFavorite(plugin.fullId) },
                                                 onClick = {
-                                                    val success = if (replaceIndex >= 0) {
-                                                        viewModel.replacePluginInRack(replaceIndex, plugin)
-                                                    } else {
-                                                        viewModel.addPluginToRack(plugin)
+                                                    // VST activate can take ~5s (wine fork + FEX startup);
+                                                    // doing it on the main thread triggers Android's
+                                                    // input-dispatch ANR watchdog. Launch on the screen's
+                                                    // coroutine scope; the view model dispatches to IO.
+                                                    addPluginScope.launch {
+                                                        val success = if (replaceIndex >= 0) {
+                                                            viewModel.replacePluginInRack(replaceIndex, plugin)
+                                                        } else {
+                                                            viewModel.addPluginToRack(plugin)
+                                                        }
+                                                        if (success) onNavigateBack()
                                                     }
-                                                    if (success) onNavigateBack()
                                                 }
                                             )
                                         }

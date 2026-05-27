@@ -3633,11 +3633,23 @@ struct X11NativeDisplay::Impl {
                             }
                             if (sizeChanged && isTopLevel) {
                                 std::lock_guard<std::mutex> fbLock(bufferMutex);
-                                pluginWidth  = finalW;
-                                pluginHeight = finalH;
-                                uint32_t bgX11 = 0xFF302020;
-                                /* resize() preserves existing pixels; only fills newly added pixels */
-                                framebuffer.resize((size_t)pluginWidth * pluginHeight, bgX11);
+                                /* Installer mode (fbSizeFrozen) wants the
+                                 * framebuffer locked at the size the caller
+                                 * chose — typically a small virtual screen
+                                 * like 640×480 so the wizard appears large
+                                 * relative to the SurfaceView. Wine still
+                                 * fires ConfigureWindow for its desktop and
+                                 * wizard windows; the unconditional reset
+                                 * here was clobbering pluginWidth back to
+                                 * those sizes after setPluginSize ran. Track
+                                 * slot for touch routing either way. */
+                                if (!fbSizeFrozen) {
+                                    pluginWidth  = finalW;
+                                    pluginHeight = finalH;
+                                    uint32_t bgX11 = 0xFF302020;
+                                    /* resize() preserves existing pixels; only fills newly added pixels */
+                                    framebuffer.resize((size_t)pluginWidth * pluginHeight, bgX11);
+                                }
                                 /* Register as plugin slot too so touch routing knows about it. */
                                 bool already = false;
                                 for (uint32_t w : pluginSlotWindows) if (w == cfgWid) { already = true; break; }
@@ -4817,6 +4829,13 @@ void X11NativeDisplay::injectTouch(int action, int x, int y) {
     // X11NativeDisplay::renderLoop which sets y0=0), so the inverse map
     // here also uses y0=0.
     if (impl_->pluginWidth > 0 && impl_->width > 0 && impl_->height > 0) {
+        if (n <= 3) {
+            LOGI("DBG injectTouch[%d]: impl_->width=%d height=%d pluginW=%d pluginH=%d fbSizeFrozen=%d cropW=%d cropH=%d slotCount=%d",
+                 displayNumber_, impl_->width, impl_->height,
+                 impl_->pluginWidth, impl_->pluginHeight,
+                 (int)impl_->fbSizeFrozen, impl_->cropW, impl_->cropH,
+                 (int)impl_->pluginSlotWindows.size());
+        }
         int slotCount = (int)impl_->pluginSlotWindows.size();
         int fbW = impl_->pluginWidth;
         int fbH = impl_->pluginHeight * (slotCount > 0 ? slotCount : 1);

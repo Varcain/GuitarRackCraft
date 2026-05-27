@@ -404,9 +404,15 @@ class PluginBrowserViewModel(application: Application) : AndroidViewModel(applic
         }
     }
 
-    fun addPluginToRack(plugin: PluginInfo, position: Int = -1): Boolean {
+    suspend fun addPluginToRack(plugin: PluginInfo, position: Int = -1): Boolean =
+            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+        // Off the main thread because for VST plugins, RackManager.addPlugin
+        // chains through WineVstPlugin::activate() which can block for ~5s
+        // waiting on guest_ready (wine + FEX + plugin DLL load is slow).
+        // Running this on the main thread triggers Android's input-dispatch
+        // ANR watchdog and the system SIGKILLs the app.
         android.util.Log.i("PluginBrowser", "[LIFECYCLE] addPluginToRack called: ${plugin.name} (${plugin.fullId})")
-        return try {
+        try {
             val index = RackManager.addPlugin(plugin.fullId, position)
             android.util.Log.i("PluginBrowser", "[LIFECYCLE] addPluginToRack result: ${plugin.name} -> index=$index")
             if (index >= 0) {
@@ -422,9 +428,12 @@ class PluginBrowserViewModel(application: Application) : AndroidViewModel(applic
         }
     }
 
-    fun replacePluginInRack(position: Int, plugin: PluginInfo): Boolean {
+    suspend fun replacePluginInRack(position: Int, plugin: PluginInfo): Boolean =
+            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+        // Same off-main-thread reason as addPluginToRack — VST replace
+        // triggers activate() which blocks on guest_ready.
         android.util.Log.i("PluginBrowser", "[LIFECYCLE] replacePluginInRack called: position=$position, ${plugin.name} (${plugin.fullId})")
-        return try {
+        try {
             RackManager.removePlugin(position)
             val index = RackManager.addPlugin(plugin.fullId, position)
             android.util.Log.i("PluginBrowser", "[LIFECYCLE] replacePluginInRack result: ${plugin.name} -> index=$index")
