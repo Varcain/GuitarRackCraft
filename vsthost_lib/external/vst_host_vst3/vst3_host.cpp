@@ -97,10 +97,81 @@ static LONG WINAPI pluginmain_veh(PEXCEPTION_POINTERS info)
             }
         }
 
-        /* Fallback: kill the thread to keep the host alive. */
-        LOG("VEH: NULL-deref AV pc=%p fault=0x%llx (terminating thread)\n",
-            info->ExceptionRecord->ExceptionAddress,
-            (unsigned long long)info->ExceptionRecord->ExceptionInformation[1]);
+        /* TONEX setProcessing-worker NULL controller read.
+         * Crash site changes base address per load (TONEX.vst3 ASLR), so
+         * we match by instruction byte pattern instead of hard address.
+         * Pattern at PC:
+         *   0f 28 40 20    movaps xmm0, [rax+0x20]    <- fault here (rax=NULL)
+         *   0f 28 48 30    movaps xmm1, [rax+0x30]
+         *   48 8b 40 40    mov    rax, [rax+0x40]
+         *   0f 11 4e 70    movups [rsi+0x70], xmm1
+         * All four deref NULL rax. Zero the destination registers (xmm0,
+         * xmm1, rax) and skip the whole 16-byte sequence so the store at
+         * [rsi+0x70] writes zeros — same outcome the function would have
+         * produced for a default-constructed/empty controller. */
+        {
+            const unsigned char *pc =
+                (const unsigned char *)info->ExceptionRecord->ExceptionAddress;
+            static const unsigned char kTonexPattern[16] = {
+                0x0f, 0x28, 0x40, 0x20,  // movaps xmm0,[rax+0x20]
+                0x0f, 0x28, 0x48, 0x30,  // movaps xmm1,[rax+0x30]
+                0x48, 0x8b, 0x40, 0x40,  // mov rax,[rax+0x40]
+                0x0f, 0x11, 0x4e, 0x70,  // movups [rsi+0x70],xmm1
+            };
+            MEMORY_BASIC_INFORMATION mbi;
+            if (info->ContextRecord->Rax == 0
+                && VirtualQuery(pc, &mbi, sizeof(mbi)) == sizeof(mbi)
+                && mbi.State == MEM_COMMIT
+                && !(mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD))
+                && memcmp(pc, kTonexPattern, 16) == 0)
+            {
+                info->ContextRecord->Xmm0.Low  = 0;
+                info->ContextRecord->Xmm0.High = 0;
+                info->ContextRecord->Xmm1.Low  = 0;
+                info->ContextRecord->Xmm1.High = 0;
+                info->ContextRecord->Rax = 0;
+                info->ContextRecord->Rip += 16;
+                LOG("VEH: surgical skip TONEX-pattern NULL controller "
+                    "(pc=%p +16, xmm0/xmm1/rax zeroed)\n",
+                    info->ExceptionRecord->ExceptionAddress);
+                return EXCEPTION_CONTINUE_EXECUTION;
+            }
+        }
+
+        /* Fallback: kill the thread to keep the host alive. Log the
+         * instruction bytes + register state so we can identify the
+         * crashing plugin's exact site and add a surgical skip if
+         * recurring (like TH-U). */
+        {
+            const unsigned char *pc = (const unsigned char *)info->ExceptionRecord->ExceptionAddress;
+            unsigned char bytes[16] = {0};
+            /* Use VirtualQuery to confirm PC is readable before deref-ing —
+             * mingw doesn't support MSVC-style __try/__except. */
+            MEMORY_BASIC_INFORMATION mbi;
+            if (VirtualQuery(pc, &mbi, sizeof(mbi)) == sizeof(mbi)
+                && (mbi.State == MEM_COMMIT)
+                && !(mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD)))
+            {
+                for (int i = 0; i < 16; i++) bytes[i] = pc[i];
+            }
+            LOG("VEH: NULL-deref AV pc=%p fault=0x%llx (terminating thread)\n",
+                info->ExceptionRecord->ExceptionAddress,
+                (unsigned long long)info->ExceptionRecord->ExceptionInformation[1]);
+            LOG("VEH: bytes@pc: %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x\n",
+                bytes[0], bytes[1], bytes[2], bytes[3],
+                bytes[4], bytes[5], bytes[6], bytes[7],
+                bytes[8], bytes[9], bytes[10], bytes[11],
+                bytes[12], bytes[13], bytes[14], bytes[15]);
+            LOG("VEH: rax=%llx rcx=%llx rdx=%llx rbx=%llx rsi=%llx rdi=%llx r8=%llx r9=%llx\n",
+                (unsigned long long)info->ContextRecord->Rax,
+                (unsigned long long)info->ContextRecord->Rcx,
+                (unsigned long long)info->ContextRecord->Rdx,
+                (unsigned long long)info->ContextRecord->Rbx,
+                (unsigned long long)info->ContextRecord->Rsi,
+                (unsigned long long)info->ContextRecord->Rdi,
+                (unsigned long long)info->ContextRecord->R8,
+                (unsigned long long)info->ContextRecord->R9);
+        }
         ExitThread(0xDEADBEEF);
     }
 
@@ -222,15 +293,40 @@ struct EditorThreadCtx {
 
 /* Minimal WndProc — VST3 plugins create their own child window inside the
  * HWND we pass to attached(); they handle paints/input there. We just need
- * a valid frame for them to embed into. */
+ * a valid frame for them to embed into.
+ *
+ * Explicitly return 0 for WM_CREATE/WM_NCCREATE so wine doesn't interpret
+ * a non-zero DefWindowProc return as "abort window creation" — observed
+ * with TONEX where CreateWindowExA was returning ERROR_INVALID_WINDOW_HANDLE
+ * because the window was being destroyed immediately after WM_CREATE.
+ */
 static LRESULT CALLBACK editor_host_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 {
+    switch (msg) {
+        case WM_NCCREATE: return TRUE;   /* must return TRUE to continue creation */
+        case WM_CREATE:   return 0;      /* 0 = success, -1 = abort */
+    }
     return DefWindowProcA(hwnd, msg, wp, lp);
 }
 
 static DWORD WINAPI editor_thread_proc(LPVOID arg)
 {
     EditorThreadCtx* ctx = (EditorThreadCtx*)arg;
+
+    /* Force wine to initialize this thread's UI state (window station +
+     * desktop + display driver attachment). Without this, the first
+     * CreateWindowExA on the editor thread can fail with
+     * ERROR_INVALID_WINDOW_HANDLE (1400, "nodrv_CreateWindow") because
+     * the X11 connection isn't established until SOMETHING in this
+     * thread touches the message system. PeekMessageA returns immediately
+     * but as a side effect runs the thread's user32/win32u init. */
+    MSG dummy_msg;
+    PeekMessageA(&dummy_msg, NULL, 0, 0, PM_NOREMOVE);
+    /* Also touch GetDesktopWindow — forces explorer.exe/desktop window
+     * acquisition for threads that need it. */
+    HWND desktop = GetDesktopWindow();
+    LOG("editor: GetDesktopWindow = %p (must be non-NULL for CreateWindowExA)\n",
+        (void*)desktop);
 
     /* Register a window class for our editor host frame. VST3 plugins (TAL,
      * JUCE-based, etc.) expect a real HWND with a WndProc backing it — not

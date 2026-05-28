@@ -17,12 +17,12 @@ The real native (ARM64) is still listed in the reply, just as a non-
 native wow64 entry — so callers that do enumerate supported machines
 still see ARM64 listed.
 
-diff --git a/dlls/ntdll/unix/system.c b/dlls/ntdll/unix/system.c
 --- a/dlls/ntdll/unix/system.c
 +++ b/dlls/ntdll/unix/system.c
-@@ -3866,18 +3866,42 @@
+@@ -3865,21 +3865,48 @@
+         }
          memset( machines, 0, len );
-
+ 
 -        /* native machine */
 -        machines[0].Machine = supported_machines[0];
 +        /* fex-pivot: on ARM64 with FEX, the REAL native is ARM64 but we want
@@ -76,3 +76,4 @@ diff --git a/dlls/ntdll/unix/system.c b/dlls/ntdll/unix/system.c
 +            }
          }
          ret = STATUS_SUCCESS;
+         break;
