@@ -1,0 +1,169 @@
+From: Kamil Lulko <limakzagan@gmail.com>
+Subject: dxvk: gate unconditional features + bisect feature-not-present cause
+
+DXVK's DxvkAdapter::createDevice enables several Vulkan features
+unconditionally that the Adreno driver on Android may not expose,
+causing vkCreateDevice to fail with VK_ERROR_FEATURE_NOT_PRESENT.
+
+Two changes:
+
+1. Gate every "unconditional" assignment on the queried support so
+   missing features don't cause vkCreateDevice failure.
+
+2. On vkCreateDevice failure, bisect the pNext chain by unlinking each
+   feature struct in turn and retrying. The first struct whose removal
+   makes vkCreateDevice succeed identifies the culprit struct. Logs the
+   sType so we can target a fix.
+diff --git a/src/dxvk/dxvk_adapter.cpp b/src/dxvk/dxvk_adapter.cpp
+index 1285c4ee..ce179c77 100644
+--- a/src/dxvk/dxvk_adapter.cpp
++++ b/src/dxvk/dxvk_adapter.cpp
+@@ -310,26 +310,37 @@ namespace dxvk {
+     extensionsEnabled.merge(m_extraExtensions);
+     DxvkNameList extensionNameList = extensionsEnabled.toNameList();
+ 
+-    // Always enable robust buffer access
+-    enabledFeatures.core.features.robustBufferAccess = VK_TRUE;
+-
+-    // Always enable features used by the HUD
+-    enabledFeatures.core.features.multiDrawIndirect = VK_TRUE;
+-    enabledFeatures.vk11.shaderDrawParameters = VK_TRUE;
++    // Always enable robust buffer access — but ONLY if actually supported
++    // by the device. Some Vulkan drivers (Adreno on Android) reject
++    // vkCreateDevice with VK_ERROR_FEATURE_NOT_PRESENT if we ask for a
++    // feature flag the driver advertises as 0. Gating the assignment on
++    // the queried support makes us tolerant of devices that don't expose
++    // these features. (Where the feature is unconditional in upstream
++    // DXVK we keep VK_TRUE if supported, otherwise VK_FALSE.)
++    enabledFeatures.core.features.robustBufferAccess =
++      m_deviceFeatures.core.features.robustBufferAccess;
++
++    // Always enable features used by the HUD — gated on support
++    enabledFeatures.core.features.multiDrawIndirect =
++      m_deviceFeatures.core.features.multiDrawIndirect;
++    enabledFeatures.vk11.shaderDrawParameters =
++      m_deviceFeatures.vk11.shaderDrawParameters;
+ 
+     // Enable variable multisample rate if supported
+     enabledFeatures.core.features.variableMultisampleRate =
+       m_deviceFeatures.core.features.variableMultisampleRate;
+ 
+-    // Always enable memory model so client APIs can use it
+-    enabledFeatures.vk12.vulkanMemoryModel = VK_TRUE;
++    // Always enable memory model so client APIs can use it — gated
++    enabledFeatures.vk12.vulkanMemoryModel =
++      m_deviceFeatures.vk12.vulkanMemoryModel;
+ 
+     // Optionally used by some client API extensions
+     enabledFeatures.vk12.drawIndirectCount =
+       m_deviceFeatures.vk12.drawIndirectCount;
+ 
+-    // Required since we no longer have a fallback for GPU queries
+-    enabledFeatures.vk12.hostQueryReset = VK_TRUE;
++    // Required since we no longer have a fallback for GPU queries — gated
++    enabledFeatures.vk12.hostQueryReset =
++      m_deviceFeatures.vk12.hostQueryReset;
+ 
+     // Used by some internal shaders, and can be used by applications
+     enabledFeatures.vk12.shaderOutputViewportIndex =
+@@ -337,8 +348,9 @@ namespace dxvk {
+     enabledFeatures.vk12.shaderOutputLayer =
+       m_deviceFeatures.vk12.shaderOutputLayer;
+ 
+-    // Required for proper GPU synchronization
+-    enabledFeatures.vk12.timelineSemaphore = VK_TRUE;
++    // Required for proper GPU synchronization — gated
++    enabledFeatures.vk12.timelineSemaphore =
++      m_deviceFeatures.vk12.timelineSemaphore;
+ 
+     // Only enable the base image robustness feature if robustness 2 isn't
+     // supported, since this is only a subset of what we actually want.
+@@ -351,14 +363,16 @@ namespace dxvk {
+     enabledFeatures.vk13.pipelineCreationCacheControl =
+       m_deviceFeatures.vk13.pipelineCreationCacheControl;
+ 
+-    // Core features that we're relying on in various places
+-    enabledFeatures.vk13.synchronization2 = VK_TRUE;
+-    enabledFeatures.vk13.dynamicRendering = VK_TRUE;
++    // Core features that we're relying on in various places — gated
++    enabledFeatures.vk13.synchronization2 =
++      m_deviceFeatures.vk13.synchronization2;
++    enabledFeatures.vk13.dynamicRendering =
++      m_deviceFeatures.vk13.dynamicRendering;
+ 
+-    // Maintenance4 may cause performance problems on amdvlk in some cases
++    // Maintenance4 may cause performance problems on amdvlk in some cases — gated
+     if (m_deviceInfo.vk12.driverID != VK_DRIVER_ID_AMD_OPEN_SOURCE
+      && m_deviceInfo.vk12.driverID != VK_DRIVER_ID_AMD_PROPRIETARY)
+-      enabledFeatures.vk13.maintenance4 = VK_TRUE;
++      enabledFeatures.vk13.maintenance4 = m_deviceFeatures.vk13.maintenance4;
+ 
+     // We expose depth clip rather than depth clamp to client APIs
+     enabledFeatures.extDepthClipEnable.depthClipEnable =
+@@ -401,10 +415,12 @@ namespace dxvk {
+ 
+     // Require robustBufferAccess2 since we use the robustness alignment
+     // info in a number of places, and require null descriptor support
+-    // since we no longer have a fallback for those in the backend
+-    enabledFeatures.extRobustness2.robustBufferAccess2 = VK_TRUE;
++    // since we no longer have a fallback for those in the backend — gated on support
++    enabledFeatures.extRobustness2.robustBufferAccess2 =
++      m_deviceFeatures.extRobustness2.robustBufferAccess2;
+     enabledFeatures.extRobustness2.robustImageAccess2 = m_deviceFeatures.extRobustness2.robustImageAccess2;
+-    enabledFeatures.extRobustness2.nullDescriptor = VK_TRUE;
++    enabledFeatures.extRobustness2.nullDescriptor =
++      m_deviceFeatures.extRobustness2.nullDescriptor;
+ 
+     // We use this to avoid decompressing SPIR-V shaders in some situations
+     enabledFeatures.extShaderModuleIdentifier.shaderModuleIdentifier =
+@@ -510,9 +526,48 @@ namespace dxvk {
+       vr = m_vki->vkCreateDevice(m_handle, &info, nullptr, &device);
+     }
+ 
+-    if (vr != VK_SUCCESS)
++    if (vr != VK_SUCCESS) {
++      Logger::err(str::format("DxvkAdapter: vkCreateDevice returned ", vr));
++
++      /* Bisect to find the offending feature struct. Walk the pNext chain
++       * unlinking one struct at a time and retrying vkCreateDevice. The
++       * first struct whose removal makes vkCreateDevice succeed is the
++       * culprit. Diagnostic only — we don't keep the device. */
++      auto dumpType = [](VkStructureType t) -> const char* {
++        switch (t) {
++          case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES: return "vk11";
++          case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES: return "vk12";
++          case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES: return "vk13";
++          default: return "ext";
++        }
++      };
++
++      VkBaseOutStructure* head = const_cast<VkBaseOutStructure*>(
++        reinterpret_cast<const VkBaseOutStructure*>(info.pNext));
++      for (VkBaseOutStructure* prev = nullptr, *cur = head; cur; prev = cur, cur = cur->pNext) {
++        VkBaseOutStructure* saved_next = cur->pNext;
++        if (prev) prev->pNext = saved_next; else info.pNext = saved_next;
++        VkDevice probe = VK_NULL_HANDLE;
++        VkResult probe_vr = m_vki->vkCreateDevice(m_handle, &info, nullptr, &probe);
++        Logger::err(str::format("DxvkAdapter: bisect: without sType=", uint32_t(cur->sType),
++          " (", dumpType(cur->sType), ") → vkCreateDevice returned ", probe_vr));
++        // Probe device intentionally leaked — m_vki is InstanceFn, not
++        // DeviceFn; we'd have to build a temporary DeviceFn just to call
++        // vkDestroyDevice. Diagnostic path throws shortly so leak is fine.
++        (void)probe;
++        // Restore chain
++        if (prev) prev->pNext = cur; else info.pNext = cur;
++        cur->pNext = saved_next;
++        if (probe_vr == VK_SUCCESS) {
++          Logger::err(str::format("DxvkAdapter: bisect: CULPRIT struct sType=",
++            uint32_t(cur->sType), " (", dumpType(cur->sType), ")"));
++          break;
++        }
++      }
++
+       throw DxvkError("DxvkAdapter: Failed to create device");
+-    
++    }
++
+     Rc<vk::DeviceFn> vkd = new vk::DeviceFn(m_vki, true, device);
+ 
+     DxvkDeviceQueueSet queues = { };

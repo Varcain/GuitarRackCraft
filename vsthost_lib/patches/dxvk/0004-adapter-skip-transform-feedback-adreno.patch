@@ -1,0 +1,45 @@
+From: Kamil Lulko <limakzagan@gmail.com>
+Subject: dxvk: skip VK_EXT_transform_feedback on Adreno (vkCreateDevice reject)
+
+Adreno (Qualcomm proprietary, driver 0.762.41) returns
+VK_ERROR_FEATURE_NOT_PRESENT from vkCreateDevice when the
+VK_EXT_transform_feedback features struct is in the device pNext chain,
+even with the feature value gated. A pNext-chain bisect (patch 0002,
+surfaced via triage-vst-log.py while debugging AmpliTube 5's black
+editor) proved removing only this struct makes vkCreateDevice succeed.
+Disable the extension for Qualcomm so initFeatureChain skips the struct.
+Transform feedback only adds an optional stream-output buffer bit
+(gated on the feature) so the allocator is unaffected — unlike
+robustness2 which was load-bearing.
+
+diff --git a/src/dxvk/dxvk_adapter.cpp b/src/dxvk/dxvk_adapter.cpp
+index 1285c4ee..923caddd 100644
+--- a/src/dxvk/dxvk_adapter.cpp
++++ b/src/dxvk/dxvk_adapter.cpp
+@@ -298,6 +298,26 @@ namespace dxvk {
+     if (!m_deviceExtensions.supports(devExtensions.extPageableDeviceLocalMemory.name()))
+       devExtensions.amdMemoryOverallocationBehaviour.setMode(DxvkExtMode::Optional);
+ 
++    /* Adreno (Qualcomm proprietary) returns VK_ERROR_FEATURE_NOT_PRESENT
++     * from vkCreateDevice when the VK_EXT_transform_feedback features
++     * struct is present in the device pNext chain — even with the feature
++     * value gated to reported support. A pNext-chain bisect (added by
++     * patch 0002, surfaced via triage-vst-log.py while debugging
++     * AmpliTube 5's black editor on Adreno 750 / driver 0.762.41) proved
++     * removing JUST this struct makes vkCreateDevice succeed.
++     *
++     * Disabling the extension makes initFeatureChain's
++     * `if (devExtensions.extTransformFeedback)` guard skip the struct and
++     * leaves features().extTransformFeedback.transformFeedback false.
++     * Unlike VK_EXT_robustness2 (load-bearing for the global-buffer
++     * suballocator's robustBufferAccess2 alignment — gating it broke
++     * DxvkMemoryAllocator), transform feedback only contributes an
++     * OPTIONAL stream-output buffer-usage bit in dxvk_memory.cpp gated on
++     * that feature, so the bit is simply not added. D3D11 stream-output
++     * (SO stage) becomes unavailable, which 2D plugin UIs never use. */
++    if (m_deviceInfo.vk12.driverID == VK_DRIVER_ID_QUALCOMM_PROPRIETARY)
++      devExtensions.extTransformFeedback.setMode(DxvkExtMode::Disabled);
++
+     DxvkNameSet extensionsEnabled;
+ 
+     if (!m_deviceExtensions.enableExtensions(

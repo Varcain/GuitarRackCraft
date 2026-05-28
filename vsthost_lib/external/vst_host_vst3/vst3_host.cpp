@@ -52,6 +52,7 @@ extern "C" {
 #include "public.sdk/source/vst/hosting/hostclasses.h"
 #include "public.sdk/source/vst/hosting/parameterchanges.h"
 #include "public.sdk/source/vst/hosting/eventlist.h"
+#include "public.sdk/source/common/memorystream.h"
 
 using namespace Steinberg;
 using namespace Steinberg::Vst;
@@ -63,119 +64,336 @@ using namespace Steinberg::Vst;
 /* Shared-memory pointer for the VEH to use during crash logging. */
 static volatile VstpocShared* g_shm = NULL;
 
-/* ----- VEH (same surgical recoveries as vst_host.c). Ports the working
- * recoveries from the VST2 host so VST3 plugins that hit the same JUCE
- * crash sites get the same protection. -------------------------------- */
-static LONG WINAPI pluginmain_veh(PEXCEPTION_POINTERS info)
-{
-    DWORD code = info->ExceptionRecord->ExceptionCode;
+/* ----- VEH pattern catalog ------------------------------------------------
+ *
+ * Surgical-skip patterns for known crash sites in commercial plugins.
+ *
+ * Adding a new pattern: append one entry to g_veh_patterns[]. No code
+ * changes required. See feedback_plugin_debug_infrastructure.md for the
+ * step-by-step recipe.
+ *
+ * The patterns are tried in declaration order. The FIRST match wins.
+ * Patterns with `exact_pc != 0` only fire when the fault PC matches
+ * exactly (used for plugins with no/predictable ASLR like TH-U). Patterns
+ * with `exact_pc == 0` are byte-pattern matches against the bytes at PC
+ * (used for ASLR-randomised plugins like TONEX).
+ *
+ * If NO pattern matches, the VEH falls back to two policies:
+ *   - WRITE-to-NULL  → log diagnostic + ExitThread (host stays alive)
+ *   - READ-from-NULL → log diagnostic + ExitThread
+ *
+ * Both fallbacks emit the same byte-dump + register-dump format so a new
+ * crash site can be added to the catalog with one struct literal.
+ *
+ * Memory cross-references:
+ *   [[feedback_thu_veh_surgical_recovery]]
+ *   [[feedback_tonex_vst3_editor_stall]] (the "2026-05-28 ~21:00" entry
+ *     for why TONEX needs rax→zero-scratch not just rax=0)
+ *   [[feedback_thu_popup_fix_landed]]
+ * ------------------------------------------------------------------------ */
 
-    if (code == EXCEPTION_ACCESS_VIOLATION
-        && info->ExceptionRecord->NumberParameters >= 2
-        && info->ExceptionRecord->ExceptionInformation[0] == 0       /* read */
-        && info->ExceptionRecord->ExceptionInformation[1] < 0x1000)  /* NULL + small */
+namespace {
+
+/* Static zero buffer for RaxToZeroScratch recovery (TONEX). 256-byte
+ * aligned, 4KB long — covers any struct offset the downstream code is
+ * likely to walk. Lives in .bss; no per-call allocation. */
+alignas(256) static unsigned char g_zero_scratch[4096] = {};
+
+enum class Recovery : unsigned char {
+    /* Skip a fixed number of bytes (Rip += skip_bytes). Combine with
+     * zero_regs_mask to clear destination regs (matches TH-U +0x2A05AF
+     * pattern that loaded rax = [rax]). */
+    Skip,
+    /* Jump to an exact address (set_rip). Used for TH-U where the skip
+     * needs to land past a specific safe-resume point, not just N bytes
+     * ahead. */
+    JumpTo,
+    /* TONEX-specific: like Skip, but also (1) memset 16 bytes at
+     * [rsi + memset_rsi_offset] to emulate the original movups store the
+     * skip would otherwise lose, and (2) point Rax at the static zero
+     * scratch buffer so downstream native ARM64 wine code that derefs Rax
+     * gets a real zero page instead of a NULL crash. */
+    RaxToZeroScratch,
+};
+
+struct VehPattern {
+    const char *name;
+    /* ExceptionInformation[0]: 0 = read, 1 = write, 2 = either */
+    unsigned char access_kind;
+    /* Pattern only fires when fault addr < this. 0x1000 catches the
+     * "NULL + small struct offset" common case. */
+    USHORT fault_addr_max;
+    /* If nonzero, fault PC must equal this. */
+    DWORD64 exact_pc;
+    /* Bytes at PC must match for byte_count bytes. 0 = skip check. */
+    unsigned char byte_count;
+    unsigned char bytes[16];
+    /* If nonzero, Rax must equal this on entry (catches the common
+     * "rax=0 is the trigger" case). Use 0xFFFFFFFFFFFFFFFFULL to mean
+     * "don't check Rax". */
+    DWORD64 rax_must_be;
+    Recovery recovery;
+    /* Recovery::Skip / RaxToZeroScratch: bytes to advance Rip by. */
+    unsigned char skip_bytes;
+    /* Recovery::JumpTo: target Rip. */
+    DWORD64 set_rip;
+    /* Bit 0=rax, 1=xmm0, 2=xmm1, 8=r14. OR'd registers get zeroed
+     * in the ContextRecord before resume. */
+    USHORT zero_regs_mask;
+    /* RaxToZeroScratch: byte offset from Rsi to memset(0); count of
+     * bytes to memset. 0/0 = skip the memset. */
+    USHORT memset_rsi_offset;
+    USHORT memset_rsi_count;
+    /* Live hit counter — atomic since the VEH can be entered from any
+     * plugin thread. mutable so the catalog can be declared const. */
+    mutable std::atomic<unsigned> hit_count;
+};
+
+/* Recovery::Skip+R14 zero is the TH-U +0x2DF0C3 popup-vector-race fix.
+ * Recovery::JumpTo is functionally identical to Skip when skip lands
+ * inside the same basic block, but we keep both for clarity.
+ *
+ * Note: zero_regs_mask uses bit 8 for R14 since r0..r3 are bits 0..3 in
+ * our scheme; we reserve bits 0..7 for rax..r9 and shift R14 up. */
+static constexpr unsigned ZR_RAX   = 1u << 0;
+static constexpr unsigned ZR_XMM0  = 1u << 1;
+static constexpr unsigned ZR_XMM1  = 1u << 2;
+static constexpr unsigned ZR_R14   = 1u << 8;
+
+static VehPattern g_veh_patterns[] = {
+    /* TH-U +0x2DF0C3: popup-dismiss vector race. Hard-coded address (no
+     * ASLR for TH-U since DllOverrides force a fixed module base). */
     {
-        /* TH-U +0x2DF0C3 popup-dismiss vector-race surgical skip. */
-        if (info->ExceptionRecord->ExceptionAddress == (PVOID)0x1802DF0C3ULL) {
-            static const unsigned char kBytes[4] = { 0x4c, 0x8b, 0x34, 0x07 };
-            if (memcmp((const void*)0x1802DF0C3ULL, kBytes, 4) == 0) {
-                info->ContextRecord->R14 = 0;
-                info->ContextRecord->Rip = 0x1802DF0E3ULL;
-                LOG("VEH: surgical skip TH-U +0x2DF0C3 (popup vector race)\n");
-                return EXCEPTION_CONTINUE_EXECUTION;
-            }
-        }
+        "thu-popup-dismiss",
+        /* read */ 0,
+        /* fault_addr_max */ 0x1000,
+        /* exact_pc */ 0x1802DF0C3ULL,
+        /* byte_count */ 4,
+        /* bytes */ { 0x4c, 0x8b, 0x34, 0x07 },
+        /* rax_must_be */ 0xFFFFFFFFFFFFFFFFULL,
+        Recovery::JumpTo,
+        /* skip_bytes */ 0,
+        /* set_rip */ 0x1802DF0E3ULL,
+        /* zero_regs_mask */ ZR_R14,
+        /* memset_rsi_* */ 0, 0,
+        /* hit_count */ {0},
+    },
+    /* TH-U +0x2A05AF: effect-removal NULL get_item. */
+    {
+        "thu-effect-removal-null",
+        /* read */ 0,
+        /* fault_addr_max */ 0x1000,
+        /* exact_pc */ 0x1802A05AFULL,
+        /* byte_count */ 3,
+        /* bytes */ { 0x48, 0x8b, 0x10 },
+        /* rax_must_be */ 0xFFFFFFFFFFFFFFFFULL,
+        Recovery::JumpTo,
+        /* skip_bytes */ 0,
+        /* set_rip */ 0x1802A05B8ULL,
+        /* zero_regs_mask */ ZR_RAX,
+        /* memset_rsi_* */ 0, 0,
+        /* hit_count */ {0},
+    },
+    /* TONEX setProcessing-worker NULL controller. ASLR'd, so we match
+     * the 16-byte pattern. Recovery emulates a zero-init struct:
+     *   movaps xmm0, [rax+0x20]   → xmm0 = 0
+     *   movaps xmm1, [rax+0x30]   → xmm1 = 0
+     *   mov    rax, [rax+0x40]    → rax  = &g_zero_scratch (NOT 0; see
+     *                                       feedback_tonex_vst3_editor_stall
+     *                                       "2026-05-28 ~21:00" entry)
+     *   movups [rsi+0x70], xmm1   → memset(rsi+0x70, 0, 16) (so wine
+     *                                ntdll ARM64 STUR loop at module
+     *                                +FE7784 reads valid zeros, not
+     *                                stale stack)
+     */
+    {
+        "tonex-null-controller",
+        /* read */ 0,
+        /* fault_addr_max */ 0x1000,
+        /* exact_pc */ 0,    /* ASLR, match by bytes only */
+        /* byte_count */ 16,
+        /* bytes */ {
+            0x0f, 0x28, 0x40, 0x20,
+            0x0f, 0x28, 0x48, 0x30,
+            0x48, 0x8b, 0x40, 0x40,
+            0x0f, 0x11, 0x4e, 0x70,
+        },
+        /* rax_must_be */ 0,
+        Recovery::RaxToZeroScratch,
+        /* skip_bytes */ 16,
+        /* set_rip */ 0,
+        /* zero_regs_mask */ ZR_XMM0 | ZR_XMM1,
+        /* memset_rsi_offset */ 0x70,
+        /* memset_rsi_count */ 16,
+        /* hit_count */ {0},
+    },
+};
 
-        /* TH-U +0x2A05AF effect-removal NULL get_item. */
-        if (info->ExceptionRecord->ExceptionAddress == (PVOID)0x1802A05AFULL) {
-            static const unsigned char kBytes[3] = { 0x48, 0x8b, 0x10 };
-            if (memcmp((const void*)0x1802A05AFULL, kBytes, 3) == 0) {
-                info->ContextRecord->Rax = 0;
-                info->ContextRecord->Rip = 0x1802A05B8ULL;
-                LOG("VEH: surgical skip TH-U +0x2A05AF (effect-removal NULL)\n");
-                return EXCEPTION_CONTINUE_EXECUTION;
-            }
-        }
+/* Helper: VirtualQuery + state checks for safe memory access. */
+static bool addr_is_committed(const void *addr)
+{
+    MEMORY_BASIC_INFORMATION mbi;
+    return VirtualQuery(addr, &mbi, sizeof(mbi)) == sizeof(mbi)
+        && mbi.State == MEM_COMMIT
+        && !(mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD));
+}
 
-        /* TONEX setProcessing-worker NULL controller read.
-         * Crash site changes base address per load (TONEX.vst3 ASLR), so
-         * we match by instruction byte pattern instead of hard address.
-         * Pattern at PC:
-         *   0f 28 40 20    movaps xmm0, [rax+0x20]    <- fault here (rax=NULL)
-         *   0f 28 48 30    movaps xmm1, [rax+0x30]
-         *   48 8b 40 40    mov    rax, [rax+0x40]
-         *   0f 11 4e 70    movups [rsi+0x70], xmm1
-         * All four deref NULL rax. Zero the destination registers (xmm0,
-         * xmm1, rax) and skip the whole 16-byte sequence so the store at
-         * [rsi+0x70] writes zeros — same outcome the function would have
-         * produced for a default-constructed/empty controller. */
-        {
-            const unsigned char *pc =
-                (const unsigned char *)info->ExceptionRecord->ExceptionAddress;
-            static const unsigned char kTonexPattern[16] = {
-                0x0f, 0x28, 0x40, 0x20,  // movaps xmm0,[rax+0x20]
-                0x0f, 0x28, 0x48, 0x30,  // movaps xmm1,[rax+0x30]
-                0x48, 0x8b, 0x40, 0x40,  // mov rax,[rax+0x40]
-                0x0f, 0x11, 0x4e, 0x70,  // movups [rsi+0x70],xmm1
-            };
-            MEMORY_BASIC_INFORMATION mbi;
-            if (info->ContextRecord->Rax == 0
-                && VirtualQuery(pc, &mbi, sizeof(mbi)) == sizeof(mbi)
-                && mbi.State == MEM_COMMIT
-                && !(mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD))
-                && memcmp(pc, kTonexPattern, 16) == 0)
-            {
-                info->ContextRecord->Xmm0.Low  = 0;
-                info->ContextRecord->Xmm0.High = 0;
-                info->ContextRecord->Xmm1.Low  = 0;
-                info->ContextRecord->Xmm1.High = 0;
-                info->ContextRecord->Rax = 0;
-                info->ContextRecord->Rip += 16;
-                LOG("VEH: surgical skip TONEX-pattern NULL controller "
-                    "(pc=%p +16, xmm0/xmm1/rax zeroed)\n",
-                    info->ExceptionRecord->ExceptionAddress);
-                return EXCEPTION_CONTINUE_EXECUTION;
-            }
-        }
+static bool addr_is_writable(const void *addr)
+{
+    MEMORY_BASIC_INFORMATION mbi;
+    if (VirtualQuery(addr, &mbi, sizeof(mbi)) != sizeof(mbi)) return false;
+    if (mbi.State != MEM_COMMIT) return false;
+    if (mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD)) return false;
+    return (mbi.Protect & (PAGE_READWRITE | PAGE_WRITECOPY |
+                            PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY)) != 0;
+}
 
-        /* Fallback: kill the thread to keep the host alive. Log the
-         * instruction bytes + register state so we can identify the
-         * crashing plugin's exact site and add a surgical skip if
-         * recurring (like TH-U). */
-        {
-            const unsigned char *pc = (const unsigned char *)info->ExceptionRecord->ExceptionAddress;
-            unsigned char bytes[16] = {0};
-            /* Use VirtualQuery to confirm PC is readable before deref-ing —
-             * mingw doesn't support MSVC-style __try/__except. */
-            MEMORY_BASIC_INFORMATION mbi;
-            if (VirtualQuery(pc, &mbi, sizeof(mbi)) == sizeof(mbi)
-                && (mbi.State == MEM_COMMIT)
-                && !(mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD)))
-            {
-                for (int i = 0; i < 16; i++) bytes[i] = pc[i];
-            }
-            LOG("VEH: NULL-deref AV pc=%p fault=0x%llx (terminating thread)\n",
-                info->ExceptionRecord->ExceptionAddress,
-                (unsigned long long)info->ExceptionRecord->ExceptionInformation[1]);
-            LOG("VEH: bytes@pc: %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x\n",
-                bytes[0], bytes[1], bytes[2], bytes[3],
-                bytes[4], bytes[5], bytes[6], bytes[7],
-                bytes[8], bytes[9], bytes[10], bytes[11],
-                bytes[12], bytes[13], bytes[14], bytes[15]);
-            LOG("VEH: rax=%llx rcx=%llx rdx=%llx rbx=%llx rsi=%llx rdi=%llx r8=%llx r9=%llx\n",
-                (unsigned long long)info->ContextRecord->Rax,
-                (unsigned long long)info->ContextRecord->Rcx,
-                (unsigned long long)info->ContextRecord->Rdx,
-                (unsigned long long)info->ContextRecord->Rbx,
-                (unsigned long long)info->ContextRecord->Rsi,
-                (unsigned long long)info->ContextRecord->Rdi,
-                (unsigned long long)info->ContextRecord->R8,
-                (unsigned long long)info->ContextRecord->R9);
-        }
-        ExitThread(0xDEADBEEF);
+/* Apply zero_regs_mask to ContextRecord. */
+static void zero_regs(PCONTEXT ctx, USHORT mask)
+{
+    if (mask & ZR_RAX)  ctx->Rax = 0;
+    if (mask & ZR_XMM0) { ctx->Xmm0.Low = 0; ctx->Xmm0.High = 0; }
+    if (mask & ZR_XMM1) { ctx->Xmm1.Low = 0; ctx->Xmm1.High = 0; }
+    if (mask & ZR_R14)  ctx->R14 = 0;
+}
+
+/* Try to match `info` against a single catalog entry. Return true if
+ * matched + recovery applied (caller returns EXCEPTION_CONTINUE_EXECUTION). */
+static bool try_pattern(PEXCEPTION_POINTERS info, const VehPattern &p)
+{
+    /* access_kind: 0=read, 1=write, 2=either */
+    if (p.access_kind != 2) {
+        if (info->ExceptionRecord->ExceptionInformation[0] != p.access_kind)
+            return false;
+    }
+    if (info->ExceptionRecord->ExceptionInformation[1] >= p.fault_addr_max)
+        return false;
+    if (p.exact_pc != 0
+        && info->ExceptionRecord->ExceptionAddress != (PVOID)p.exact_pc)
+        return false;
+    if (p.rax_must_be != 0xFFFFFFFFFFFFFFFFULL
+        && info->ContextRecord->Rax != p.rax_must_be)
+        return false;
+    if (p.byte_count > 0) {
+        const void *pc = info->ExceptionRecord->ExceptionAddress;
+        if (!addr_is_committed(pc)) return false;
+        if (memcmp(pc, p.bytes, p.byte_count) != 0) return false;
     }
 
-    return EXCEPTION_CONTINUE_SEARCH;
+    /* Match — apply recovery. */
+    PCONTEXT ctx = info->ContextRecord;
+    zero_regs(ctx, p.zero_regs_mask);
+
+    switch (p.recovery) {
+        case Recovery::Skip:
+            ctx->Rip += p.skip_bytes;
+            break;
+        case Recovery::JumpTo:
+            ctx->Rip = p.set_rip;
+            break;
+        case Recovery::RaxToZeroScratch: {
+            /* Emulate the lost write at [rsi + memset_rsi_offset] as zeros
+             * (the NULL-controller field xmm1 would have been zero). This
+             * is the proven TONEX recovery. NOTE: a sink-pointer variant
+             * was tried for AmpliTube (whose downstream crashes at native
+             * ARM64 wine +FE7784) and did NOT help — AmpliTube's NULL
+             * pointer does not originate from this slot, and the +FE7784
+             * fault is unrecoverable from our x86-shaped VEH anyway. Kept
+             * the simple zero memset to protect TONEX's working path. */
+            if (p.memset_rsi_count > 0 && ctx->Rsi != 0) {
+                void *dst = (char*)ctx->Rsi + p.memset_rsi_offset;
+                if (addr_is_writable(dst))
+                    memset(dst, 0, p.memset_rsi_count);
+            }
+            ctx->Rax = (DWORD64)&g_zero_scratch[0];
+            ctx->Rip += p.skip_bytes;
+            break;
+        }
+    }
+
+    /* Record + log. Use atomic OR for hit_count; cheap, lock-free. */
+    unsigned prior = p.hit_count.fetch_add(1, std::memory_order_relaxed);
+    LOG("VEH: surgical skip %s (pc=%p, hit#%u)\n",
+        p.name, info->ExceptionRecord->ExceptionAddress, prior + 1);
+
+    /* Mirror the hit into VstpocShared so the Android side can read
+     * which surgical-skips fired without parsing the wine log. Bit N =
+     * pattern N in g_veh_patterns. Done here (not in caller) so the
+     * mapping stays adjacent to the table. */
+    if (g_shm != nullptr) {
+        size_t idx = static_cast<size_t>(&p - &g_veh_patterns[0]);
+        if (idx < 64) {
+            uint64_t bit = (uint64_t)1 << idx;
+            /* Lock-free OR on the shared-mem field. The host reads it
+             * with relaxed semantics — no race on missing bits matters,
+             * the worst case is a momentarily-stale view. */
+            __atomic_or_fetch(
+                (uint64_t*)&g_shm->veh_patterns_hit_bitmask,
+                bit, __ATOMIC_RELAXED);
+        }
+    }
+    return true;
+}
+
+/* Diagnostic fallback for an unmatched AV. Logs bytes + regs so the
+ * crash can be added to the catalog with one struct literal. Returns
+ * after ExitThread (does not return to caller in practice). */
+[[noreturn]] static void log_and_exit_thread(PEXCEPTION_POINTERS info,
+                                              const char *kind)
+{
+    const unsigned char *pc =
+        (const unsigned char *)info->ExceptionRecord->ExceptionAddress;
+    unsigned char bytes[16] = {0};
+    if (addr_is_committed(pc))
+        for (int i = 0; i < 16; i++) bytes[i] = pc[i];
+
+    LOG("VEH: %s AV pc=%p fault=0x%llx (terminating thread)\n",
+        kind, info->ExceptionRecord->ExceptionAddress,
+        (unsigned long long)info->ExceptionRecord->ExceptionInformation[1]);
+    LOG("VEH: bytes@pc: "
+        "%02x %02x %02x %02x %02x %02x %02x %02x "
+        "%02x %02x %02x %02x %02x %02x %02x %02x\n",
+        bytes[0],  bytes[1],  bytes[2],  bytes[3],
+        bytes[4],  bytes[5],  bytes[6],  bytes[7],
+        bytes[8],  bytes[9],  bytes[10], bytes[11],
+        bytes[12], bytes[13], bytes[14], bytes[15]);
+    LOG("VEH: rax=%llx rcx=%llx rdx=%llx rbx=%llx "
+        "rsi=%llx rdi=%llx r8=%llx r9=%llx\n",
+        (unsigned long long)info->ContextRecord->Rax,
+        (unsigned long long)info->ContextRecord->Rcx,
+        (unsigned long long)info->ContextRecord->Rdx,
+        (unsigned long long)info->ContextRecord->Rbx,
+        (unsigned long long)info->ContextRecord->Rsi,
+        (unsigned long long)info->ContextRecord->Rdi,
+        (unsigned long long)info->ContextRecord->R8,
+        (unsigned long long)info->ContextRecord->R9);
+    ExitThread(0xDEADBEEF);
+}
+
+} /* anonymous namespace */
+
+static LONG WINAPI pluginmain_veh(PEXCEPTION_POINTERS info)
+{
+    if (info->ExceptionRecord->ExceptionCode != EXCEPTION_ACCESS_VIOLATION
+        || info->ExceptionRecord->NumberParameters < 2)
+        return EXCEPTION_CONTINUE_SEARCH;
+
+    const ULONG_PTR access = info->ExceptionRecord->ExceptionInformation[0];
+    const ULONG_PTR fault  = info->ExceptionRecord->ExceptionInformation[1];
+
+    /* Only act on NULL-ish faults. Real wild-pointer writes higher up
+     * fall through to wine's default handler. */
+    if (fault >= 0x1000) return EXCEPTION_CONTINUE_SEARCH;
+
+    /* Try the catalog. First-match wins. */
+    for (const auto &p : g_veh_patterns) {
+        if (try_pattern(info, p))
+            return EXCEPTION_CONTINUE_EXECUTION;
+    }
+
+    /* No pattern matched. Log diagnostic + kill thread. */
+    log_and_exit_thread(info,
+                         (access == 0) ? "READ-from-NULL" : "WRITE-to-NULL");
 }
 
 /* ----- Shared-memory mapping (identical to vst_host.c map_shared) ---- */
@@ -276,6 +494,42 @@ public:
 
 private:
     std::atomic<uint32> refCount_{1};
+};
+
+/* ---- Minimal IComponentHandler --------------------------------------
+ * The SDK's HostApplication implements ONLY IHostApplication, NOT
+ * IComponentHandler — so without this, editController->setComponentHandler
+ * is never called and the controller has a NULL handler. Many JUCE-based
+ * plugins store the handler at initialize/setComponentState time and
+ * dereference it during setProcessing; a NULL handler then surfaces as a
+ * NULL-controller-ish crash in the setProcessing worker (the
+ * "tonex-null-controller" VEH pattern — shared by TONEX and AmpliTube).
+ *
+ * All callbacks are no-ops returning kResultOk: we don't surface plugin
+ * parameter automation back to a DAW (there's no DAW — the audio path is
+ * the shm ring), we just need a non-NULL, well-formed handler so the
+ * plugin's controller initialises fully. Stack-allocated for the life of
+ * main(), so refcounting is a no-op (returns a sentinel). */
+class HostComponentHandler : public IComponentHandler {
+public:
+    tresult PLUGIN_API beginEdit (ParamID) SMTG_OVERRIDE { return kResultOk; }
+    tresult PLUGIN_API performEdit (ParamID, ParamValue) SMTG_OVERRIDE { return kResultOk; }
+    tresult PLUGIN_API endEdit (ParamID) SMTG_OVERRIDE { return kResultOk; }
+    tresult PLUGIN_API restartComponent (int32) SMTG_OVERRIDE { return kResultOk; }
+
+    tresult PLUGIN_API queryInterface (const TUID iid, void** obj) SMTG_OVERRIDE {
+        if (FUnknownPrivate::iidEqual(iid, FUnknown::iid)
+         || FUnknownPrivate::iidEqual(iid, IComponentHandler::iid)) {
+            *obj = static_cast<IComponentHandler*>(this);
+            return kResultOk;
+        }
+        *obj = nullptr;
+        return kNoInterface;
+    }
+    /* Stack object — never actually freed via refcount. Return a high
+     * sentinel so a stray release() doesn't think it hit zero. */
+    uint32 PLUGIN_API addRef () SMTG_OVERRIDE { return 1000; }
+    uint32 PLUGIN_API release () SMTG_OVERRIDE { return 1000; }
 };
 
 /* ---- Editor thread state --------------------------------------------
@@ -383,14 +637,54 @@ static DWORD WINAPI editor_thread_proc(LPVOID arg)
         return 1;
     }
 
+    /* Record which graphics APIs the plugin actually loaded, now that the
+     * editor has been attached (DLLs are resolved by this point). This
+     * feeds the black-screen detector: a plugin that loaded none of these
+     * AND storms WM_USER+123 without painting is stuck. Checked once. */
+    if (g_shm) {
+        uint32_t apis = 0;
+        if (GetModuleHandleA("d3d11.dll"))   apis |= 1u << 0;
+        if (GetModuleHandleA("d3d9.dll"))    apis |= 1u << 1;
+        if (GetModuleHandleA("opengl32.dll"))apis |= 1u << 2;
+        /* gdi32 is loaded passively by combase etc., so its presence is a
+         * weak signal — only flag it if NO accelerated API loaded (i.e.
+         * the plugin is GDI-only). */
+        if (apis == 0 && GetModuleHandleA("gdi32.dll")) apis |= 1u << 3;
+        if (apis == 0) apis |= 1u << 4;  /* none observed */
+        g_shm->render_api_used = apis;
+        __sync_synchronize();
+    }
+
     LOG("editor: entering message pump\n");
     /* Standard wine message pump — JUCE/Qt/etc. all dispatch their input
      * through here so the editor stays interactive. */
     MSG msg;
+    /* Health instrumentation: count WM_USER+123 (JUCE async-update storm
+     * signature) and WM_PAINT in a rolling 1-second window so the Android
+     * side can detect a stuck editor without parsing the wine log. */
+    uint64_t wm_user_window = 0;
+    uint64_t wm_paint_total = 0;
+    DWORD window_start = GetTickCount();
     while (!(g_shm && g_shm->stop_flag)) {
         while (PeekMessageA(&msg, NULL, 0, 0, PM_REMOVE)) {
+            if (msg.message == WM_PAINT) {
+                wm_paint_total++;
+                if (g_shm) g_shm->wm_paint_count = wm_paint_total;
+            } else if (msg.message == (WM_USER + 123)) {
+                wm_user_window++;
+            }
             TranslateMessage(&msg);
             DispatchMessageA(&msg);
+        }
+        /* Flush the rolling rate once per second. */
+        DWORD now = GetTickCount();
+        if (now - window_start >= 1000) {
+            if (g_shm) {
+                g_shm->wm_user_storm_per_second = (uint32_t)wm_user_window;
+                __sync_synchronize();
+            }
+            wm_user_window = 0;
+            window_start = now;
         }
         Sleep(5);
     }
@@ -497,6 +791,12 @@ int main(int argc, char** argv)
     if (!g_shm) {
         LOG("shared-memory mapping failed; running detached\n");
         /* Continue anyway — for diagnostics-only runs. */
+    } else {
+        /* Announce that this guest build writes the health fields, so the
+         * Android side knows reads of dxvk_init_status/render_api_used/etc.
+         * are meaningful (0 = legacy guest that never wrote them). */
+        g_shm->diagnostic_layout_v = 1;
+        __sync_synchronize();
     }
     write_status((VstpocShared*)g_shm, 0, "loading VST3");
 
@@ -580,6 +880,37 @@ int main(int argc, char** argv)
         /* Try same-object pattern: component itself implements IEditController. */
         component->queryInterface(IEditController::iid, (void**)&editController);
         if (editController) LOG("edit controller is same object as component\n");
+    }
+
+    /* Standard VST3 host init steps that were MISSING — JUCE plugins
+     * (AmpliTube 5 confirmed) require them before the controller is fully
+     * valid, otherwise a NULL handler / un-synced controller state
+     * surfaces as the "tonex-null-controller" crash in setProcessing.
+     *
+     * 1. setComponentHandler: give the controller a non-NULL host
+     *    callback object (SDK's HostApplication does NOT implement
+     *    IComponentHandler, despite the old comment claiming so).
+     * 2. setComponentState: transfer the component's serialized state to
+     *    the controller so its parameter model matches the processor.
+     *    Done via a MemoryStream round-trip (component->getState →
+     *    rewind → controller->setComponentState). */
+    static HostComponentHandler s_componentHandler;
+    if (editController) {
+        tresult sch = editController->setComponentHandler(&s_componentHandler);
+        LOG("setComponentHandler returned 0x%x\n", (unsigned)sch);
+
+        MemoryStream stateStream;
+        tresult gs = component->getState(&stateStream);
+        if (gs == kResultOk) {
+            int64 ignored = 0;
+            stateStream.seek(0, IBStream::kIBSeekSet, &ignored);
+            tresult scs = editController->setComponentState(&stateStream);
+            LOG("component->getState -> controller->setComponentState returned 0x%x "
+                "(state %lld bytes)\n", (unsigned)scs, (long long)stateStream.getSize());
+        } else {
+            LOG("component->getState returned 0x%x (skipping setComponentState)\n",
+                (unsigned)gs);
+        }
     }
 
     /* Connect Component <-> EditController via IConnectionPoint. JUCE-based

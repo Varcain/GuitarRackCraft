@@ -49,6 +49,9 @@ SDK_SRCS=(
     "$SDK/base/source/fdebug.cpp"
     "$SDK/base/source/updatehandler.cpp"
     "$SDK/base/thread/source/flock.cpp"
+    # MemoryStream: needed for the component->getState ->
+    # controller->setComponentState round-trip (VST3 controller-sync step).
+    "$SDK/public.sdk/source/common/memorystream.cpp"
 )
 
 echo "Building $OUT ..."

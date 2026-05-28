@@ -273,6 +273,11 @@ void WineHostProcess::setupWineEnvChild(const Config& cfg) {
      * outside / popup interaction may freeze briefly while TH-U's slow
      * WindowProcs complete naturally, but state stays consistent. */
     ::setenv("WINE_VSTPOC_NO_CYCLE_DETECT", "1", 1);
+    /* DXVK debug logging — diagnoses D3D11 device creation failures
+     * (AmpliTube 5 etc.). Output appears in the vst_host log under
+     * standard DXVK log prefix (info:/warn:/err:). Cheap to leave on:
+     * DXVK only logs during init and on failure events. */
+    ::setenv("DXVK_LOG_LEVEL", "debug", 1);
     {
         char displayBuf[64];
         std::snprintf(displayBuf, sizeof(displayBuf),
@@ -578,6 +583,11 @@ bool WineHostProcess::start() {
                           "127.0.0.1:%d", cfg_.displayNumber);
             ::setenv("DISPLAY", displayBuf, 1);
         }
+        /* DXVK debug logging — duplicated from setupWineEnvChild because
+         * the actual vst_host launch uses this inline block. Per
+         * feedback_winehostprocess_dup_env: env vars must be in BOTH or
+         * they silently no-op on vst_host. */
+        ::setenv("DXVK_LOG_LEVEL", "debug", 1);
 
         // FEX-Emu / vstpoc tunables. These were originally added only to
         // setupWineEnvChild (the wineboot path) but the actual vst_host
