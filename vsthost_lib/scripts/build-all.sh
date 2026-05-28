@@ -95,6 +95,13 @@ run_step build-uihost-stub.sh
 step 11 "pack-wine-fex (stage everything into src/main/jniLibs + assets)"
 python3 "$REPO/scripts/pack-wine-fex.py" --repo-root "$REPO"
 
+# Optional: symbol map for crash-address resolution by triage-vst-log.py.
+# Reads the build dirs (not cleaned by pack-wine-fex). Never fatal — a
+# missing map only means crash addresses stay unresolved in triage output.
+step 12 "build-symbol-map (crash-address → function name for triage)"
+bash "$REPO/scripts/build-symbol-map.sh" || \
+    echo "  (symbol map skipped/failed — non-fatal)"
+
 elapsed=$(( $(date +%s) - start ))
 echo
 echo "================================================================="

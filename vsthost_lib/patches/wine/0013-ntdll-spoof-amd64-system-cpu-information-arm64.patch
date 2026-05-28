@@ -1,0 +1,53 @@
+From: Kamil Lulko <limakzagan@gmail.com>
+Subject: ntdll: spoof AMD64 in SystemCpuInformation for wow64 callers on ARM64
+
+After patch 0010 makes SystemSupportedProcessorArchitectures report
+AMD64 as the native machine, wine's existing ARM64→AMD64 fallback in
+dlls/kernelbase/memory.c:218 (GetNativeSystemInfo) silently breaks.
+That fallback was gated on `native_machine != AMD64` — with our spoof,
+native_machine IS AMD64, so the fallback skips and the caller falls
+through to RtlGetNativeSystemInformation(SystemCpuInformation), which
+reads the real ProcessorArchitecture=ARM64 from get_cpuinfo().
+
+For TH-U 1.4.30's Inno Setup 6.4.2 outer .tmp (32-bit / wow64), this
+results in "this program can only be installed on versions of Windows
+designed for the following processor architectures: x64".
+
+Fix: spoof SystemCpuInformation ProcessorArchitecture to AMD64 on
+__aarch64__ — but ONLY for 32-bit wow64 callers (pre-WoA installers
+are always 32-bit). 64-bit ARM64EC PE callers (JUCE-based plugins like
+TH-U-64) read ProcessorArchitecture to choose their rendering backend;
+lying to them makes JUCE pick D3D11 desktop paths that aren't fully
+working in our environment and leaves them stuck in a no-render
+WM_USER+123 storm.
+
+diff --git a/dlls/ntdll/unix/system.c b/dlls/ntdll/unix/system.c
+--- a/dlls/ntdll/unix/system.c
++++ b/dlls/ntdll/unix/system.c
+@@ -3009,6 +3009,26 @@ NTSTATUS WINAPI NtQuerySystemInformation( SYSTEM_INFORMATION_CLASS class,
+         if (size >= (len = sizeof(SYSTEM_CPU_INFORMATION)))
+         {
+             SYSTEM_CPU_INFORMATION cpu = get_cpuinfo();
++#ifdef __aarch64__
++            /* fex-pivot: pair with patch 0010 (AMD64-as-native via
++             * SystemSupportedProcessorArchitectures). Wine's existing
++             * ARM64→AMD64 fallback in dlls/kernelbase/memory.c:218
++             * (GetNativeSystemInfo) was gated on
++             * native_machine != AMD64. After patch 0010 native IS AMD64,
++             * so the fallback skips and the i386 wow64 caller (TH-U
++             * 1.4.30 Inno Setup outer .tmp) receives the real
++             * SystemCpuInformation ProcessorArchitecture=ARM64,
++             * triggering "this program can only be installed on x64".
++             *
++             * Spoof ONLY for 32-bit wow64 callers — pre-WoA installers
++             * are always 32-bit. 64-bit ARM64EC PE callers (JUCE plugins
++             * like TH-U-64) read ProcessorArchitecture to choose their
++             * rendering backend; lying to them makes JUCE pick D3D11
++             * desktop paths that aren't fully working in our environment
++             * and leaves them stuck in a no-render WM_USER+123 storm. */
++            if (is_wow64())
++                cpu.ProcessorArchitecture = PROCESSOR_ARCHITECTURE_AMD64;
++#endif
+             memcpy( info, &cpu, len );
+         }
+         else ret = STATUS_INFO_LENGTH_MISMATCH;

@@ -125,6 +125,87 @@ object NativeBridge {
      *  keycode: X11 hardware keycode (see [util.X11Keymap]).
      *  state:   X11 modifier bitmask (Shift=0x01, Control=0x04, Mod1=0x08). */
     external fun nativeInjectX11Key(displayNumber: Int, action: Int, keycode: Int, state: Int)
+
+    // ── Health / diagnostics ─────────────────────────────────────────────
+    /** Read the health fields out of a plugin's VstpocShared mmap file at
+     *  [shmPath] (typically `<filesDir>/tmp/vst_shm_v<uuid>.dat`). Works
+     *  live AND post-mortem — the file persists after the wine subprocess
+     *  exits. Returns the raw long[] (see index layout in jni_runtime.cpp's
+     *  nativeReadPluginHealth) or null if the file can't be read.
+     *
+     *  Prefer [getPluginHealth] which unpacks this into [PluginHealth]. */
+    external fun nativeReadPluginHealth(shmPath: String): LongArray?
+
+    /** Read + decode a plugin's health snapshot. [filesDir] is the app's
+     *  filesDir absolute path, [uuid] the imported-VST uuid (registry.json
+     *  key). Returns null if the plugin was never activated (no shm file)
+     *  or the read failed. */
+    fun getPluginHealth(filesDir: String, uuid: String): PluginHealth? {
+        val shmPath = "$filesDir/tmp/vst_shm_v$uuid.dat"
+        val v = nativeReadPluginHealth(shmPath) ?: return null
+        if (v.size < 13) return null
+        return PluginHealth(
+            layoutVersion = v[0].toInt(),
+            dxvkInitStatus = v[1].toInt(),
+            d3d11DeviceStatus = v[2].toInt(),
+            renderApiUsed = v[3].toInt(),
+            lastMemAllocFailedSize = v[4],
+            lastMemAllocFailedTypes = v[5].toInt(),
+            lastMemAllocFailedCount = v[6],
+            paintRequestCount = v[7],
+            wmPaintCount = v[8],
+            vehPatternsHitBitmask = v[9],
+            wmUserStormPerSecond = v[10].toInt(),
+            loadStatus = v[11].toInt(),
+            guestReady = v[12] != 0L,
+        )
+    }
+}
+
+/** Decoded health snapshot of one VST plugin's wine subprocess. Field
+ *  semantics mirror VstpocShared's health block in external/shared_layout.h.
+ *  A [layoutVersion] of 0 means the guest pre-dates the health fields —
+ *  every field below is meaningless in that case. */
+data class PluginHealth(
+    val layoutVersion: Int,
+    val dxvkInitStatus: Int,       // 0=n/a 1=ok 2=mem_fail 3=create_fail 4=other
+    val d3d11DeviceStatus: Int,    // 0=not_created 1=ok 2=failed
+    val renderApiUsed: Int,        // bitmask: 1=d3d11 2=d3d9 4=gl 8=gdi 16=none
+    val lastMemAllocFailedSize: Long,
+    val lastMemAllocFailedTypes: Int,
+    val lastMemAllocFailedCount: Long,
+    val paintRequestCount: Long,
+    val wmPaintCount: Long,
+    val vehPatternsHitBitmask: Long,
+    val wmUserStormPerSecond: Int,
+    val loadStatus: Int,           // 0=pending 1=ok 2=failed (existing field)
+    val guestReady: Boolean,
+) {
+    val isLegacyGuest: Boolean get() = layoutVersion == 0
+
+    /** Heuristic: stuck in a JUCE event loop with no rendering (the
+     *  AmpliTube/TH-U-64 black-screen signature). */
+    val looksLikeBlackScreenStall: Boolean
+        get() = !isLegacyGuest &&
+            wmUserStormPerSecond > 100 &&
+            paintRequestCount == 0L &&
+            wmPaintCount == 0L
+
+    /** Human-readable one-liner for logs / debug UI. */
+    fun summarize(): String {
+        if (isLegacyGuest) return "health: legacy guest (no health fields)"
+        val dxvk = when (dxvkInitStatus) {
+            0 -> "dxvk:n/a"; 1 -> "dxvk:ok"; 2 -> "dxvk:MEM_FAIL"
+            3 -> "dxvk:CREATE_FAIL"; else -> "dxvk:err"
+        }
+        val d3d = when (d3d11DeviceStatus) {
+            0 -> "d3d11:none"; 1 -> "d3d11:ok"; else -> "d3d11:FAIL"
+        }
+        val paint = if (paintRequestCount == 0L && wmUserStormPerSecond > 100)
+            "paint:STALLED" else "paint:$paintRequestCount"
+        return "health: $dxvk $d3d $paint veh=0x${vehPatternsHitBitmask.toString(16)} " +
+            "loadStatus=$loadStatus ready=$guestReady"
+    }
 }
 
 /** Bit positions returned by [NativeBridge.nativeInspectPluginExports]. */

@@ -80,6 +80,78 @@ typedef struct {
      * plugin's GUI maps 1:1 in aspect (no letterbox, touch coords clean). */
     int32_t editor_width;
     int32_t editor_height;
+
+    /* --- Health / diagnostics (added 2026-05-28) ---------------------
+     * All fields are appended at the END of the struct to preserve
+     * binary layout for older guest builds that don't write them — those
+     * builds simply leave the trailing bytes at whatever the host
+     * zero-initialised them to. New host reads should be tolerant of
+     * fields reading 0 (= "not reported"). Use the diagnostic_layout_v
+     * sentinel BELOW to detect a guest that pre-dates these fields
+     * (writes 0) vs. one that writes ok-but-still-zero values. */
+    uint32_t diagnostic_layout_v;     /* guest writes 1 when it knows the
+                                        * fields below exist; 0 = legacy
+                                        * guest, fields below meaningless */
+
+    /* DXVK init status:
+     *   0 = not attempted (no D3D11 used by plugin)
+     *   1 = ok (vkCreateDevice succeeded, no memory alloc failures observed)
+     *   2 = memory_alloc_fail (DxvkMemoryAllocator returned null at least
+     *       once after the device was created — D3D11 may be partially
+     *       broken; see last_memory_alloc_failed_*)
+     *   3 = create_device_fail (vkCreateDevice returned non-success;
+     *       D3D11InternalCreateDevice will have logged the error)
+     *   4 = other failure (catch-all for ext errors) */
+    uint32_t dxvk_init_status;
+
+    /* D3D11 device status (separate from DXVK init because DXVK can be
+     * loaded without ever creating a D3D11 device — e.g. plugins that
+     * use DXGI for output enumeration only):
+     *   0 = not_created (D3D11CreateDevice never called)
+     *   1 = ok
+     *   2 = failed */
+    uint32_t d3d11_device_status;
+
+    /* Bitmask of rendering APIs the plugin actually loaded:
+     *   bit 0 = D3D11 (loaded d3d11.dll)
+     *   bit 1 = D3D9  (loaded d3d9.dll)
+     *   bit 2 = OpenGL (loaded opengl32.dll)
+     *   bit 3 = GDI (loaded gdi32.dll AND issued BitBlt — passive load
+     *           of gdi32 by combase etc. doesn't count)
+     *   bit 4 = "none observed yet" (legacy default)
+     * Black-screen detector: a plugin with bit 4 set AND
+     * wm_user_storm_per_second > 100 AND paint_request_count == 0 is
+     * almost certainly stuck in a JUCE event loop without rendering. */
+    uint32_t render_api_used;
+
+    /* DXVK memory allocation failure — most-recent attempt that returned
+     * null. Set by patch 0003 in dxvk_memory.cpp. */
+    uint64_t last_memory_alloc_failed_size;     /* VkMemoryRequirements::size */
+    uint32_t last_memory_alloc_failed_types;    /* memoryTypeBits */
+    uint32_t last_memory_alloc_failed_count;    /* monotonic; 0 = never */
+
+    /* Render activity counters. paint_request_count covers BOTH WM_PAINT
+     * messages dispatched to the editor hwnd AND X11 PutImage requests
+     * (the Android-side X11 server counts these and writes via host JNI).
+     * Used by the black-screen detector. */
+    uint64_t paint_request_count;
+    uint64_t wm_paint_count;
+
+    /* VEH catalog hit bitmask — bit N = pattern N in g_veh_patterns hit
+     * at least once. Capped at 64 patterns; if we exceed that the bit
+     * becomes a tombstone "patterns N..64 collapsed". */
+    uint64_t veh_patterns_hit_bitmask;
+
+    /* JUCE WM_USER+123 storm rate, rolling 1s window. Plugins like TH-U
+     * legitimately use this for timer ticks (~30/s); >5000/s is a
+     * runaway storm that almost always coincides with a stuck editor
+     * thread. */
+    uint32_t wm_user_storm_per_second;
+
+    /* Free-text written by the guest when it detects an anomaly itself
+     * (matches load_status[256]/status_message[256] pair pattern). Set
+     * once; subsequent anomalies overwrite. */
+    char diagnostic_summary[256];
 } VstpocShared;
 
 /* Native file-picker channel — lives in its OWN mmap file

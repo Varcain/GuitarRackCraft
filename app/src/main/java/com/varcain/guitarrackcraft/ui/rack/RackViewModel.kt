@@ -253,7 +253,11 @@ class RackViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun removePlugin(position: Int) {
-        viewModelScope.launch {
+        // Off the main thread — VST removal triggers WineVstPlugin::deactivate
+        // which waits up to 3s for the wine subprocess to exit + ~2s for the
+        // X11 server's serverLoop to drain. On the main thread this trips
+        // Android's input-dispatch ANR (5s) and the OS force-closes the app.
+        viewModelScope.launch(Dispatchers.IO) {
             try {
                 if (RackManager.removePlugin(position)) {
                     updateRackState()

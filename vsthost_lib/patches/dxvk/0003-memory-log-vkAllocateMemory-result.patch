@@ -1,0 +1,44 @@
+From: Kamil Lulko <limakzagan@gmail.com>
+Subject: dxvk: log the VkResult code when vkAllocateMemory fails
+
+DXVK's memory allocator currently returns DxvkDeviceMemory() silently
+when both vkAllocateMemory attempts fail. The "Memory allocation failed"
+message at the higher logMemoryError site only shows the requested
+VkMemoryRequirements (size, alignment, type mask), not the actual error
+code from the Vulkan driver.
+
+For diagnosing AmpliTube 5 device-creation failure on Adreno/Android
+where vkAllocateMemory fails despite plenty of free heap, we need the
+VkResult code (VK_ERROR_OUT_OF_DEVICE_MEMORY, VK_ERROR_INVALID_EXTERNAL_HANDLE,
+VK_ERROR_INITIALIZATION_FAILED, …). Add a Logger::err with both attempts'
+results plus the size and memory type index so we know exactly which
+allocation failed.
+
+diff --git a/src/dxvk/dxvk_memory.cpp b/src/dxvk/dxvk_memory.cpp
+--- a/src/dxvk/dxvk_memory.cpp
++++ b/src/dxvk/dxvk_memory.cpp
+@@ -1164,11 +1164,19 @@ namespace dxvk {
+     DxvkDeviceMemory result = { };
+     result.size = size;
+
+-    if (vk->vkAllocateMemory(vk->device(), &memoryInfo, nullptr, &result.memory)) {
+-      freeEmptyChunksInHeap(*type.heap, VkDeviceSize(-1), high_resolution_clock::time_point());
+-
+-      if (vk->vkAllocateMemory(vk->device(), &memoryInfo, nullptr, &result.memory))
+-        return DxvkDeviceMemory();
++    {
++      VkResult vr1 = vk->vkAllocateMemory(vk->device(), &memoryInfo, nullptr, &result.memory);
++      if (vr1) {
++        freeEmptyChunksInHeap(*type.heap, VkDeviceSize(-1), high_resolution_clock::time_point());
++
++        VkResult vr2 = vk->vkAllocateMemory(vk->device(), &memoryInfo, nullptr, &result.memory);
++        if (vr2) {
++          Logger::err(str::format("DxvkMemory: vkAllocateMemory returned ", vr1,
++            " (retry: ", vr2, ") size=", size,
++            " type=", uint32_t(&type - m_memTypes.data())));
++          return DxvkDeviceMemory();
++        }
++      }
+     }
+
+     // Technically redundant if EXT_memory_priority is also supported, but this shouldn't hurt

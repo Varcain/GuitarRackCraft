@@ -15,13 +15,19 @@
 #include "util/PeExports.h"
 #include "util/log.h"
 
+extern "C" {
+#include "../../../external/shared_layout.h"
+}
+
 #include <jni.h>
 
 #include <cerrno>
 #include <cstring>
+#include <fcntl.h>
 #include <memory>
 #include <mutex>
 #include <string>
+#include <sys/mman.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -224,6 +230,83 @@ Java_com_varcain_vsthost_NativeBridge_nativeKillInstaller(
     LOGW("nativeKillInstaller: terminating pid=%d", pid);
     g_installer->killHard();
     g_installer.reset();
+}
+
+// Read the health/diagnostics fields out of a plugin's VstpocShared mmap
+// file WITHOUT going through the live SharedRing (which is owned by the
+// :app-side WineVstPlugin and not reachable from here). The shm file at
+// <filesDir>/tmp/vst_shm_v<uuid>.dat persists after the wine subprocess
+// exits, so this works both live (running plugin) and post-mortem
+// (crashed/closed plugin) — the debugging-infra use case.
+//
+// Returns a long[] of the health fields in a fixed order, or null if the
+// file can't be read. The Kotlin side (NativeBridge.getPluginHealth)
+// unpacks it into a PluginHealth data class. Returning long[] avoids
+// having to construct a Java object across JNI for what is just a bag of
+// scalars.
+//
+// Index layout (keep in sync with NativeBridge.PluginHealth):
+//   [0] diagnostic_layout_v   (0 = legacy guest, fields below meaningless)
+//   [1] dxvk_init_status
+//   [2] d3d11_device_status
+//   [3] render_api_used
+//   [4] last_memory_alloc_failed_size
+//   [5] last_memory_alloc_failed_types
+//   [6] last_memory_alloc_failed_count
+//   [7] paint_request_count
+//   [8] wm_paint_count
+//   [9] veh_patterns_hit_bitmask
+//   [10] wm_user_storm_per_second
+//   [11] load_status     (existing field, handy alongside)
+//   [12] guest_ready     (existing field)
+JNIEXPORT jlongArray JNICALL
+Java_com_varcain_vsthost_NativeBridge_nativeReadPluginHealth(
+    JNIEnv* env, jobject /*thiz*/, jstring jShmPath) {
+    if (!jShmPath) return nullptr;
+    const char* c = env->GetStringUTFChars(jShmPath, nullptr);
+    if (!c) return nullptr;
+    std::string path(c);
+    env->ReleaseStringUTFChars(jShmPath, c);
+
+    int fd = ::open(path.c_str(), O_RDONLY);
+    if (fd < 0) {
+        // Not an error worth logging loudly — a never-activated plugin
+        // simply has no shm file yet.
+        return nullptr;
+    }
+    // mmap read-only. The struct is large (audio rings); we only need the
+    // trailing health fields, but mapping the whole thing is simplest and
+    // the kernel only faults in the pages we touch.
+    void* p = ::mmap(nullptr, sizeof(VstpocShared), PROT_READ, MAP_SHARED, fd, 0);
+    ::close(fd);
+    if (p == MAP_FAILED) {
+        LOGW("nativeReadPluginHealth: mmap(%s) failed: %s",
+             path.c_str(), std::strerror(errno));
+        return nullptr;
+    }
+    const VstpocShared* s = static_cast<const VstpocShared*>(p);
+
+    jlong vals[13];
+    vals[0]  = static_cast<jlong>(s->diagnostic_layout_v);
+    vals[1]  = static_cast<jlong>(s->dxvk_init_status);
+    vals[2]  = static_cast<jlong>(s->d3d11_device_status);
+    vals[3]  = static_cast<jlong>(s->render_api_used);
+    vals[4]  = static_cast<jlong>(s->last_memory_alloc_failed_size);
+    vals[5]  = static_cast<jlong>(s->last_memory_alloc_failed_types);
+    vals[6]  = static_cast<jlong>(s->last_memory_alloc_failed_count);
+    vals[7]  = static_cast<jlong>(s->paint_request_count);
+    vals[8]  = static_cast<jlong>(s->wm_paint_count);
+    vals[9]  = static_cast<jlong>(s->veh_patterns_hit_bitmask);
+    vals[10] = static_cast<jlong>(s->wm_user_storm_per_second);
+    vals[11] = static_cast<jlong>(s->load_status);
+    vals[12] = static_cast<jlong>(s->guest_ready);
+
+    ::munmap(p, sizeof(VstpocShared));
+
+    jlongArray arr = env->NewLongArray(13);
+    if (!arr) return nullptr;
+    env->SetLongArrayRegion(arr, 0, 13, vals);
+    return arr;
 }
 
 }  // extern "C"

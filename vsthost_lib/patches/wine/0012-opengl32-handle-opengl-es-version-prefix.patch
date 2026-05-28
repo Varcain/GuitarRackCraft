@@ -1,0 +1,35 @@
+From: Kamil Lulko <limakzagan@gmail.com>
+Subject: opengl32: handle Adreno-style "OpenGL ES X.Y" version strings
+
+Wine's parse_gl_version assumes the version string starts with the major
+version digit ("3.2.0" desktop GL) and ERRs out otherwise. Android's
+Adreno Vulkan driver, when wine probes the GL string via wined3d/winex11
+fallback, returns:
+
+    "OpenGL ES 3.2 V@0762.41 (GIT@…) (Date:09/19/25)"
+
+— the leading "OpenGL ES " prefix makes atoi() return 0 and wine logs:
+
+    err:opengl:parse_gl_version Invalid OpenGL major version 0.
+    err:opengl:parse_gl_version Invalid OpenGL version string …
+
+Skip a leading non-digit prefix so the parser lands on the actual version
+digits regardless of vendor prefix. Affects D3D11→wined3d→OpenGL fallback
+path for plugins that try GL when DXVK D3D11 device creation fails
+(observed with IK Multimedia AmpliTube 5 on Android + Adreno).
+
+diff --git a/dlls/opengl32/unix_wgl.c b/dlls/opengl32/unix_wgl.c
+--- a/dlls/opengl32/unix_wgl.c
++++ b/dlls/opengl32/unix_wgl.c
+@@ -445,6 +445,11 @@
+ static const char *parse_gl_version( const char *gl_version, int *major, int *minor )
+ {
+     const char *ptr = gl_version;
++    /* Skip a leading non-digit prefix (e.g. "OpenGL ES " on Adreno) so the
++     * parser lands on the actual version digits. Desktop GL strings start
++     * with the major version directly; mobile/ES drivers prepend their
++     * name. */
++    while (*ptr && !isdigit( *ptr )) ++ptr;
+
+     *major = atoi( ptr );
+     if (*major <= 0)
