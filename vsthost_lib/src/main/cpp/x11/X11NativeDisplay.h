@@ -135,6 +135,14 @@ public:
      *  once attachSurface() is also called. */
     bool startServer(int placeholderW, int placeholderH);
 
+    /** TCP port the X11 server actually bound on. Normally
+     *  kX11BasePort + displayNumber (6001 for display 1) but if that port
+     *  was held by an orphan, serverLoop steps up to 6101, 6201, ….
+     *  Returns -1 before startServer or if all attempts failed. Callers
+     *  set DISPLAY=127.0.0.1:(port-6000) so wine connects to the new
+     *  listener instead of the orphan's accept backlog. */
+    int getActualPort() const;
+
     /** Set UI scale factor (< 1.0 = smaller plugin rendering = faster). Must be called before plugin connects. */
     void setUIScale(float scale);
 
@@ -165,6 +173,9 @@ void withDisplaySetPluginSize(int displayNumber, int w, int h);
  *  Installer flow sets this to true while the wine wizard runs. */
 void withDisplaySetFramebufferFrozen(int displayNumber, bool frozen);
 void withDisplayStartServer(int displayNumber, int placeholderW, int placeholderH);
+/** Get the actual TCP port the display's X11 server bound on. -1 if not
+ *  started. WineVstPlugin reads this to compute the right DISPLAY env. */
+int withDisplayGetActualPort(int displayNumber);
 /** Returns true and fills w/h if plugin natural size is known; false if not yet set. */
 bool withDisplayGetPluginSize(int displayNumber, int& w, int& h);
 /** Returns true and fills w/h with the actually-rendered extent (0 each if no

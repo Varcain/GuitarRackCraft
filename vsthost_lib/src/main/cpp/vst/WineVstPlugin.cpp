@@ -68,7 +68,6 @@ void WineVstPlugin::activate(float sampleRate, uint32_t bufferSize) {
     cfg.shmPath           = shmPath;
     if (picker_) cfg.pickerShmPath = pickerPath;
     cfg.pluginPaths       = { entry_.dllPath };
-    cfg.displayNumber     = displayNumber_;
     cfg.logSuffix         = "v" + entry_.uuid;
 
     // CRITICAL: bring up the in-process X11 server on this plugin's display
@@ -82,8 +81,17 @@ void WineVstPlugin::activate(float sampleRate, uint32_t bufferSize) {
     // current VST editor; nativeSetX11PluginSize() later tells the server
     // the actual editor size so the SurfaceView letterboxes correctly.
     guitarrackcraft::withDisplayStartServer(displayNumber_, 4096, 2160);
-    LOGI("WineVstPlugin[%s]: X11 server pre-started on display %d",
-         entry_.displayName.c_str(), displayNumber_);
+    // Read the ACTUAL port the X11 server bound on. If a previous wine
+    // subprocess crashed and left an orphan listener on 6001, our server
+    // skips up to 6101/6201/… and reports the higher port. We need to
+    // pass the matching display number to wine so DISPLAY=127.0.0.1:N
+    // points at OUR new listener, not the orphan's stuck accept backlog.
+    int actualPort = guitarrackcraft::withDisplayGetActualPort(displayNumber_);
+    int actualDisplay = (actualPort > 0) ? actualPort - 6000 : displayNumber_;
+    cfg.displayNumber = actualDisplay;
+    LOGI("WineVstPlugin[%s]: X11 server pre-started on display %d "
+         "(requested) → port %d (actual, display %d for wine DISPLAY env)",
+         entry_.displayName.c_str(), displayNumber_, actualPort, actualDisplay);
 
     guest_ = std::make_unique<WineHostProcess>(std::move(cfg));
     if (!guest_->start()) {
@@ -142,6 +150,16 @@ void WineVstPlugin::deactivate() {
     ring_.reset();
     picker_.reset();
     guest_.reset();
+    /* Tear down the X11 server for this plugin so port 6000+N is freed.
+     * Without this, the listening socket leaks: removing the plugin from
+     * the rack leaves the X11NativeDisplay alive in g_displays, its
+     * accept thread still bound to port 6001/6002/…, and the NEXT wine
+     * subprocess that tries to connect lands in the orphan's accept
+     * backlog forever. Symptoms: wine's `x11drv_init: XOpenDisplay...`
+     * hangs, falls back to nodrv_CreateWindow, and the plugin's editor
+     * fails with ERROR_INVALID_WINDOW_HANDLE (1400). Especially visible
+     * after a wine subprocess crashes mid-init (TONEX / AmpliTube). */
+    guitarrackcraft::destroyX11Display(displayNumber_);
     LOGI("WineVstPlugin[%s] deactivated (underruns=%d)",
          entry_.displayName.c_str(), underruns_.load(std::memory_order_relaxed));
 }

@@ -1143,7 +1143,7 @@ $explorerKey
 "Desktop"="vstpoc"
 
 $desktopsKey
-"vstpoc"="800x130"
+"vstpoc"="4096x2160"
 
 """
         userReg.appendText(append)

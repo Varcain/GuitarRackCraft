@@ -14,14 +14,11 @@ detect x86_64 as supported.
 
 The native-machine spoof for pre-Windows-on-ARM installers that read
 IsWow64Process2's native_machine and reject ARM64 is a separate patch
-(see 0010-…-amd64-spoof-iswow64process2.patch).
+(0010-ntdll-spoof-amd64-native-machine-arm64.patch).
 
-diff --git a/server/registry.c b/server/registry.c
 --- a/server/registry.c
 +++ b/server/registry.c
-@@ -1855,8 +1855,18 @@ static void init_supported_machines(void)
- #elif defined(__arm__)
-     if (prefix_type == PREFIX_32BIT) supported_machines[count++] = IMAGE_FILE_MACHINE_ARMNT;
+@@ -1857,7 +1857,16 @@
  #elif defined(__aarch64__)
      if (prefix_type == PREFIX_64BIT)
      {

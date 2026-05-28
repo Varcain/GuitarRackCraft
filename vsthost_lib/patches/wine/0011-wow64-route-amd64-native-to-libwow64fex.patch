@@ -1,0 +1,44 @@
+From: Kamil Lulko <limakzagan@gmail.com>
+Subject: wow64: route AMD64-native (spoofed) to libwow64fex.dll instead of wow64cpu.dll
+
+Companion to patch 0010 (which spoofs AMD64 as the user-visible native
+machine via SystemSupportedProcessorArchitectures replies). The wow64.dll
+itself reads `native_machine` via `RtlWow64GetProcessMachines`, so after
+patch 0010 lands, wow64.dll sees `native_machine = AMD64` even though we're
+physically on ARM64.
+
+The existing code (`dlls/wow64/syscall.c:750`) routes I386 wow64 boot to
+`libwow64fex.dll` ONLY when `native_machine == IMAGE_FILE_MACHINE_ARM64`,
+falling back to `wow64cpu.dll` otherwise. With the spoof active,
+native_machine is AMD64 and the boot path lands on `wow64cpu.dll`, which
+we don't build for aarch64 (it's in `aarch64_DISABLED_SUBDIRS` in the
+Makefile). The 32-bit wine startup then dies with STATUS_DLL_NOT_FOUND at
+wow64 init — observed with IK TONEX 1.12 (Inno Setup 6.4.2, 32-bit
+installer wrapper).
+
+Add the AMD64 branch so both the real native (ARM64) and the spoofed
+native (AMD64) route to libwow64fex.dll. ARM64 stays as the primary because
+that's still the actual host CPU; AMD64 is the user-facing lie.
+
+diff --git a/dlls/wow64/syscall.c b/dlls/wow64/syscall.c
+--- a/dlls/wow64/syscall.c
++++ b/dlls/wow64/syscall.c
+@@ -747,8 +747,16 @@
+         RtlInitUnicodeString( &nameW, L"\\Registry\\Machine\\Software\\Microsoft\\Wow64\\x86" );
+         /* Default the ARM64 host's x86-emulation DLL to FEX-Emu's
+          * libwow64fex.dll instead of Microsoft's xtajit.dll (which we
+-         * don't ship). Matches patch 003 for the ARM64EC / x86_64 case. */
+-        ret = (native_machine == IMAGE_FILE_MACHINE_ARM64 ? L"libwow64fex.dll" : L"wow64cpu.dll");
++         * don't ship). Matches patch 003 for the ARM64EC / x86_64 case.
++         *
++         * Accept BOTH ARM64 (real native) and AMD64 (spoofed native via
++         * patch 0010) — both map to the same FEX DLL on our build.
++         * Without the AMD64 branch, the post-spoof path lands on
++         * wow64cpu.dll which we don't ship for aarch64 and the 32-bit
++         * process dies with STATUS_DLL_NOT_FOUND at wow64 init. */
++        ret = (native_machine == IMAGE_FILE_MACHINE_ARM64 ||
++               native_machine == IMAGE_FILE_MACHINE_AMD64
++               ? L"libwow64fex.dll" : L"wow64cpu.dll");
+         break;
+     case IMAGE_FILE_MACHINE_ARMNT:
+         RtlInitUnicodeString( &nameW, L"\\Registry\\Machine\\Software\\Microsoft\\Wow64\\arm" );

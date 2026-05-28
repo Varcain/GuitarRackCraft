@@ -125,6 +125,13 @@ struct X11NativeDisplay::Impl {
     // Framebuffer now stores X11 wire format (BGRA) directly — no separate shadow needed
     std::vector<uint32_t> renderBuffer; // Staging buffer for render thread (triple buffering)
     int serverFd = -1;
+    /* The actual TCP port the listener got bound on. Normally equals
+     * kX11BasePort + displayNumber_ (6001 for display 1, 6002 for display 2,
+     * …) but if that port was held by an orphan, serverLoop tries 6101,
+     * 6201, … until one is free. WineHostProcess reads this via
+     * X11NativeDisplay::getActualPort() so DISPLAY=127.0.0.1:N matches the
+     * port the new wine subprocess will actually be talking to. */
+    int actualPort_ = -1;
     // clientFd is per-thread: each accepted X connection runs in its own
     // std::thread; that thread's clientFd is its own socket fd. References
     // from outside the connection thread (e.g. teardown from the UI thread)
@@ -1316,22 +1323,56 @@ struct X11NativeDisplay::Impl {
         bool useUnix = false;
 
         {
-            int port = kX11BasePort + displayNumber_;
-            serverFd = socket(AF_INET, SOCK_STREAM, 0);
-            if (serverFd < 0) {
-                LOGE("socket failed: %s", strerror(errno));
-                return;
-            }
-            int one = 1;
-            setsockopt(serverFd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
-            struct sockaddr_in addr = {};
-            addr.sin_family = AF_INET;
-            addr.sin_port = htons(static_cast<uint16_t>(port));
-            inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr);
-            if (bind(serverFd, reinterpret_cast<struct sockaddr*>(&addr), sizeof(addr)) < 0) {
-                LOGE("bind 127.0.0.1:%d failed: %s", port, strerror(errno));
+            /* Try bind on basePort + N*100 increments. If port 6001 is held
+             * by an orphan listener from a previous wine session (e.g. a
+             * TONEX/AmpliTube wine subprocess that crashed mid-init and left
+             * a stuck X11NativeDisplay behind), step up to 6101, 6201, …
+             * The first port we successfully bind becomes the actual port.
+             * actualPort_ is then exposed to WineHostProcess so DISPLAY=:N
+             * matches the bound port, not the original requested port.
+             * This is the "user shouldn't have to reboot the device" fix. */
+            int basePort = kX11BasePort + displayNumber_;
+            bool bound = false;
+            for (int attempt = 0; attempt < 100 && running; attempt++) {
+                int port = basePort + attempt * 100;
+                serverFd = socket(AF_INET, SOCK_STREAM, 0);
+                if (serverFd < 0) {
+                    LOGE("socket failed: %s", strerror(errno));
+                    return;
+                }
+                int one = 1;
+                setsockopt(serverFd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
+                /* DO NOT set SO_REUSEPORT. With SO_REUSEPORT the kernel
+                 * lets us bind to a port already held by an orphan listener
+                 * AND THEN load-balances incoming connections between us
+                 * and the orphan. Wine's XOpenDisplay would land in the
+                 * orphan's stuck accept backlog half the time and hang.
+                 * Without SO_REUSEPORT, our bind cleanly fails with
+                 * EADDRINUSE when an orphan is present, and the skip-up
+                 * logic below moves on to 6101/6201/… where we get a
+                 * private listener. */
+                struct sockaddr_in addr = {};
+                addr.sin_family = AF_INET;
+                addr.sin_port = htons(static_cast<uint16_t>(port));
+                inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr);
+                if (bind(serverFd, reinterpret_cast<struct sockaddr*>(&addr),
+                         sizeof(addr)) == 0) {
+                    actualPort_ = port;
+                    bound = true;
+                    if (attempt > 0) {
+                        LOGI("X11 server bound 127.0.0.1:%d on attempt %d "
+                             "(skipped %d orphan(s))",
+                             port, attempt, attempt);
+                    }
+                    break;
+                }
+                LOGW("bind 127.0.0.1:%d failed: %s (will try next)",
+                     port, strerror(errno));
                 close(serverFd);
                 serverFd = -1;
+            }
+            if (!bound) {
+                LOGE("X11 server: exhausted bind retries; giving up");
                 return;
             }
             // Bigger backlog: wine spawns ~10 processes that connect roughly
@@ -1344,7 +1385,8 @@ struct X11NativeDisplay::Impl {
                 serverFd = -1;
                 return;
             }
-            LOGI("X11 server listening on 127.0.0.1:%d (TCP fallback)", kX11BasePort + displayNumber_);
+            LOGI("X11 server listening on 127.0.0.1:%d (TCP fallback)",
+                 actualPort_);
         }
         listening_ = true;
         useUnixSocket_ = useUnix;
@@ -4511,6 +4553,22 @@ X11NativeDisplay::X11NativeDisplay(int displayNumber)
 
 
 X11NativeDisplay::~X11NativeDisplay() {
+    /* CRITICAL: signal teardown FIRST so the accept thread closes serverFd
+     * and unblocks any per-client recv loops. Without this, the serverFd
+     * (bound to port 6001/6002/…) leaks across plugin re-adds and the
+     * NEXT wine subprocess's XOpenDisplay lands in the orphan's accept
+     * backlog forever — the symptom the user reported as "editor doesn't
+     * render after a TONEX/AmpliTube failed launch". signalDetach() drops
+     * `running` and shuts down serverFd; serverLoop sees accept() return
+     * < 0, breaks out of its loop, and closes serverFd at line ~4413. */
+    signalDetach();
+    /* Wait briefly for the server thread to wind down so port 6001 is
+     * released before impl_ gets destroyed. Bounded so a stuck thread
+     * can't block us forever — if it hasn't drained in 2s, we proceed
+     * to the leak path below. */
+    for (int i = 0; i < 200 && impl_->listening_.load(); ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
     detachSurface();
     /* If detach was deferred (plugin creation in progress), we must not destroy the Impl
      * yet because the render thread may still be using bufferMutex. Leak the Impl to
@@ -4529,6 +4587,10 @@ X11NativeDisplay::~X11NativeDisplay() {
  * SurfaceView only AFTER the plugin reports its real editor size, so the
  * SurfaceView aspect can be chosen correctly from the start (changing it
  * later crashes the Adreno EGL driver). */
+int X11NativeDisplay::getActualPort() const {
+    return impl_->actualPort_;
+}
+
 bool X11NativeDisplay::startServer(int placeholderW, int placeholderH) {
     if (impl_->running) {
         LOGI("X11 display %d: startServer skipped (already running)", displayNumber_);
@@ -5204,6 +5266,12 @@ X11NativeDisplay* getX11Display(int displayNumber) {
 void destroyX11Display(int displayNumber) {
     std::lock_guard<std::mutex> lock(g_displayMutex);
     g_displays.erase(displayNumber);
+}
+
+int withDisplayGetActualPort(int displayNumber) {
+    std::lock_guard<std::mutex> lock(g_displayMutex);
+    auto it = g_displays.find(displayNumber);
+    return (it != g_displays.end()) ? it->second->getActualPort() : -1;
 }
 
 void withDisplayRequestFrame(int displayNumber) {
