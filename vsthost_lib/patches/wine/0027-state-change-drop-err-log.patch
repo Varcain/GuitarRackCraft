@@ -1,0 +1,26 @@
+--- a/dlls/winex11.drv/window.c
++++ b/dlls/winex11.drv/window.c
+@@ -1844,6 +1844,12 @@
+     if (serial < *expect_serial) reason = "old ";
+     if (reason)
+     {
++        /* vstpoc-state TEMP: a desired-state confirmation was DROPPED. On 11.9's
++         * serial-strict state machine this stalls window readiness (editor
++         * "Loading…"). ERR so it lands in err+all without warn+x11drv's timing-
++         * perturbing flood. "old "=our X-server event serial < the request serial;
++         * "transient "=benign WM transition skip. Names the stuck state. */
++        if (strcmp( reason, "transient " )) ERR( "vstpoc-state: DROP-confirm %s%s%s%s\n", prefix, reason, received, expected );
+         WARN( "Ignoring %s%s%s%s\n", prefix, reason, received, expected );
+         memcpy( current, value, size );
+         return FALSE;
+@@ -1854,6 +1860,10 @@
+     if (!reason) TRACE( "%s%s%s\n", prefix, received, expected );
+     else
+     {
++        /* vstpoc-state TEMP: value MISMATCH (serial ok, but our X server echoed a
++         * different value than wine requested — e.g. a config rect clipped to the
++         * virtual screen). Forces desired=pending=value, can prevent convergence. */
++        ERR( "vstpoc-state: %s-value %s%s%s%s\n", reason, prefix, reason, received, expected );
+         WARN( "%s%s%s%s\n", prefix, reason, received, expected );
+         /* avoid requesting the same state again */
+         memcpy( desired, value, size );

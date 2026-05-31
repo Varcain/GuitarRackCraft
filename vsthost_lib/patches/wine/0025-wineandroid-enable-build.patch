@@ -1,0 +1,19 @@
+diff --git a/dlls/wineandroid.drv/Makefile.in b/dlls/wineandroid.drv/Makefile.in
+index 9a8be0ef90a..b96d9b596cc 100644
+--- a/dlls/wineandroid.drv/Makefile.in
++++ b/dlls/wineandroid.drv/Makefile.in
+@@ -4,13 +4,9 @@ IMPORTS   = ntoskrnl
+ UNIX_LIBS = -lwin32u $(PTHREAD_LIBS)
+ 
+ SOURCES = \
+-	build.gradle.in \
+ 	device.c \
+ 	dllmain.c \
+ 	init.c \
+ 	keyboard.c \
+ 	opengl.c \
+-	window.c \
+-	wine.svg
+-
+-EXTRA_TARGETS = wine-debug.apk
++	window.c

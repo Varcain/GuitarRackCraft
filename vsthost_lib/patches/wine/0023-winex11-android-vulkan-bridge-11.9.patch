@@ -1,0 +1,77 @@
+diff --git a/dlls/winex11.drv/vulkan.c b/dlls/winex11.drv/vulkan.c
+index e11a989f02d..d7836dc2548 100644
+--- a/dlls/winex11.drv/vulkan.c
++++ b/dlls/winex11.drv/vulkan.c
+@@ -58,6 +58,24 @@ static VkResult X11DRV_vulkan_surface_create( HWND hwnd, const struct vulkan_ins
+     TRACE( "%p %p %p %p\n", hwnd, instance, handle, client );
+ 
+     if (!(info.window = x11drv_client_surface_create( hwnd, 0, client ))) return VK_ERROR_OUT_OF_HOST_MEMORY;
++
++    /* vstpoc 2026-05-29 (wine 11.9 Android Vulkan bridge): Android's
++     * libvulkan.so does not export the Xlib surface entry points, so
++     * instance->p_vkCreateXlibSurfaceKHR is NULL (win32u/vulkan.c enables
++     * VK_KHR_android_surface on the host in place of VK_KHR_xlib_surface so
++     * vkCreateInstance succeeds). We have no ANativeWindow to back a real
++     * android surface, so return a stub VkSurfaceKHR: D3D11CreateDevice needs
++     * no surface, so DXVK finishes device init and the plugin stops crashing
++     * on a NULL device. Swapchain presentation is handled by the offscreen
++     * render + X-server blit path, not a host Vulkan swapchain. Mirrors
++     * archived patch 008-winex11-vulkan-android (the 10.10 stub). */
++    if (!instance->p_vkCreateXlibSurfaceKHR)
++    {
++        *handle = (VkSurfaceKHR)(uintptr_t)*client;
++        WARN("Android-Vulkan: returning stub VkSurfaceKHR (no host xlib/android surface entry point)\n");
++        return VK_SUCCESS;
++    }
++
+     if (instance->p_vkCreateXlibSurfaceKHR( instance->host.instance, &info, NULL /* allocator */, handle ))
+     {
+         ERR("Failed to create Xlib surface\n");
+@@ -73,14 +91,35 @@ static VkBool32 X11DRV_get_physical_device_presentation_support( struct vulkan_p
+ {
+     struct vulkan_instance *instance = physical_device->instance;
+     TRACE( "%p %u\n", physical_device, index );
++    /* vstpoc Android: no Xlib presentation-support entry point in
++     * libvulkan.so. Claim support so DXVK proceeds with device creation;
++     * actual presentation goes through the headless surface + X-server blit. */
++    if (!instance->p_vkGetPhysicalDeviceXlibPresentationSupportKHR)
++        return VK_TRUE;
+     return instance->p_vkGetPhysicalDeviceXlibPresentationSupportKHR( physical_device->host.physical_device, index, gdi_display,
+                                                                       default_visual.visual->visualid );
+ }
+ 
+ static void X11DRV_map_instance_extensions( struct vulkan_instance_extensions *extensions )
+ {
++    /* Keep the upstream win32<->xlib mapping so the client (DXVK) sees
++     * VK_KHR_win32_surface as supported. win32u/vulkan.c then rewrites the
++     * host-side "VK_KHR_xlib_surface" string to "VK_KHR_android_surface"
++     * (search "vstpoc-android-surface") because Android's libvulkan.so has
++     * android_surface, not xlib_surface — without that rewrite the host
++     * vkCreateInstance fails with "Failed to create Vulkan 1.1 instance" and
++     * DXVK plugins get a NULL D3D device and crash. See archived patch
++     * 008-winex11-vulkan-android for the 10.10 original. */
+     if (extensions->has_VK_KHR_win32_surface) extensions->has_VK_KHR_xlib_surface = 1;
+-    if (extensions->has_VK_KHR_xlib_surface) extensions->has_VK_KHR_win32_surface = 1;
++    /* vstpoc 2026-05-29: advertise VK_KHR_win32_surface to the client
++     * UNCONDITIONALLY. Upstream only sets it when the host has xlib_surface,
++     * but Android's libvulkan.so has NO xlib_surface — so DXVK would see
++     * win32_surface as unsupported, enable it anyway, and win32u would reject
++     * it -> "Failed to create Vulkan 1.1 instance" -> NULL D3D device -> crash.
++     * Safe to always claim it: X11DRV_vulkan_surface_create returns a stub
++     * surface and win32u rewrites the host string to VK_KHR_android_surface
++     * (which Android always has). THIS is the line that gated DXVK on 11.9. */
++    extensions->has_VK_KHR_win32_surface = 1;
+ }
+ 
+ static void X11DRV_map_device_extensions( struct vulkan_device_extensions *extensions )
+@@ -109,6 +148,10 @@ UINT X11DRV_VulkanInit( UINT version, void *vulkan_handle, const struct vulkan_d
+         return STATUS_INVALID_PARAMETER;
+     }
+ 
++    /* vstpoc load-confirmation: proves THIS rebuilt winex11 (with the Android
++     * Vulkan bridge) is the one actually loaded, not a stale cached copy. */
++    ERR( "vstpoc: winex11 Android Vulkan bridge ACTIVE (android_surface + stub)\n" );
++
+     *driver_funcs = &x11drv_vulkan_driver_funcs;
+     return STATUS_SUCCESS;
+ }

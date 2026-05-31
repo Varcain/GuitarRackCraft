@@ -1,0 +1,27 @@
+diff --git a/dlls/win32u/vulkan.c b/dlls/win32u/vulkan.c
+index bf8f6f1daba..66c787db1f2 100644
+--- a/dlls/win32u/vulkan.c
++++ b/dlls/win32u/vulkan.c
+@@ -461,6 +461,22 @@ static VkResult convert_instance_create_info( struct mempool *pool, VkInstanceCr
+     ALL_VK_INSTANCE_EXTS
+ #undef USE_VK_EXT
+ 
++    /* vstpoc-android-surface 2026-05-29 (wine 11.9 Android Vulkan bridge):
++     * the winex11 driver maps win32_surface -> xlib_surface, but Android's
++     * libvulkan.so has VK_KHR_android_surface, NOT VK_KHR_xlib_surface.
++     * Rewrite the host-side string so vkCreateInstance requests an extension
++     * Android actually provides; otherwise it fails ("Failed to create Vulkan
++     * 1.1 instance") and DXVK plugins (TH-U, AmpliTube, ...) get a NULL D3D
++     * device and crash. winex11 X11DRV_vulkan_surface_create then returns a
++     * stub surface (we have no ANativeWindow); presentation goes via the
++     * offscreen-render + X-server blit path. */
++    for (uint32_t vstpoc_i = 0; vstpoc_i < count; vstpoc_i++)
++        if (!strcmp( extensions[vstpoc_i], "VK_KHR_xlib_surface" ))
++        {
++            extensions[vstpoc_i] = "VK_KHR_android_surface";
++            ERR( "vstpoc-android-surface: rewrote host VK_KHR_xlib_surface -> VK_KHR_android_surface\n" );
++        }
++
+     TRACE( "Enabling %u host instance extensions\n", count );
+     for (const char **extension = extensions, **end = extension + count; extension < end; extension++)
+         TRACE( "  - %s\n", debugstr_a(*extension) );

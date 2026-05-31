@@ -1,0 +1,139 @@
+diff --git a/server/queue.c b/server/queue.c
+index abae70fc91b..c90b9912695 100644
+--- a/server/queue.c
++++ b/server/queue.c
+@@ -74,6 +74,9 @@ struct message_result
+     void                  *data;          /* message reply data */
+     unsigned int           data_size;     /* size of message reply data */
+     struct timeout_user   *timeout;       /* result timeout */
++    struct timeout_user   *cycle_timeout; /* vstpoc 025: JUCE-7 cycle detection timer */
++    unsigned int           cycle_orig_msg; /* vstpoc 025: original msg type for log */
++    int                    cycle_wake_attempted; /* vstpoc 025: phase 1 wake done */
+ };
+ 
+ struct message
+@@ -932,10 +935,16 @@ static int merge_message( struct thread_input *input, const struct message *msg
+     return 0;
+ }
+ 
++/* vstpoc patch 025: forward decls (definitions are further down the file). */
++static int vstpoc_cycle_detect_disabled( void );
++static void vstpoc_cycle_timeout( void *private );
++#define VSTPOC_CYCLE_THRESHOLD ((timeout_t)500 * 10000)  /* 500ms in 100ns units */
++
+ /* free a result structure */
+ static void free_result( struct message_result *result )
+ {
+     if (result->timeout) remove_timeout_user( result->timeout );
++    if (result->cycle_timeout) remove_timeout_user( result->cycle_timeout );
+     free( result->data );
+     if (result->callback_msg) free_message( result->callback_msg );
+     if (result->hardware_msg) free_message( result->hardware_msg );
+@@ -964,6 +973,11 @@ static void store_message_result( struct message_result *res, lparam_t result, u
+         remove_timeout_user( res->timeout );
+         res->timeout = NULL;
+     }
++    if (res->cycle_timeout)
++    {
++        remove_timeout_user( res->cycle_timeout );
++        res->cycle_timeout = NULL;
++    }
+ 
+     if (res->hardware_msg)
+     {
+@@ -1067,6 +1081,9 @@ static struct message_result *alloc_message_result( struct msg_queue *send_queue
+         result->data         = NULL;
+         result->data_size    = 0;
+         result->timeout      = NULL;
++        result->cycle_timeout = NULL;
++        result->cycle_orig_msg = 0;
++        result->cycle_wake_attempted = 0;
+         result->hardware_msg = NULL;
+         result->desktop      = NULL;
+         result->callback_msg = NULL;
+@@ -1135,9 +1152,27 @@ static void receive_message( struct msg_queue *queue, struct message *msg,
+     /* put the result on the receiver result stack */
+     if (result)
+     {
++        unsigned int orig_msg = msg->msg;
+         result->msg = NULL;
+         result->recv_next  = queue->recv_result;
+         queue->recv_result = result;
++        /* vstpoc patch 025: arm cycle-detect timer ONLY for focus-class
++         * cross-thread sends (the JUCE-7 popup-close deadlock vector).
++         * Filter: WM_ACTIVATE 0x06, WM_SETFOCUS 0x07, WM_KILLFOCUS 0x08,
++         * WM_ACTIVATEAPP 0x1C, WM_NCACTIVATE 0x86. For other sends a synth
++         * 0-reply leaves JUCE/TH-U inconsistent (crashes/hangs), so we don't
++         * touch them. See vstpoc_cycle_timeout for the two-phase logic. */
++        int is_focus_msg = (orig_msg == 0x0007 || orig_msg == 0x0008 ||
++                            orig_msg == 0x001C || orig_msg == 0x0086 ||
++                            orig_msg == 0x0006);
++        if (is_focus_msg &&
++            !result->timeout && !result->cycle_timeout &&
++            !vstpoc_cycle_detect_disabled())
++        {
++            result->cycle_orig_msg = orig_msg;
++            result->cycle_timeout = add_timeout_user(
++                VSTPOC_CYCLE_THRESHOLD, vstpoc_cycle_timeout, result );
++        }
+     }
+     free( msg );
+     if (list_empty( &queue->msg_list[SEND_MESSAGE] )) clear_queue_bits( queue, QS_SENDMESSAGE );
+@@ -1287,6 +1322,57 @@ static int is_queue_hung( struct msg_queue *queue )
+     return get_queue_status( queue ) && monotonic_time - queue->shared->access_time > 5 * TICKS_PER_SEC;
+ }
+ 
++/* vstpoc patch 025: detect JUCE-7 popup-close cross-thread SendMessage cycle
++ * and break it by synthesizing a 0-reply once the receiver has held the
++ * focus-class message past the threshold without replying. Two-phase: first
++ * timeout wakes the receiver queue (covers "just slow" cases, common on FEX);
++ * second timeout synthesizes the 0-reply (covers truly stuck cases).
++ * Gated by env var WINE_VSTPOC_NO_CYCLE_DETECT for rollback. */
++static int vstpoc_cycle_detect_disabled( void )
++{
++    static int checked = 0;
++    static int disabled = 0;
++    if (!checked)
++    {
++        const char *e = getenv("WINE_VSTPOC_NO_CYCLE_DETECT");
++        disabled = (e && *e && *e != '0');
++        checked = 1;
++    }
++    return disabled;
++}
++
++static void vstpoc_cycle_timeout( void *private )
++{
++    struct message_result *result = private;
++
++    result->cycle_timeout = NULL;
++    if (result->replied) return;  /* race: real reply landed first */
++
++    /* Phase 1 (first fire): wake the receiver queue and re-arm — many JUCE
++     * deadlocks are "receiver hasn't reached a message pump yet"; waking
++     * QS_SENDMESSAGE forces MsgWaitForMultipleObjects to return so the
++     * message drains and the receiver replies for real. */
++    if (!result->cycle_wake_attempted && result->receiver)
++    {
++        result->cycle_wake_attempted = 1;
++        set_queue_bits( result->receiver, QS_SENDMESSAGE );
++        fprintf( stderr, "vstpoc cycle: threshold — phase 1 wake "
++                 "result=%p sender=%p receiver=%p msg=0x%04x\n",
++                 result, result->sender, result->receiver,
++                 result->cycle_orig_msg );
++        result->cycle_timeout = add_timeout_user(
++            VSTPOC_CYCLE_THRESHOLD, vstpoc_cycle_timeout, result );
++        return;
++    }
++
++    /* Phase 2 (second fire): receiver still stuck → synthesize 0-reply so
++     * the blocked sender returns, resumes its own pump, and the cycle breaks. */
++    fprintf( stderr, "vstpoc cycle: threshold — synthesizing 0-reply "
++             "result=%p sender=%p msg=0x%04x (phase 2)\n",
++             result, result->sender, result->cycle_orig_msg );
++    store_message_result( result, 0, 0 );
++}
++
+ static struct object *msg_queue_get_sync( struct object *obj )
+ {
+     struct msg_queue *queue = (struct msg_queue *)obj;

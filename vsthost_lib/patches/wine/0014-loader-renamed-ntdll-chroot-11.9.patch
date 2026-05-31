@@ -1,0 +1,107 @@
+From: Kamil Lulko <limakzagan@gmail.com>
+Subject: loader+server: renamed-ntdll + chroot dll_dir/nls env overrides for 11.9
+
+Ports the load-bearing infrastructure hunks from patch 0001 (which does
+not apply to 11.9) for the Android renamed-libwine_NNNN.so + chroot
+layout:
+  - loader/main.c: WINELOADER_NTDLL lets the wine loader find the
+    renamed ntdll.so (11.9 dropped the original mechanism).
+  - dlls/ntdll/unix/loader.c: WINEDLLDIR/WINEDATADIR/WINEBINDIR/WINELOADER
+    override the dladdr-derived paths.
+  - server/unicode.c: WINEDATADIR override in get_nls_dir so wineserver
+    finds l_intl.nls in <wineRoot>/share/wine/nls (else: "failed to load
+    l_intl.nls").
+
+diff --git a/dlls/ntdll/unix/loader.c b/dlls/ntdll/unix/loader.c
+index c1e6b588dcb..3ccc6dbc8c9 100644
+--- a/dlls/ntdll/unix/loader.c
++++ b/dlls/ntdll/unix/loader.c
+@@ -402,6 +402,26 @@ static void init_paths(void)
+         wineloader = build_path( ntdll_dir, "wine" );
+     }
+ 
++    /* Android renamed-lib + chroot override (ported from patch 0001 to
++     * 11.9). The wine binaries live in nativeLibraryDir under renamed
++     * libwine_NNNN.so names, and our wine root is laid out by WineSetup at
++     * <filesDir>/wine. dladdr/realpath above resolves to the renamed .so
++     * which doesn't yield the right dll_dir/data_dir/bin_dir, so let the
++     * launcher's env vars override. dll_dir is consulted DIRECTLY by
++     * load_ntdll / load_apiset_dll / load_wow64_ntdll (they hardcode
++     * `<dll_dir>/<pe_dir>/<name>.dll`), so WINEDLLDIR must point at the
++     * aarch64-windows dir. WINELOADER/WINEDATADIR/WINEBINDIR fix the rest. */
++    {
++        const char *env_loader  = getenv( "WINELOADER" );
++        const char *env_datadir = getenv( "WINEDATADIR" );
++        const char *env_bindir  = getenv( "WINEBINDIR" );
++        const char *env_dlldir  = getenv( "WINEDLLDIR" );
++        if (env_loader  && *env_loader)  wineloader = strdup( env_loader );
++        if (env_datadir && *env_datadir) data_dir   = strdup( env_datadir );
++        if (env_bindir  && *env_bindir)  bin_dir    = strdup( env_bindir );
++        if (env_dlldir  && *env_dlldir)  dll_dir    = strdup( env_dlldir );
++    }
++
+     set_dll_path();
+     set_system_dll_path();
+     set_home_dir();
+diff --git a/loader/main.c b/loader/main.c
+index f8b113f3136..0b2432d0938 100644
+--- a/loader/main.c
++++ b/loader/main.c
+@@ -177,11 +177,28 @@ int main( int argc, char *argv[] )
+ 
+     init_reserved_areas();
+ 
++    /* WINELOADER_NTDLL: explicit absolute path to ntdll.so. Required for
++     * the Android Bionic case where the wine binary lives in
++     * nativeLibraryDir under a renamed `libwine_NNNN.so` filename (Android
++     * W^X requires exec-allowed files there, following lib*.so naming).
++     * Wine's default search ("ntdll.so" next to the binary) can't see the
++     * real file because it's renamed too. The launcher sets
++     * WINELOADER_NTDLL to the renamed-but-symlinked location. (Ported from
++     * patch 0001 to wine 11.9, which dropped the original mechanism.) */
++    {
++        const char *override = getenv( "WINELOADER_NTDLL" );
++        if (override && *override && (handle = dlopen( override, RTLD_NOW )))
++            goto found;
++    }
++
+     if ((handle = try_dlopen( get_self_exe() )) ||
+         (handle = try_dlopen( argv[0] )))
+     {
+-        void (*init_func)(int, char **) = dlsym( handle, "__wine_main" );
+-        if (init_func) init_func( argc, argv );
++found:
++        {
++            void (*init_func)(int, char **) = dlsym( handle, "__wine_main" );
++            if (init_func) init_func( argc, argv );
++        }
+         fprintf( stderr, "wine: __wine_main function not found in ntdll.so\n" );
+         exit(1);
+     }
+diff --git a/server/unicode.c b/server/unicode.c
+index bb39b55e50c..1786dfbf99d 100644
+--- a/server/unicode.c
++++ b/server/unicode.c
+@@ -279,6 +279,22 @@ static char *get_nls_dir(void)
+ {
+     char *p, *dir, *ret;
+ 
++    /* Android Bionic case (ported from patch 0001 to 11.9): wineserver's
++     * path derivation walks /proc/self/exe realpath, which resolves to
++     * nativeLibraryDir (renamed libwine_NNNN.so), not our wine root. Let
++     * WINEDATADIR override so the launcher points us at the real
++     * <wineRoot>/share/wine where WineSetup extracts the NLS tarball
++     * (l_intl.nls etc.). Without this wineserver dies: "failed to load
++     * l_intl.nls". */
++    {
++        const char *env_data = getenv( "WINEDATADIR" );
++        if (env_data && *env_data)
++        {
++            char *p_nls = NULL;
++            if (asprintf( &p_nls, "%s/nls", env_data ) > 0) return p_nls;
++        }
++    }
++
+ #if defined(__linux__) || defined(__FreeBSD_kernel__) || defined(__NetBSD__)
+     dir = realpath( "/proc/self/exe", NULL );
+ #elif defined (__FreeBSD__) || defined(__DragonFly__)

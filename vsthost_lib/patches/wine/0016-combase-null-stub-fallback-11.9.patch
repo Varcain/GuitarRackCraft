@@ -1,0 +1,39 @@
+From: Kamil Lulko <limakzagan@gmail.com>
+Subject: combase: NULL-stub fallback instead of E_NOINTERFACE (11.9 port of patch 010)
+
+Ports the combase/marshal.c hunk from patch 0001 to 11.9. When no
+ProxyStubClsid32 is registered for an interface, marshal_object returned
+E_NOINTERFACE, which cascades: AmpliTube 5 JUCE component creation does a
+CoMarshalInterface that fails E_NOINTERFACE -> apartment_get_local_server_stream
+fails -> the component-init thread hangs in a cross-thread RtlWaitOnAddress
+deadlock (never reaches "component created" on 11.9). Fall through with
+stub=NULL, hr=S_OK so the OBJREF is written and init continues.
+
+diff --git a/dlls/combase/marshal.c b/dlls/combase/marshal.c
+index f638604f5a3..dc4f31bec74 100644
+--- a/dlls/combase/marshal.c
++++ b/dlls/combase/marshal.c
+@@ -912,8 +912,21 @@ HRESULT marshal_object(struct apartment *apt, STDOBJREF *stdobjref, REFIID riid,
+                     ERR("Failed to create an IRpcStubBuffer from IPSFactory for %s with error %#lx\n",
+                         debugstr_guid(riid), hr);
+             }else {
+-                WARN("couldn't get IPSFactory buffer for interface %s\n", debugstr_guid(riid));
+-                hr = E_NOINTERFACE;
++                /* vstpoc patch (010-combase-null-stub-fallback), ported to
++                 * 11.9: no ProxyStubClsid32 registered for this interface →
++                 * upstream returns E_NOINTERFACE, which kills RegisterDragDrop
++                 * (IDropTarget) and apartment_get_local_server_stream
++                 * (IServiceProvider) and any "register and store" marshal.
++                 * Most VST plugins (AmpliTube 5's JUCE component init) call
++                 * these defensively and don't actually USE the marshalled
++                 * stream unless drag/drop happens. Fall through with
++                 * stub=NULL and hr=S_OK so the OBJREF is written and the
++                 * caller continues, instead of hanging/cascading on the
++                 * CoMarshalInterface failure. */
++                WARN("couldn't get IPSFactory buffer for interface %s, using NULL stub fallback\n",
++                     debugstr_guid(riid));
++                stub = NULL;
++                hr = S_OK;
+             }
+ 
+         }

@@ -1,0 +1,109 @@
+From: Kamil Lulko <limakzagan@gmail.com>
+Subject: ntdll/sync: RtlWaitOnAddress + CV sent-message drain (11.9 port of patch 020)
+
+Ports the dlls/ntdll/sync.c portion of patch 0003 (020-cv-drain-sent-
+messages) to 11.9. Without it vst3_host.exe deadlocks during ARM64EC init
+(threads spin in RtlWaitOnAddress, main() never reached). Drains queued
+cross-thread QS_SENDMESSAGE sends via dynamically-resolved
+win32u!NtUserPeekMessage on each short-timeout wake. (win32u/message.c +
+input.c + wininet parts of 0003 deferred — not needed for init.)
+
+diff --git a/dlls/ntdll/sync.c b/dlls/ntdll/sync.c
+index e118cbee86a..d54df8b14fb 100644
+--- a/dlls/ntdll/sync.c
++++ b/dlls/ntdll/sync.c
+@@ -791,18 +791,61 @@ NTSTATUS WINAPI RtlSleepConditionVariableCS( RTL_CONDITION_VARIABLE *variable, R
+  * NOTES
+  *  the behaviour is undefined if the thread doesn't own the lock.
+  */
++/* vstpoc patch (020-cv-drain-sent-messages), ported to 11.9: wine on
++ * Android Bionic has a circular SendMessage deadlock when JUCE/VST3 hosts
++ * call SleepConditionVariable / RtlWaitOnAddress from inside a WindowProc
++ * on thread A while thread B sends an inter-thread message back to A. Both
++ * block. Fix: poll at 200ms and call NtUserPeekMessage (win32u) to dispatch
++ * queued QS_SENDMESSAGE sends, breaking the cycle. NtUserPeekMessage is
++ * resolved dynamically (win32u is always loaded for GUI processes). Without
++ * this, vst3_host.exe deadlocks during init under ARM64EC and never reaches
++ * main(). See feedback_patch_020_load_bearing_vst3 / feedback_rtlwaitonaddress_drain. */
++typedef int VSTPOC_MSG_t[16]; /* opaque, large enough for MSG */
++typedef BOOL (WINAPI *PFN_NtUserPeekMessage)(VSTPOC_MSG_t *msg, HWND hwnd, UINT first, UINT last, UINT flags);
++
++static PFN_NtUserPeekMessage vstpoc_get_peek_msg(void)
++{
++    static PFN_NtUserPeekMessage cached;
++    static BOOL tried;
++    if (!tried) {
++        UNICODE_STRING name;
++        ANSI_STRING func_name;
++        HMODULE win32u = NULL;
++        tried = TRUE;
++        RtlInitUnicodeString(&name, L"win32u.dll");
++        if (LdrGetDllHandle(NULL, 0, &name, &win32u) < 0) return NULL;
++        RtlInitAnsiString(&func_name, "NtUserPeekMessage");
++        if (LdrGetProcedureAddress(win32u, &func_name, 0, (void **)&cached) < 0)
++            cached = NULL;
++    }
++    return cached;
++}
++
+ NTSTATUS WINAPI RtlSleepConditionVariableSRW( RTL_CONDITION_VARIABLE *variable, RTL_SRWLOCK *lock,
+                                               const LARGE_INTEGER *timeout, ULONG flags )
+ {
+     int value = *(int *)&variable->Ptr;
+     NTSTATUS status;
++    LARGE_INTEGER vstpoc_poll = { .QuadPart = -2000000LL }; /* 200ms */
++    BOOL vstpoc_is_infinite = !timeout;
++    const LARGE_INTEGER *eff_timeout = vstpoc_is_infinite ? &vstpoc_poll : timeout;
+ 
+     if (flags & RTL_CONDITION_VARIABLE_LOCKMODE_SHARED)
+         RtlReleaseSRWLockShared( lock );
+     else
+         RtlReleaseSRWLockExclusive( lock );
+ 
+-    status = RtlWaitOnAddress( &variable->Ptr, &value, sizeof(value), timeout );
++    for (;;) {
++        status = RtlWaitOnAddress( &variable->Ptr, &value, sizeof(value), eff_timeout );
++        if (status != STATUS_TIMEOUT) break;
++        if (vstpoc_is_infinite) {
++            PFN_NtUserPeekMessage peek = vstpoc_get_peek_msg();
++            if (peek) { VSTPOC_MSG_t dummy; peek(&dummy, NULL, 0, 0, 0); }
++            value = *(int *)&variable->Ptr;
++            continue;
++        }
++        break;
++    }
+ 
+     if (flags & RTL_CONDITION_VARIABLE_LOCKMODE_SHARED)
+         RtlAcquireSRWLockShared( lock );
+@@ -881,6 +924,12 @@ NTSTATUS WINAPI RtlWaitOnAddress( const void *addr, const void *cmp, SIZE_T size
+     struct futex_queue *queue = get_futex_queue( addr );
+     struct futex_entry entry;
+     NTSTATUS ret;
++    /* vstpoc: treat any timeout <= 500ms as a polling-style wait that may be
++     * in a cross-thread SendMessage deadlock; drain sent messages on each
++     * wake (see helper above). Infinite/long timeouts take the normal path
++     * to avoid disturbing audio/timing-sensitive code. */
++    BOOL vstpoc_short_timeout = (timeout && timeout->QuadPart < 0 &&
++                                 timeout->QuadPart > -5000000LL); /* > -500ms */
+ 
+     TRACE("addr %p cmp %p size %#Ix timeout %s\n", addr, cmp, size, debugstr_timeout( timeout ));
+ 
+@@ -917,6 +966,18 @@ NTSTATUS WINAPI RtlWaitOnAddress( const void *addr, const void *cmp, SIZE_T size
+         spin_unlock( &queue->lock );
+     }
+ 
++    /* vstpoc: drain pending cross-thread sent messages on every wake of a
++     * polling-style (short-timeout) wait, so multi-stage JUCE handlers and
++     * ARM64EC init synchronization don't deadlock against a sibling thread
++     * that is itself blocked sending to us. PM_NOREMOVE peek dispatches
++     * QS_SENDMESSAGE without touching the posted-message queue. Done before
++     * the STATUS_ALERTED→SUCCESS rewrite so we still see the raw wake cause. */
++    if (vstpoc_short_timeout && (ret == STATUS_TIMEOUT || ret == STATUS_ALERTED))
++    {
++        PFN_NtUserPeekMessage peek = vstpoc_get_peek_msg();
++        if (peek) { VSTPOC_MSG_t dummy; peek(&dummy, NULL, 0, 0, 0); }
++    }
++
+     TRACE("returning %#lx\n", ret);
+ 
+     if (ret == STATUS_ALERTED) ret = STATUS_SUCCESS;
