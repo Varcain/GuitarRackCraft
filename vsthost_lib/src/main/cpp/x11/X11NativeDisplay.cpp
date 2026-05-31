@@ -113,6 +113,18 @@ static void logHex(const char* label, const uint8_t* data, size_t len) {
 using namespace X11Op;
 using namespace X11Event;
 
+/* P1 GPU compositor (see memory project_gpu_xserver_upgrade). When true,
+ * renderLoop composites the editor layer and each popup as separate textured
+ * quads on the GPU in z-order (painter's algorithm) instead of CPU-memcpy'ing
+ * popup pixels into the editor framebuffer. This is the structural foundation
+ * for AHardwareBuffer-backed per-window textures (DRI3/Present, phases P3/P4):
+ * a window's texture source becomes an imported EGLImage instead of a CPU
+ * upload, but the compositing draw is identical. The editor layer is still
+ * full-uploaded each frame here (no behaviour/cost change vs the monolithic
+ * path) — dirty-region upload is P1.1. Flip to false for the proven monolithic
+ * path (instant, byte-identical fallback for the 5 working plugins). */
+static constexpr bool kGpuCompositor = true;
+
 struct X11NativeDisplay::Impl {
     ANativeWindow* window = nullptr;
     EGLDisplay eglDisplay = EGL_NO_DISPLAY;
@@ -217,6 +229,7 @@ struct X11NativeDisplay::Impl {
     // Mirror used by renderLoop while it holds bufferMutex (we snapshot
     // mapped popups into this list under the lock, then composite outside).
     struct PopupSnapshot {
+        uint32_t wid;  // GPU compositor keys a per-popup texture by this
         int x, y, w, h;
         std::vector<uint32_t> pixels;
     };
@@ -231,8 +244,15 @@ struct X11NativeDisplay::Impl {
     std::condition_variable renderExitCv;
     GLuint program = 0;
     GLuint texUniform = 0;
-    GLuint fbTex = 0;    // persistent framebuffer texture (avoid per-frame alloc)
-    GLuint fbVbo = 0;    // persistent vertex buffer
+    GLuint fbTex = 0;    // persistent framebuffer (editor-layer) texture
+    GLuint fbVbo = 0;    // per-quad vertex buffer (DYNAMIC, reused per draw)
+    /* GPU compositor (kGpuCompositor): one GL texture per popup overlay, keyed
+     * by window id. Touched only by the render thread (the one with the GL
+     * context). Textures are sized via glTexImage2D on upload, so a recycled
+     * wid with a new size is handled correctly. Bounded (popup wids per
+     * session) and leaked at context teardown — we intentionally skip EGL
+     * teardown, so an explicit GC buys nothing. */
+    std::unordered_map<uint32_t, GLuint> popupTextures_;
     X11ByteOrder byteOrder_{true};  // X11 byte order (replaces msbFirst_)
     // Convenience aliases: keep existing call sites working via delegation
     bool& msbFirst_ = byteOrder_.msbFirst;
@@ -269,6 +289,16 @@ struct X11NativeDisplay::Impl {
      * lookups. */
     std::mutex writeMapMutex;
     std::unordered_map<int, std::unique_ptr<std::mutex>> perFdWriteMutex;
+
+    /* vstpoc: per-fd OUTPUT QUEUE. A real X server never drops events; on a
+     * non-blocking socket whose send buffer is full, the old sendAll() returned
+     * false and the event (MapNotify/PropertyNotify/reply) was LOST — breaking
+     * wine's window state machine so it re-asserts forever (storm). Instead we
+     * buffer the un-sent bytes here and flush them opportunistically (in the
+     * read-loop poll and before the next send). Never blocks the read loop,
+     * never drops. Guarded by the per-fd write mutex. */
+    std::unordered_map<int, std::vector<uint8_t>> outQueue_;
+    static constexpr size_t kMaxOutQueue = 32 * 1024 * 1024; /* 32MB; past this the client is hopelessly stuck → drop connection */
     std::atomic<int> lastPointerX{0};     // last injected pointer X position (for QueryPointer)
     std::atomic<int> lastPointerY{0};     // last injected pointer Y position (for QueryPointer)
     std::atomic<bool> pointerButton1Down{false};  // button 1 state (for QueryPointer)
@@ -291,6 +321,21 @@ struct X11NativeDisplay::Impl {
      * routed through GetProperty (case 20). */
     std::mutex wmStateMutex;
     std::unordered_map<uint32_t, uint32_t> wmStateValues;
+
+
+    /* Generic X11 property store. Wine 11.9's window-state machine WRITES a
+     * property via ChangeProperty, then READS IT BACK via GetProperty (e.g.
+     * window_wm_normal_hints_notify → XGetWMNormalHints, get_window_mwm_hints)
+     * and compares the read-back to what it requested; handle_state_change
+     * (window.c:1840) DROPS the confirmation on any value mismatch, so the
+     * window state never converges and the editor host window never becomes
+     * ready ("Loading editor…" forever — a 10.10→11.9 regression). Before this
+     * store, GetProperty returned empty for everything except WM_STATE, so
+     * every hint read-back mismatched. We now echo back exactly what was
+     * written. Key = (window<<32)|atom. */
+    struct PropertyValue { uint32_t type = 0; uint8_t format = 0; std::vector<uint8_t> data; };
+    std::mutex propStoreMutex;
+    std::unordered_map<uint64_t, PropertyValue> propStore_;
 
     /* GC foreground color per GC ID. Tracked so PolyFillRectangle can
      * fill with the right color — Win32 EDIT controls (and many other
@@ -406,6 +451,54 @@ struct X11NativeDisplay::Impl {
         return program != 0;
     }
 
+    /* GPU compositor helpers (kGpuCompositor). Render-thread only. */
+
+    // (Re)upload a BGRA-wire-format CPU buffer into a GL texture. glTexImage2D
+    // re-specifies size each call, so a texture reused across differently-sized
+    // frames/popups stays correct. The fragment shader does the BGRA->RGBA
+    // swizzle, matching the monolithic path.
+    void uploadTex(GLuint tex, const uint32_t* pixels, int w, int h) {
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, tex);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0,
+                     GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    }
+
+    // Draw `tex` as a quad covering the root-relative pixel rect (px,py,pw,ph),
+    // mapped through the active letterbox transform (origin x0,y0 + uniform
+    // `scale`) into the surfW x surfH output. Texture row 0 maps to the top of
+    // the rect (v-flip), identical to the monolithic path's static quad.
+    // Assumes glUseProgram(program) + glViewport(0,0,surfW,surfH) already set.
+    void compositeQuad(GLuint tex, int px, int py, int pw, int ph,
+                       int surfW, int surfH, int x0, int y0, float scale) {
+        float sx0 = x0 + px * scale, sy0 = y0 + py * scale;
+        float sx1 = sx0 + pw * scale, sy1 = sy0 + ph * scale;
+        float nx0 = sx0 / surfW * 2.f - 1.f;
+        float nx1 = sx1 / surfW * 2.f - 1.f;
+        float nyTop = 1.f - sy0 / surfH * 2.f;  // rect top edge (image row 0)
+        float nyBot = 1.f - sy1 / surfH * 2.f;  // rect bottom edge
+        const float verts[] = {
+            nx0, nyBot, 0.f, 1.f,   // bottom-left  -> tex (0,1)
+            nx1, nyBot, 1.f, 1.f,   // bottom-right -> tex (1,1)
+            nx0, nyTop, 0.f, 0.f,   // top-left     -> tex (0,0)
+            nx1, nyTop, 1.f, 0.f,   // top-right    -> tex (1,0)
+        };
+        glBindBuffer(GL_ARRAY_BUFFER, fbVbo);
+        glBufferData(GL_ARRAY_BUFFER, sizeof(verts), verts, GL_DYNAMIC_DRAW);
+        GLint aPos = glGetAttribLocation(program, "aPos");
+        GLint aTex = glGetAttribLocation(program, "aTex");
+        glEnableVertexAttribArray((GLuint)aPos);
+        glVertexAttribPointer((GLuint)aPos, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)0);
+        glEnableVertexAttribArray((GLuint)aTex);
+        glVertexAttribPointer((GLuint)aTex, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)(2 * sizeof(float)));
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, tex);
+        glUniform1i(texUniform, 0);
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    }
+
     void renderLoop() {
         LOGI("X11Debug: render thread STARTED display=%d tid=%ld", displayNumber_, getTid());
         bool glInited = false;
@@ -498,11 +591,12 @@ struct X11NativeDisplay::Impl {
                          * editor's top-left. */
                         if (!p.hasContent) continue;
                         if (useCrop) {
-                            popupSnapshots.push_back({p.x - cropOffX,
+                            popupSnapshots.push_back({wid,
+                                                      p.x - cropOffX,
                                                       p.y - cropOffY,
                                                       p.w, p.h, p.pixels});
                         } else {
-                            popupSnapshots.push_back({p.x, p.y, p.w, p.h, p.pixels});
+                            popupSnapshots.push_back({wid, p.x, p.y, p.w, p.h, p.pixels});
                         }
                     }
                 }
@@ -510,8 +604,12 @@ struct X11NativeDisplay::Impl {
             /* Composite popups onto the staging buffer at their root-relative
              * coordinates, clipped to the framebuffer. Opaque blit — popups
              * in our use case (combo dropdowns, context menus, tooltips) are
-             * always opaque and override any pixels beneath them. */
-            if (!popupSnapshots.empty() && fw > 0 && fh > 0 && !renderBuffer.empty()) {
+             * always opaque and override any pixels beneath them.
+             * GPU-compositor path draws popups as their own quads instead
+             * (see the kGpuCompositor render block below), so skip the CPU
+             * memcpy here when it's active. */
+            if (!kGpuCompositor &&
+                !popupSnapshots.empty() && fw > 0 && fh > 0 && !renderBuffer.empty()) {
                 for (const auto& p : popupSnapshots) {
                     int dstX0 = p.x;
                     int dstY0 = p.y;
@@ -534,7 +632,41 @@ struct X11NativeDisplay::Impl {
             dirty = false;  // Clear after snapshot; new PutImage during render will re-set it
 
             // Render from staging buffer (no lock held - PutImage can update framebuffer concurrently)
-            if (width > 0 && height > 0 && fw > 0 && fh > 0 && !renderBuffer.empty()) {
+            if (kGpuCompositor && width > 0 && height > 0 && fw > 0 && fh > 0 && !renderBuffer.empty()) {
+                /* GPU compositor path: editor layer + each popup are separate
+                 * textured quads, composited in z-order on the GPU. Same
+                 * letterbox transform as the monolithic path; editor is
+                 * top-aligned (y0 = 0) so injectTouch's inverse-scale math is
+                 * unchanged. Popups draw on top in stacking order (painter's
+                 * algorithm), reproducing the CPU overlay without the memcpy. */
+                float scaleX = (float)width / fw;
+                float scaleY = (float)height / fh;
+                float scale = scaleX < scaleY ? scaleX : scaleY;
+                int renderW = (int)(fw * scale);
+                int x0 = (width - renderW) / 2;
+                int y0 = 0;
+
+                glViewport(0, 0, width, height);
+                glClearColor(0.1f, 0.1f, 0.15f, 1.f);
+                glClear(GL_COLOR_BUFFER_BIT);
+                glUseProgram(program);
+
+                // Editor layer (root-relative rect 0,0,fw,fh).
+                uploadTex(fbTex, renderBuffer.data(), fw, fh);
+                compositeQuad(fbTex, 0, 0, fw, fh, width, height, x0, y0, scale);
+
+                // Popups on top, in stacking order. One texture per wid; small
+                // and visible only briefly, so per-frame re-upload is cheap and
+                // robust against missed paint write-sites.
+                for (const auto& p : popupSnapshots) {
+                    if (p.w <= 0 || p.h <= 0 ||
+                        p.pixels.size() != (size_t)p.w * p.h) continue;
+                    GLuint& t = popupTextures_[p.wid];
+                    if (t == 0) glGenTextures(1, &t);
+                    uploadTex(t, p.pixels.data(), p.w, p.h);
+                    compositeQuad(t, p.x, p.y, p.w, p.h, width, height, x0, y0, scale);
+                }
+            } else if (width > 0 && height > 0 && fw > 0 && fh > 0 && !renderBuffer.empty()) {
                 // Compute letterbox viewport: scale to fit surface while preserving aspect ratio
                 float scaleX = (float)width / fw;
                 float scaleY = (float)height / fh;
@@ -608,10 +740,52 @@ struct X11NativeDisplay::Impl {
         return *it->second;
     }
 
+    /* Return a STABLE pointer to fd's output queue (creating it). unordered_map
+     * guarantees element pointers survive rehash, so once obtained this pointer
+     * stays valid even as other fds are added; only the map *structure* needs
+     * the lock, which writeMapMutex provides. */
+    std::vector<uint8_t>* outQueueFor(int fd) {
+        std::lock_guard<std::mutex> lk(writeMapMutex);
+        return &outQueue_[fd];
+    }
+
+    /* Drain queued bytes (non-blocking). Caller holds writeMutexFor(fd).
+     * EAGAIN = "socket full, keep the rest"; false only on fatal socket error. */
+    bool drainQueue(int fd, std::vector<uint8_t>* q) {
+        if (q->empty()) return true;
+        size_t sent = 0;
+        while (sent < q->size()) {
+            ssize_t n = send(fd, q->data() + sent, q->size() - sent, 0);
+            if (n > 0) { sent += (size_t)n; }
+            else if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) break;
+            else return false;
+        }
+        if (sent) q->erase(q->begin(), q->begin() + sent);
+        return true;
+    }
+
+    /* Non-blocking, never-drop send. Flush backlog first (preserves order), then
+     * try `data`; whatever the socket can't take is appended and flushed later.
+     * False only if the client is hopelessly stuck (queue past cap) or socket died. */
     bool sendAllLocked(int fd, const void* data, size_t len) {
-        std::mutex& m = writeMutexFor(fd);
-        std::lock_guard<std::mutex> lock(m);
-        return sendAll(fd, data, len);
+        std::vector<uint8_t>* q = outQueueFor(fd);
+        std::lock_guard<std::mutex> lock(writeMutexFor(fd));
+        if (!drainQueue(fd, q)) return false;
+        const uint8_t* p = static_cast<const uint8_t*>(data);
+        size_t off = 0;
+        if (q->empty()) {
+            while (off < len) {
+                ssize_t n = send(fd, p + off, len - off, 0);
+                if (n > 0) { off += (size_t)n; }
+                else if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) break;
+                else return false;
+            }
+        }
+        if (off < len) {
+            if (q->size() + (len - off) > kMaxOutQueue) return false;  /* stuck client */
+            q->insert(q->end(), p + off, p + len);
+        }
+        return true;
     }
 
     /** Send a reply and update lastReplySeq_ for correct event sequence tracking. */
@@ -711,21 +885,41 @@ struct X11NativeDisplay::Impl {
     }
 
     /* recvAll: read exactly len bytes, handling EAGAIN on non-blocking sockets */
-    static bool recvAll(int fd, void* data, size_t len) {
+    /* Member (not static): flushes the per-fd output queue while waiting for
+     * the next request, so buffered events drain instead of stalling until the
+     * client sends again — and so the read loop never sits idle on a socket
+     * that has pending output. */
+    bool recvAll(int fd, void* data, size_t len) {
         uint8_t* p = static_cast<uint8_t*>(data);
+        std::vector<uint8_t>* q = outQueueFor(fd);  /* stable pointer */
+        int idleMs = 0;  /* accumulated wait with no input — bound at 5s (old behavior) */
         while (len) {
             ssize_t n = recv(fd, p, len, 0);
             if (n > 0) {
                 p += n;
                 len -= n;
+                idleMs = 0;
             } else if (n == 0) {
                 return false;  // peer closed
             } else {
                 if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                    // Non-blocking socket: wait for data with poll
-                    struct pollfd pfd = { fd, POLLIN, 0 };
-                    int ret = poll(&pfd, 1, 5000 /* 5s timeout */);
-                    if (ret <= 0 || (pfd.revents & (POLLERR | POLLHUP))) return false;
+                    // Non-blocking socket: wait for data. If we have queued
+                    // output, also wait for writability + flush it (short
+                    // timeout so we re-poll promptly); else just wait for input.
+                    bool haveOut;
+                    { std::lock_guard<std::mutex> lk(writeMutexFor(fd)); haveOut = !q->empty(); }
+                    int waitMs = haveOut ? 50 : 5000;
+                    struct pollfd pfd = { fd, (short)(POLLIN | (haveOut ? POLLOUT : 0)), 0 };
+                    int ret = poll(&pfd, 1, waitMs);
+                    if (ret < 0 || (pfd.revents & (POLLERR | POLLHUP))) return false;
+                    if (pfd.revents & POLLOUT) {
+                        std::lock_guard<std::mutex> lk(writeMutexFor(fd));
+                        if (!drainQueue(fd, q)) return false;
+                    }
+                    if (!(pfd.revents & POLLIN)) {
+                        idleMs += waitMs;
+                        if (idleMs >= 5000) return false;  // 5s with no input → give up
+                    }
                     continue;
                 }
                 return false;  // real error
@@ -1409,6 +1603,9 @@ struct X11NativeDisplay::Impl {
             }
             std::thread([this, newFd](){
                 clientFd = newFd;  // thread_local member; per-thread fd
+                /* fds are reused across connections — clear any stale queued
+                 * output from a previous connection that held this fd number. */
+                { std::lock_guard<std::mutex> lk(writeMapMutex); outQueue_[newFd].clear(); }
 
             /* Enlarge socket buffers for large GetImage replies (~6MB) */
             {
@@ -3078,13 +3275,53 @@ struct X11NativeDisplay::Impl {
                             write32(reply, 36, 0);              /* icon = None */
                             sendReply(reply, 40, seq);
                         } else {
-                            uint8_t reply[32];
-                            memset(reply, 0, 32);
-                            reply[0] = 1;
-                            reply[1] = 0;
-                            write16(reply, 2, seq);
-                            write32(reply, 4, 0);
-                            sendReply(reply, 32, seq);
+                            /* Generic property store lookup (propStore_). Echo
+                             * back exactly what ChangeProperty wrote so wine's
+                             * 11.9 read-back-and-confirm converges. */
+                            uint32_t reqType = (length >= 6) ? read32(buf, 12) : 0;
+                            uint32_t longOff = ((length >= 6) ? read32(buf, 16) : 0) * 4;  /* bytes */
+                            uint32_t longLen = ((length >= 6) ? read32(buf, 20) : 0) * 4;  /* max bytes */
+                            uint64_t pk = ((uint64_t)gpWid << 32) | gpAtom;
+                            PropertyValue pv;
+                            bool found = false;
+                            {
+                                std::lock_guard<std::mutex> lk(propStoreMutex);
+                                auto it = propStore_.find(pk);
+                                if (it != propStore_.end() && it->second.format) { pv = it->second; found = true; }
+                            }
+                            if (found && (reqType == 0 || reqType == pv.type)) {
+                                uint32_t total = (uint32_t)pv.data.size();
+                                if (longOff > total) longOff = total;
+                                uint32_t unit = pv.format / 8;
+                                uint32_t ret = std::min(total - longOff, longLen);
+                                ret -= ret % unit;                       /* whole format units */
+                                uint32_t bytesAfter = total - longOff - ret;
+                                uint32_t pad = (4 - (ret & 3)) & 3;
+                                std::vector<uint8_t> reply(32 + ret + pad, 0);
+                                reply[0] = 1;
+                                reply[1] = pv.format;
+                                write16(reply.data(), 2, (uint16_t)seq);
+                                write32(reply.data(), 4, (ret + pad) / 4);    /* reply_length (4-byte units) */
+                                write32(reply.data(), 8, pv.type);            /* actual type */
+                                write32(reply.data(), 12, bytesAfter);
+                                write32(reply.data(), 16, ret / unit);        /* value_length (items) */
+                                if (ret) memcpy(reply.data() + 32, pv.data.data() + longOff, ret);
+                                sendReply(reply.data(), 32 + ret + pad, seq);
+                                if (buf[1] /*delete*/ && bytesAfter == 0) {
+                                    std::lock_guard<std::mutex> lk(propStoreMutex);
+                                    propStore_.erase(pk);
+                                }
+                            } else {
+                                /* not found, or type mismatch → empty reply (with
+                                 * the actual type on mismatch, per X spec). */
+                                uint8_t reply[32];
+                                memset(reply, 0, 32);
+                                reply[0] = 1;
+                                write16(reply, 2, seq);
+                                write32(reply, 4, 0);
+                                if (found) write32(reply, 8, pv.type);
+                                sendReply(reply, 32, seq);
+                            }
                         }
                         break;
                     }
@@ -4088,6 +4325,29 @@ struct X11NativeDisplay::Impl {
                          *   bytes 17-31: pad */
                         uint32_t cpWid = read32(buf, 4);
                         uint32_t cpAtom = read32(buf, 8);
+                        /* Store the written value so GetProperty can echo it
+                         * back exactly (wine's 11.9 state machine reads back
+                         * what it writes and rejects mismatches). Header:
+                         * type@12, format@16, value_length(items)@20, data@24. */
+                        {
+                            uint8_t cpFmt = buf[16];
+                            uint32_t cpType = read32(buf, 12);
+                            uint32_t cpItems = read32(buf, 20);
+                            uint32_t cpUnit = (cpFmt == 32) ? 4 : (cpFmt == 16 ? 2 : 1);
+                            size_t cpBytes = (size_t)cpItems * cpUnit;
+                            if (cpFmt && (size_t)24 + cpBytes <= (size_t)length * 4) {
+                                uint64_t pk = ((uint64_t)cpWid << 32) | cpAtom;
+                                std::lock_guard<std::mutex> lk(propStoreMutex);
+                                auto& pv = propStore_[pk];
+                                if (buf[1] != 0 /*Prepend/Append*/ && pv.format == cpFmt && pv.type == cpType) {
+                                    if (buf[1] == 1) pv.data.insert(pv.data.begin(), buf + 24, buf + 24 + cpBytes);
+                                    else pv.data.insert(pv.data.end(), buf + 24, buf + 24 + cpBytes);
+                                } else { /* Replace (or incompatible type/format) */
+                                    pv.type = cpType; pv.format = cpFmt;
+                                    pv.data.assign(buf + 24, buf + 24 + cpBytes);
+                                }
+                            }
+                        }
                         /* Modern wine doesn't call XMapWindow for top-level
                          * windows — it sets the WM_STATE atom to
                          * NormalState (1) and expects a window manager to
@@ -4113,6 +4373,17 @@ struct X11NativeDisplay::Impl {
                                 LOGI("X11 WM_STATE WithdrawnState -> implicit unmap wid=0x%x", cpWid);
                             }
                         }
+                        /* NOTE: a value-dedup of redundant hint PropertyNotify
+                         * events used to live here (band-aid for TH-U's relayout
+                         * storm). It is REMOVED: wine 11.9's serial-strict state
+                         * machine needs a correctly-serialed PropertyNotify for
+                         * EVERY ChangeProperty to confirm its expect_serial —
+                         * skipping a re-write's notify leaves that serial pending
+                         * ("old serial" drops), and for the readiness-gating atoms
+                         * (_MOTIF_WM_HINTS/_NET_WM_STATE) that stalls the window.
+                         * The real cure for the storm is the property store above
+                         * (correct read-back → state converges → no re-request
+                         * amplification), which made the storm disappear. */
                         uint8_t evt[32];
                         memset(evt, 0, 32);
                         evt[0] = 28;  /* PropertyNotify */
@@ -4172,6 +4443,31 @@ struct X11NativeDisplay::Impl {
                         break;
                     }
                     case DeleteProperty:
+                        /* Drop the stored value so a later GetProperty read-back
+                         * returns empty, AND emit PropertyNotify(state=Deleted) —
+                         * the X spec sends it when the property existed, and wine
+                         * 11.9's write/delete-then-confirm pattern can wait on it
+                         * (same class as the GetProperty-returns-empty bug). */
+                        if (length >= 3) {
+                            uint32_t dpWid = read32(buf, 4), dpAtom = read32(buf, 8);
+                            bool existed = false;
+                            {
+                                std::lock_guard<std::mutex> lk(propStoreMutex);
+                                existed = propStore_.erase(((uint64_t)dpWid << 32) | dpAtom) > 0;
+                            }
+                            if (existed) {
+                                uint8_t evt[32];
+                                memset(evt, 0, 32);
+                                evt[0] = 28;  /* PropertyNotify */
+                                write16(evt, 2, seq);
+                                write32(evt, 4, dpWid);
+                                write32(evt, 8, dpAtom);
+                                write32(evt, 12, (uint32_t)(seq * 4 + 0x300));
+                                evt[16] = 1;  /* state = Deleted */
+                                sendReply(evt, 32, seq);
+                            }
+                        }
+                        break;
                     case 22: /* SetSelectionOwner (void) */
                     case 24: /* ConvertSelection (void) */
                     case 51: /* SetFontPath */

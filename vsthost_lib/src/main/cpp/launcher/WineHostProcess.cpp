@@ -273,6 +273,24 @@ void WineHostProcess::setupWineEnvChild(const Config& cfg) {
      * outside / popup interaction may freeze briefly while TH-U's slow
      * WindowProcs complete naturally, but state stays consistent. */
     ::setenv("WINE_VSTPOC_NO_CYCLE_DETECT", "1", 1);
+    /* vstpoc patch 028 (ported to 11.9): coalesce WM_USER+N post storm in the
+     * wineserver. TH-U's editor-create starves win_data_mutex via a JUCE/FEX
+     * WM_USER+123 flood → CreateWindowExA never completes → "Loading editor…"
+     * forever. Cap pending posts per (hwnd,msg) at this threshold; excess are
+     * dropped (audio-safe, no synth-reply). Read once by wineserver at start —
+     * wineserver MUST be killed for a change to take effect. */
+    ::setenv("WINE_VSTPOC_COALESCE_POSTS", "200", 1);
+    /* patch 030 ON: time-throttle posted WM_USER+N delivery. TH-U's JUCE
+     * editor-layout WM_USER+123 ping-pong relayouts every child window, each
+     * grabbing win_data_mutex — starving the editor thread that needs one
+     * acquisition to create the editor host window (editor never appears).
+     * 5ms gap leaves win_data_mutex idle windows for the editor to win.
+     * Read once by wineserver at start — kill wineserver to apply. */
+    ::setenv("WINE_VSTPOC_POST_GAP_MS", "50", 1);
+    /* TH-U editor deadlock fix: drop win_data_mutex across the cross-thread send
+     * in winex11 WM_STATE/_XEMBED PropertyNotify handlers. Default off in wine;
+     * we enable it here. Benign for plugins that don't hit the deadlock. */
+    ::setenv("WINE_VSTPOC_WM_STATE_UNLOCK", "1", 1);
     /* DXVK debug logging — diagnoses D3D11 device creation failures
      * (AmpliTube 5 etc.). Output appears in the vst_host log under
      * standard DXVK log prefix (info:/warn:/err:). Cheap to leave on:
@@ -370,6 +388,41 @@ bool WineHostProcess::bootServicesIfNeeded() {
     if (code != 0) {
         LOGE("WineHostProcess: wineboot failed; will retry next plugin launch");
         return false;
+    }
+
+    /* vstpoc 2026-05-29: explicitly launch rpcss.exe in THIS prefix's
+     * wineserver session. wine registers RpcSs as demand-start, but combase's
+     * on-demand start fails in our Bionic/FEX env — plugins that do
+     * out-of-process COM (TH-U: editor + audio activation) then hit
+     * RPC_S_SERVER_UNAVAILABLE because \\.\pipe\lrpc\irpcss never gets served.
+     * Starting rpcss.exe directly here (same prefix => same wineserver =>
+     * same pipe namespace as the plugin host launched right after) makes the
+     * endpoint mapper available. Detached daemon; we wait ~1.5s for it to
+     * create the pipe before returning so the host finds it. */
+    {
+        pid_t rp = ::fork();
+        if (rp == 0) {
+            ::setsid();  /* detach so it survives as a daemon */
+            const std::string rpcLog = cfg_.cacheDir + "/rpcss.log";
+            int lfd = ::open(rpcLog.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
+            if (lfd >= 0) { ::dup2(lfd, 1); ::dup2(lfd, 2); if (lfd > 2) ::close(lfd); }
+            setupWineEnvChild(cfg_);
+            ::setenv("WINEDEBUG", "-all,err+all", 1);
+            std::string rpcss = cfg_.winePrefix +
+                "/drive_c/windows/system32/rpcss.exe";
+            std::vector<std::string> a = { cfg_.wineBinary, rpcss };
+            std::vector<char*> argv;
+            for (auto& s : a) argv.push_back(const_cast<char*>(s.c_str()));
+            argv.push_back(nullptr);
+            ::execv(cfg_.wineBinary.c_str(), argv.data());
+            ::_exit(127);
+        }
+        if (rp > 0) {
+            LOGI("WineHostProcess: launched rpcss.exe pid=%d; waiting 1.5s for irpcss pipe", rp);
+            ::usleep(1500 * 1000);
+        } else {
+            LOGE("WineHostProcess: rpcss fork failed: %s", std::strerror(errno));
+        }
     }
 
     /* Mark the prefix as booted. Non-fatal if the touch fails. */
@@ -679,9 +732,16 @@ bool WineHostProcess::start() {
          * no recovery, no follow-on storm). Reverting both to default
          * off. Wine source patches remain for future use; re-enable
          * with env-var values >0. */
-        ::setenv("WINE_VSTPOC_COALESCE_POSTS", "0", 1);  /* patch 028 off */
-        ::setenv("WINE_VSTPOC_TIMER_GAP_MS",   "0", 1);  /* patch 029 off */
-        ::setenv("WINE_VSTPOC_POST_GAP_MS",    "0", 1);  /* patch 030 off */
+        /* vstpoc 2026-05-29: RE-ENABLED 028 (re-ported its queue.c code to
+         * 11.9 — it had been reverted on the bump, only the env stayed). The
+         * old "VST3 doesn't storm" assumption is wrong: TH-U's editor-create
+         * IS a WM_USER+123 storm livelock (watchdog: 5 threads futex-blocked
+         * on win_data_mutex, editor never finishes CreateWindowExA → "Loading
+         * editor…"). Coalesce caps the post flood so the lock frees up. */
+        ::setenv("WINE_VSTPOC_COALESCE_POSTS", "200", 1); /* patch 028 ON */
+        ::setenv("WINE_VSTPOC_TIMER_GAP_MS",   "0", 1);  /* patch 029 off (code not ported) */
+        ::setenv("WINE_VSTPOC_POST_GAP_MS",    "50", 1);  /* patch 030 ON: WM_USER+N throttle @50ms (win_data_mutex starvation fix) */
+        ::setenv("WINE_VSTPOC_WM_STATE_UNLOCK","1", 1);  /* TH-U editor: drop lock across cross-thread send */
         // vstpoc 2026-05-25 (later 4): patches 031 (defer-focus) and
         // 032 (fingerprint-filter) were added for VST2-era TH-U
         // workarounds. Reverting both — VST3 path doesn't hit the
@@ -762,7 +822,7 @@ bool WineHostProcess::start() {
              * a deliberate backoff (sched_yield after N consecutive
              * empty peeks, or similar), keep tracing on as the only
              * mitigation that empirically works. */
-            constexpr bool kVerboseTraceEnabled = true;
+            constexpr bool kVerboseTraceEnabled = false;
             if (kVerboseTraceEnabled) {
                 /* Diagnostic mode: re-enable when investigating a new
                  * message-flow / X11 / wineserver bug. Expect 700MB+

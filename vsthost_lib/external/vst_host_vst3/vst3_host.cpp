@@ -510,19 +510,49 @@ private:
  * the shm ring), we just need a non-NULL, well-formed handler so the
  * plugin's controller initialises fully. Stack-allocated for the life of
  * main(), so refcounting is a no-op (returns a sentinel). */
-class HostComponentHandler : public IComponentHandler {
+class HostComponentHandler : public IComponentHandler, public IComponentHandler2 {
 public:
+    /* --- IComponentHandler --- */
     tresult PLUGIN_API beginEdit (ParamID) SMTG_OVERRIDE { return kResultOk; }
     tresult PLUGIN_API performEdit (ParamID, ParamValue) SMTG_OVERRIDE { return kResultOk; }
     tresult PLUGIN_API endEdit (ParamID) SMTG_OVERRIDE { return kResultOk; }
     tresult PLUGIN_API restartComponent (int32) SMTG_OVERRIDE { return kResultOk; }
 
+    /* --- IComponentHandler2 (the interface TH-U needs) ---
+     * vstpoc 2026-05-29: confirmed via denied-IID logging that TH-U queries
+     * the handler for IComponentHandler2 (iid b3b440f0-...) exactly once at
+     * init. Our minimal host denied it (kNoInterface); TH-U stored the NULL
+     * and later dereferenced it during processing -> READ-from-NULL AV at
+     * TH-U+0x2ab5f5 (`mov rax,[rbx]`, rbx=0) -> VEH terminates the thread ->
+     * no audio. A real DAW host ALWAYS provides IComponentHandler2, so the
+     * correct fix is to provide it. IComponentHandler2 is a SIBLING of
+     * IComponentHandler under FUnknown (NOT a subclass) — hence multiple
+     * inheritance, with queryInterface below disambiguating the two FUnknown
+     * base subobjects. No-op callbacks returning kResultOk are valid host
+     * behavior (we have no project to mark dirty / no editor-open flow). */
+    tresult PLUGIN_API setDirty (TBool /*state*/) SMTG_OVERRIDE { return kResultOk; }
+    tresult PLUGIN_API requestOpenEditor (FIDString /*name*/) SMTG_OVERRIDE { return kResultOk; }
+    tresult PLUGIN_API startGroupEdit () SMTG_OVERRIDE { return kResultOk; }
+    tresult PLUGIN_API finishGroupEdit () SMTG_OVERRIDE { return kResultOk; }
+
+    /* --- FUnknown (single set of overriders for both base subobjects) --- */
     tresult PLUGIN_API queryInterface (const TUID iid, void** obj) SMTG_OVERRIDE {
         if (FUnknownPrivate::iidEqual(iid, FUnknown::iid)
          || FUnknownPrivate::iidEqual(iid, IComponentHandler::iid)) {
             *obj = static_cast<IComponentHandler*>(this);
             return kResultOk;
         }
+        if (FUnknownPrivate::iidEqual(iid, IComponentHandler2::iid)) {
+            *obj = static_cast<IComponentHandler2*>(this);
+            return kResultOk;
+        }
+        /* Keep logging any host-interface IID we still don't provide, so a
+         * future plugin that needs a different one surfaces it the same way
+         * TH-U's IComponentHandler2 did. */
+        const unsigned char* b = (const unsigned char*)iid;
+        LOG("HostComponentHandler::queryInterface DENIED iid="
+            "%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x\n",
+            b[0],b[1],b[2],b[3],b[4],b[5],b[6],b[7],b[8],b[9],b[10],b[11],b[12],b[13],b[14],b[15]);
         *obj = nullptr;
         return kNoInterface;
     }

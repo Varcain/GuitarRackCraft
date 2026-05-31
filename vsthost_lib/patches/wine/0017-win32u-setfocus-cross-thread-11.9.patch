@@ -1,0 +1,41 @@
+From: Kamil Lulko <limakzagan@gmail.com>
+Subject: win32u: NtUserSetFocus cross-thread input attach (11.9 port of patch 015)
+
+Ports the dlls/win32u/input.c hunk from patch 0003 (015-win32u-cross-
+thread-attach) to 11.9. JUCE routes SetFocus to the MessageManager
+thread for a window owned by a worker thread; wine rejects the
+cross-thread set_active_window, so the editor caret/focus never appears.
+Attach the two threads inputs (same process) like real Windows.
+
+diff --git a/dlls/win32u/input.c b/dlls/win32u/input.c
+index a8055a9bb5d..c328a37d395 100644
+--- a/dlls/win32u/input.c
++++ b/dlls/win32u/input.c
+@@ -2138,9 +2138,27 @@ HWND WINAPI NtUserSetFocus( HWND hwnd )
+ {
+     HWND hwndTop = hwnd, active;
+     HWND previous = get_focus();
++    DWORD win_tid = 0, win_pid = 0, my_tid;
+ 
+     TRACE( "%p prev %p\n", hwnd, previous );
+ 
++    /* vstpoc patch (015-win32u-cross-thread-attach), ported to 11.9:
++     * JUCE plugins route SetFocus to the MessageManager thread, but the
++     * target window may be owned by a different thread in the same process
++     * (e.g. a JUCE activation popup on a worker thread). Wine's
++     * check_queue_input_window rejects the wineserver set_active_window
++     * with ACCESS_DENIED in that case, NtUserSetFocus returns 0, and the
++     * editor's caret/focus never appears. Real Windows handles this via
++     * attached thread inputs — replicate: if the target window's owning
++     * thread != current thread but same process, attach their inputs. */
++    if (hwnd)
++    {
++        win_tid = get_window_thread( hwnd, &win_pid );
++        my_tid  = GetCurrentThreadId();
++        if (win_tid && win_pid == GetCurrentProcessId() && win_tid != my_tid)
++            NtUserAttachThreadInput( my_tid, win_tid, TRUE );
++    }
++
+     if (hwnd)
+     {
+         /* Check if we can set the focus to this window */

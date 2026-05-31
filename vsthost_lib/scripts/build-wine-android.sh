@@ -86,7 +86,6 @@ if [ ! -f Makefile ]; then
     --enable-archs=arm64ec,aarch64,i386 \
     --with-mingw=clang \
     --disable-win16 \
-    --disable-wineandroid_drv \
     --disable-tests \
     --x-includes="$repo_root/toolchain/x11-headers" \
     --x-libraries="$repo_root/toolchain/x11-libs" \

@@ -43,8 +43,29 @@ import java.util.zip.GZIPInputStream
 object WineSetup {
     private const val TAG = "WineSetup"
 
-    /** Bump when the manifest schema changes so the install is rebuilt. */
-    private const val SETUP_VERSION = 2
+    /** Bump when the manifest schema changes so the install is rebuilt.
+     *  v3: wine 10.10 → 11.9 bump (different DLL set + manifest; forces a
+     *  full re-extract + symlink rebuild on the device).
+     *  v4: 11.9 rebuilt with patch 0014 (renamed-ntdll loader bridge) +
+     *  re-packed (libwine_NNNN.so numbering may differ) — force re-extract.
+     *  v5: 0014 extended with server/unicode.c WINEDATADIR override
+     *  (wineserver l_intl.nls) — rebuilt + re-packed.
+     *  v6: patch 0015 (ntdll/sync RtlWaitOnAddress drain) — fixes
+     *  vst3_host ARM64EC init deadlock; rebuilt + re-packed.
+     *  v7: patch 0016 (combase NULL-stub fallback) — AmpliTube component
+     *  creation COM-marshal fix; rebuilt + re-packed.
+     *  v8: patch 0017 (win32u NtUserSetFocus cross-thread attach) —
+     *  editor focus; rebuilt + re-packed.
+     *  v9: vstpoc-cwx instrumentation in win32u NtUserCreateWindowEx
+     *  (diagnose editor-thread cross-thread alert-wait deadlock on 11.9);
+     *  win32u.so rebuilt + re-packed. TEMPORARY — revert after diagnosis.
+     *  v10: vstpoc-cwx sub-markers inside get_window_surface (block is there;
+     *  pinpoint which internal call: pWindowPosChanging / surface). TEMP.
+     *  v11: vstpoc-cwx2 markers in winex11 create_win_data/create_whole_window
+     *  (block confirmed in pWindowPosChanging→create_win_data). TEMP.
+     *  v12: cwx2 unconditional + create_win_data ENTER marker (v11 size gate
+     *  hid markers; disambiguate dispatch vs get_win_data vs create). TEMP. */
+    private const val SETUP_VERSION = 20
 
     data class Setup(
         val wineRoot: File,
@@ -105,6 +126,7 @@ object WineSetup {
         seedFonts(ctx, winePrefix)
         seedCommonControlsManifests(winePrefix)
         seedRpcSsService(winePrefix)
+        seedWow64Emulator(winePrefix)  // wine 11.x: point ARM64EC/wow64 at FEX
         /* Also seed every existing wineprefix_template_<id> dir (installer
          * mode plugins like X50II clone from their own template, not from
          * the base prefix — without this, the RpcSs registration only
@@ -367,6 +389,40 @@ object WineSetup {
 """
         systemReg.appendText(body)
         Log.i(TAG, "seeded Program Files directories + registry in ${winePrefix.absolutePath}")
+    }
+
+    /** Point wine's ARM64EC / WoW64 x86 emulator at FEX-Emu's DLLs.
+     *
+     *  wine 10.10 used the HODLL64/HODLL env vars to select the emulation
+     *  DLL (libarm64ecfex.dll for x86_64-on-ARM64, libwow64fex.dll for
+     *  i386). wine 11.x DROPPED that env mechanism: ntdll's
+     *  load_arm64ec_module hardcodes a default of xtajit64.dll but reads
+     *  the actual DLL name from HKLM\Software\Microsoft\Wow64\amd64
+     *  (default value), and the i386 wow64 dispatcher reads
+     *  ...\Wow64\x86. Without these, wine loads its xtajit stub and dies
+     *  ("err:xtajit:ExitToX64 x64 emulation not implemented").
+     *
+     *  Seed both so wine 11.x loads C:\windows\system32\libarm64ecfex.dll
+     *  (x64 EC) and libwow64fex.dll (i386) — the FEX DLLs WineSetup already
+     *  symlinks into system32. The value is just the filename; wine
+     *  prepends C:\windows\system32\. */
+    fun seedWow64Emulator(winePrefix: File) {
+        val systemReg = File(winePrefix, "system.reg")
+        if (!systemReg.exists()) return
+        val marker = "vstpoc-wow64-emulator-fex-v1"
+        if (systemReg.readText().contains(marker)) return
+        val body = """
+
+;; $marker
+[Software\\Microsoft\\Wow64\\amd64] 1779200000
+@="libarm64ecfex.dll"
+
+[Software\\Microsoft\\Wow64\\x86] 1779200000
+@="libwow64fex.dll"
+
+"""
+        systemReg.appendText(body)
+        Log.i(TAG, "seeded Wow64 emulator (FEX) registry in ${winePrefix.absolutePath}")
     }
 
     private fun seedUserFolders(ctx: Context, winePrefix: File) {

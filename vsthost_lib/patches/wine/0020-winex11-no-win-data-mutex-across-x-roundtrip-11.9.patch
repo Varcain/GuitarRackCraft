@@ -1,0 +1,68 @@
+diff --git a/dlls/winex11.drv/event.c b/dlls/winex11.drv/event.c
+index 2983d7bfe8a..5c135c89894 100644
+--- a/dlls/winex11.drv/event.c
++++ b/dlls/winex11.drv/event.c
+@@ -1257,8 +1257,12 @@ static void handle_xembed_info_notify( HWND hwnd, XPropertyEvent *event )
+     struct x11drv_win_data *data;
+     UINT value = 0;
+ 
+-    if (!(data = get_win_data( hwnd ))) return;
++    /* vstpoc 11.9: do the X round-trip BEFORE taking win_data_mutex. Holding
++     * the global win_data_mutex across an X server round-trip deadlocks the
++     * editor thread's window creation (get_win_data) against this event
++     * handler when the X server can't reply until the editor finishes. */
+     if (event->state == PropertyNewValue) value = get_window_xembed_info( event->display, event->window );
++    if (!(data = get_win_data( hwnd ))) return;
+     window_wm_state_notify( data, event->serial, value ? NormalState : WithdrawnState, event->time );
+     release_win_data( data );
+ }
+@@ -1268,8 +1272,8 @@ static void handle_net_wm_state_notify( HWND hwnd, XPropertyEvent *event )
+     struct x11drv_win_data *data;
+     UINT value = 0;
+ 
+-    if (!(data = get_win_data( hwnd ))) return;
+     if (event->state == PropertyNewValue) value = get_window_net_wm_state( event->display, event->window );
++    if (!(data = get_win_data( hwnd ))) return;  /* vstpoc 11.9: X round-trip before lock (see handle_xembed_info_notify) */
+     window_net_wm_state_notify( data, event->serial, value );
+     release_win_data( data );
+ 
+@@ -1281,8 +1285,11 @@ static void handle_wm_hints_notify( HWND hwnd, XPropertyEvent *event )
+     struct x11drv_win_data *data;
+     XWMHints empty = {0}, *hints;
+ 
+-    if (!(data = get_win_data( hwnd ))) return;
++    /* vstpoc 11.9: XGetWMHints (X round-trip) BEFORE win_data_mutex. This was
++     * the confirmed editor-create deadlock: this handler held win_data_mutex
++     * across XGetWMHints while the editor thread blocked in get_win_data. */
+     hints = event->state == PropertyNewValue ? XGetWMHints( event->display, event->window ) : &empty;
++    if (!(data = get_win_data( hwnd ))) { if (hints != &empty) XFree( hints ); return; }
+     window_wm_hints_notify( data, event->serial, hints );
+     if (hints != &empty) XFree( hints );
+     release_win_data( data );
+@@ -1293,8 +1300,8 @@ static void handle_mwm_hints_notify( HWND hwnd, XPropertyEvent *event )
+     struct x11drv_win_data *data;
+     MwmHints hints = {0};
+ 
++    if (event->state == PropertyNewValue) get_window_mwm_hints( event->display, event->window, &hints );  /* vstpoc 11.9: X round-trip before lock */
+     if (!(data = get_win_data( hwnd ))) return;
+-    if (event->state == PropertyNewValue) get_window_mwm_hints( event->display, event->window, &hints );
+     window_mwm_hints_notify( data, event->serial, &hints );
+     release_win_data( data );
+ }
+@@ -1305,11 +1312,15 @@ static void handle_wm_normal_hints_notify( HWND hwnd, XPropertyEvent *event )
+     XSizeHints *hints;
+     long len = 0;
+ 
+-    if (!(data = get_win_data( hwnd ))) return;
++    /* vstpoc 11.9: alloc + XGetWMNormalHints (X round-trip) before win_data_mutex */
+     if ((hints = XAllocSizeHints()))
+     {
+         if (event->state == PropertyNewValue) XGetWMNormalHints( event->display, event->window, hints, &len );
+         if (len < sizeof(*hints)) memset( (char *)hints + len, 0, sizeof(*hints) - len );
++    }
++    if (!(data = get_win_data( hwnd ))) { if (hints) XFree( hints ); return; }
++    if (hints)
++    {
+         window_wm_normal_hints_notify( data, event->serial, hints );
+         XFree( hints );
+     }

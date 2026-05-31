@@ -33,10 +33,10 @@ Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
  1 file changed, 114 insertions(+)
 
 diff --git a/dlls/iphlpapi/iphlpapi_main.c b/dlls/iphlpapi/iphlpapi_main.c
-index 78000a62..46cab36b 100644
+index b315490b1f2..328d364af98 100644
 --- a/dlls/iphlpapi/iphlpapi_main.c
 +++ b/dlls/iphlpapi/iphlpapi_main.c
-@@ -1319,6 +1319,109 @@ err:
+@@ -1326,6 +1326,111 @@ err:
      return err;
  }
  
@@ -93,20 +93,22 @@ index 78000a62..46cab36b 100644
 +    SIZE_T friendly_size = sizeof(friendlyW);
 +    SIZE_T empty_size = sizeof(emptyW);
 +    SIZE_T name_size = sizeof(nameA);
-+    /* Allocate DnsSuffix separately — adapters_addresses_free() calls
-+     * heap_free(aa->DnsSuffix) explicitly, so it must be its own heap block.
-+     * Other strings can share the main adapter block. */
++    /* Allocate DnsSuffix separately — the adapter-free path frees
++     * aa->DnsSuffix explicitly, so it must be its own block. wine 11.x
++     * dropped the heap_alloc/heap_free wrappers in iphlpapi (migrated to
++     * plain calloc/malloc/free); match that so the free path's free()
++     * pairs with our allocation. Other strings share the main block. */
 +    SIZE_T needed = sizeof(*aa) + desc_size + friendly_size + name_size;
 +    char *str_ptr;
 +    WCHAR *dns_suffix;
 +
-+    aa = heap_alloc_zero( needed );
++    aa = calloc( 1, needed );
 +    if (!aa) return ERROR_NOT_ENOUGH_MEMORY;
 +
-+    dns_suffix = heap_alloc( empty_size );
++    dns_suffix = malloc( empty_size );
 +    if (!dns_suffix)
 +    {
-+        heap_free( aa );
++        free( aa );
 +        return ERROR_NOT_ENOUGH_MEMORY;
 +    }
 +    memcpy( dns_suffix, emptyW, empty_size );
@@ -146,7 +148,7 @@ index 78000a62..46cab36b 100644
  ULONG WINAPI DECLSPEC_HOTPATCH GetAdaptersAddresses( ULONG family, ULONG flags, void *reserved,
                                                       IP_ADAPTER_ADDRESSES *aa, ULONG *size )
  {
-@@ -1330,6 +1433,17 @@ ULONG WINAPI DECLSPEC_HOTPATCH GetAdaptersAddresses( ULONG family, ULONG flags,
+@@ -1337,6 +1442,17 @@ ULONG WINAPI DECLSPEC_HOTPATCH GetAdaptersAddresses( ULONG family, ULONG flags,
      if (!size) return ERROR_INVALID_PARAMETER;
  
      err = adapters_addresses_alloc( family, flags, &info, &count );
@@ -164,6 +166,3 @@ index 78000a62..46cab36b 100644
      if (err) return err;
  
      needed = adapters_addresses_size( info );
--- 
-2.43.0
-
