@@ -189,6 +189,33 @@ void WineHostProcess::setupWineEnvChild(const Config& cfg) {
         ::setenv("WINEBINDIR", binDir.c_str(), 1);
         const std::string dllDir = wineRoot + "/lib/wine";
         ::setenv("WINEDLLDIR", dllDir.c_str(), 1);
+        /* vstpoc: Turnip (Mesa Adreno Vulkan, correct VK_EXT_robustness2
+         * nullDescriptor) loaded as an Android-HAL driver via libadrenotools,
+         * exactly like Winlator. win32u patch 0030 calls
+         * adrenotools_open_libvulkan() which opens the Android libvulkan with
+         * our custom HAL driver hooked into a linker namespace that satisfies
+         * the driver's namespace-restricted system deps (libhardware/libcutils/
+         * libnativewindow). HOOKDIR MUST equal nativeLibraryDir (it holds the
+         * built hook .so shipped as jniLibs), DRIVERDIR is the extracted driver
+         * dir (internal storage), DRIVERNAME is the HAL driver soname.
+         * IMPORTANT: do NOT set VSTPOC_VULKAN_LOADER — patch 0024 keeps the
+         * android_surface bridge active when it's unset, which is exactly what
+         * the Android libvulkan needs (it has android_surface, not xlib). */
+        const std::string turnipDir = wineRoot + "/turnip";
+        ::setenv("VSTPOC_ADRENOTOOLS_HOOKDIR",   cfg.nativeLibDir.c_str(), 1);
+        ::setenv("VSTPOC_ADRENOTOOLS_DRIVERDIR", turnipDir.c_str(),        1);
+        ::setenv("VSTPOC_ADRENOTOOLS_DRIVERNAME", "vulkan.ad07xx.so",      1);
+        /* Mesa/Turnip logs to logcat by default (invisible from the forked wine
+         * process); redirect to a readable file + trace device init. */
+        ::setenv("MESA_LOG_FILE", (cfg.cacheDir + "/turnip.log").c_str(), 1);
+        ::setenv("TU_DEBUG", "startup", 1);
+        /* Turnip shader cache → our writable cacheDir (its default path is
+         * unwritable from here → recompiles every run otherwise). */
+        const std::string mesaCache = cfg.cacheDir + "/mesa_shader_cache";
+        ::mkdir(mesaCache.c_str(), 0700);
+        ::setenv("MESA_SHADER_CACHE_DIR", mesaCache.c_str(), 1);
+        ::setenv("XDG_CACHE_HOME", cfg.cacheDir.c_str(), 1);
+        ::setenv("HOME", cfg.cacheDir.c_str(), 1);
     }
     ::setenv("HODLL64",      "libarm64ecfex.dll",             1);
     ::setenv("HODLL",        "libwow64fex.dll",               1);
@@ -291,11 +318,23 @@ void WineHostProcess::setupWineEnvChild(const Config& cfg) {
      * in winex11 WM_STATE/_XEMBED PropertyNotify handlers. Default off in wine;
      * we enable it here. Benign for plugins that don't hit the deadlock. */
     ::setenv("WINE_VSTPOC_WM_STATE_UNLOCK", "1", 1);
-    /* DXVK debug logging — diagnoses D3D11 device creation failures
-     * (AmpliTube 5 etc.). Output appears in the vst_host log under
-     * standard DXVK log prefix (info:/warn:/err:). Cheap to leave on:
-     * DXVK only logs during init and on failure events. */
-    ::setenv("DXVK_LOG_LEVEL", "debug", 1);
+    /* DXVK log level — "info" gives adapter/feature-level/init diagnostics
+     * without the per-shader signature DUMP that "debug" emits. On AmpliTube
+     * (hundreds of shaders) the debug dump floods the log to 70k+ lines AND
+     * the dump path itself is a crash suspect on Turnip (less-tested code that
+     * walks shader metadata). Bump back to "debug" only when chasing a D3D11
+     * device-creation failure, not for shader-compile issues. */
+    ::setenv("DXVK_LOG_LEVEL", "info", 1);
+    /* DXVK Graphics Pipeline Libraries OFF. Turnip advertises
+     * VK_EXT_graphics_pipeline_library (Qualcomm's driver does NOT), so on
+     * Turnip DXVK takes the GPL shader-compile path that never ran on the old
+     * Qualcomm path. That path faults under FEX — a compiler thread crashes
+     * during shader compile and wine can't dispatch it ("NtRaiseException:
+     * Exception frame is not in stack limits"), which regressed TONEX AFTER a
+     * clean Turnip D3D11 device + setProcessing. Forcing the monolithic
+     * pipeline path (the one TONEX already worked with on Qualcomm) sidesteps
+     * it. DXVK_CONFIG = inline "key = value", ';'-separated (config.cpp:1497). */
+    ::setenv("DXVK_CONFIG", "dxvk.enableGraphicsPipelineLibrary = False", 1);
     {
         char displayBuf[64];
         std::snprintf(displayBuf, sizeof(displayBuf),
@@ -585,6 +624,28 @@ bool WineHostProcess::start() {
             // where we don't have an aarch64-windows subdir. Override.
             const std::string dllDir = wineRoot + "/lib/wine";
             ::setenv("WINEDLLDIR", dllDir.c_str(), 1);
+            /* vstpoc: Turnip via libadrenotools (Android-HAL driver), like
+             * Winlator. MUST be duplicated here — the actual vst_host fork uses
+             * this inline env block, not setupWineEnvChild (see
+             * feedback_winehostprocess_dup_env). win32u patch 0030 calls
+             * adrenotools_open_libvulkan(HOOKDIR=nativeLibraryDir,
+             * DRIVERDIR, DRIVERNAME). Do NOT set VSTPOC_VULKAN_LOADER — patch
+             * 0024 keeps the android_surface bridge (correct for the Android
+             * libvulkan adrenotools returns). See setupWineEnvChild for detail. */
+            const std::string turnipDir = wineRoot + "/turnip";
+            ::setenv("VSTPOC_ADRENOTOOLS_HOOKDIR",   cfg_.nativeLibDir.c_str(), 1);
+            ::setenv("VSTPOC_ADRENOTOOLS_DRIVERDIR", turnipDir.c_str(),         1);
+            ::setenv("VSTPOC_ADRENOTOOLS_DRIVERNAME", "vulkan.ad07xx.so",       1);
+            ::setenv("MESA_LOG_FILE", (cfg_.cacheDir + "/turnip.log").c_str(), 1);
+            ::setenv("TU_DEBUG", "startup", 1);
+            /* Redirect Turnip's shader cache to our writable cacheDir (its
+             * default path is unwritable here → recompiles every run). MUST be
+             * in this inline block too. */
+            const std::string mesaCache = cfg_.cacheDir + "/mesa_shader_cache";
+            ::mkdir(mesaCache.c_str(), 0700);
+            ::setenv("MESA_SHADER_CACHE_DIR", mesaCache.c_str(), 1);
+            ::setenv("XDG_CACHE_HOME", cfg_.cacheDir.c_str(), 1);
+            ::setenv("HOME", cfg_.cacheDir.c_str(), 1);
         }
         // HODLL64 / HODLL select which PE DLL implements WoW64-style x86
         // emulation. libarm64ecfex.dll is loaded by wine arm64ec when it
@@ -639,8 +700,12 @@ bool WineHostProcess::start() {
         /* DXVK debug logging — duplicated from setupWineEnvChild because
          * the actual vst_host launch uses this inline block. Per
          * feedback_winehostprocess_dup_env: env vars must be in BOTH or
-         * they silently no-op on vst_host. */
-        ::setenv("DXVK_LOG_LEVEL", "debug", 1);
+         * they silently no-op on vst_host. "info" (not "debug") — see the
+         * setupWineEnvChild copy for why the per-shader debug dump is off. */
+        ::setenv("DXVK_LOG_LEVEL", "info", 1);
+        /* DXVK GPL off on Turnip — see setupWineEnvChild for the rationale
+         * (GPL shader-compile path faults under FEX, crashed TONEX). */
+        ::setenv("DXVK_CONFIG", "dxvk.enableGraphicsPipelineLibrary = False", 1);
 
         // FEX-Emu / vstpoc tunables. These were originally added only to
         // setupWineEnvChild (the wineboot path) but the actual vst_host

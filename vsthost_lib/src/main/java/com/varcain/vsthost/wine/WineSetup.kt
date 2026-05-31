@@ -65,7 +65,7 @@ object WineSetup {
      *  (block confirmed in pWindowPosChanging→create_win_data). TEMP.
      *  v12: cwx2 unconditional + create_win_data ENTER marker (v11 size gate
      *  hid markers; disambiguate dispatch vs get_win_data vs create). TEMP. */
-    private const val SETUP_VERSION = 20
+    private const val SETUP_VERSION = 23  // v23: turnip bundle = Android-HAL driver (vulkan.ad07xx.so) loaded via libadrenotools (was Khronos ICD)
 
     data class Setup(
         val wineRoot: File,
@@ -102,6 +102,7 @@ object WineSetup {
         applyManifestSymlinks(ctx, wineRoot, nativeLibDir)
         if (needFullRebuild) {
             extractNlsTarball(ctx, wineRoot)
+            extractTurnipLibs(ctx, wineRoot)
         }
         // DO NOT extract wine.inf. When wine finds wine.inf with a newer
         // mtime than `<prefix>/.update-timestamp`, ntdll's prefix-update
@@ -191,6 +192,54 @@ object WineSetup {
                         }
                     }
                     Log.i(TAG, "extracted $nFiles NLS files to ${target.absolutePath}")
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "failed to extract $assetName: ${e.message}")
+        }
+    }
+
+    /** Extract `turnip-libs.tar.gz` into <wineRoot>/turnip/. This is Turnip
+     *  (Mesa's open-source Adreno Vulkan driver, libvulkan_freedreno.so) + the
+     *  Khronos Vulkan loader (libvulkan.so.1) + the ICD manifest + all runtime
+     *  deps, all Bionic-built. WineHostProcess points VSTPOC_VULKAN_LOADER at
+     *  <turnip>/libvulkan.so.1 (loaded by win32u patch 0028 instead of the
+     *  system libvulkan) and VK_ICD_FILENAMES at the manifest, so DXVK runs on
+     *  Turnip — which implements VK_EXT_robustness2 nullDescriptor correctly,
+     *  unlike the system Qualcomm driver. Files have .so.N SONAMEs so they
+     *  can't ship in jniLibs. */
+    private fun extractTurnipLibs(ctx: Context, wineRoot: File) {
+        val target = File(wineRoot, "turnip")
+        target.mkdirs()
+        val (assetName, gzipped) = when {
+            assetExists(ctx, "turnip-libs.tar") -> "turnip-libs.tar" to false
+            assetExists(ctx, "turnip-libs.tar.gz") -> "turnip-libs.tar.gz" to true
+            else -> {
+                Log.w(TAG, "turnip-libs.tar(.gz) missing from assets — DXVK falls back to system driver")
+                return
+            }
+        }
+        try {
+            ctx.assets.open(assetName).use { rawIn ->
+                val src: InputStream = if (gzipped) GZIPInputStream(rawIn) else rawIn
+                src.use { stream ->
+                    val tar = TarReader(stream)
+                    var nFiles = 0
+                    while (true) {
+                        val entry = tar.nextEntry() ?: break
+                        if (entry.name.isEmpty()) continue
+                        val dst = File(target, entry.name)
+                        when (entry.type) {
+                            TarEntry.Type.DIR -> dst.mkdirs()
+                            TarEntry.Type.FILE -> {
+                                dst.parentFile?.mkdirs()
+                                FileOutputStream(dst).use { fos -> tar.copyEntryTo(fos) }
+                                nFiles++
+                            }
+                            else -> { /* skip symlinks — the tarball ships real SONAME files */ }
+                        }
+                    }
+                    Log.i(TAG, "extracted $nFiles Turnip files to ${target.absolutePath}")
                 }
             }
         } catch (e: Exception) {

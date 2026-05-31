@@ -1,0 +1,72 @@
+--- a/src/dxvk/dxvk_memory.cpp
++++ b/src/dxvk/dxvk_memory.cpp
+@@ -601,7 +601,24 @@
+     // Ensure the allocation size is also aligned
+     VkDeviceSize size = align(requirements.size, requirements.alignment);
+ 
+-    for (auto typeIndex : bit::BitMask(requirements.memoryTypeBits & getMemoryTypeMask(allocationInfo.properties))) {
++    // vstpoc: getMemoryTypeMask() maps a property set to a single "representative"
++    // memory type, which on the a750 HAL Turnip can be a type the resource's
++    // memoryTypeBits does NOT include (it restricts buffers to types {0,6}, but
++    // the mask for HOST_VISIBLE|HOST_COHERENT props resolves to type 4). When the
++    // intersection is empty, fall back to ANY type in the resource's
++    // memoryTypeBits whose property flags are a superset of the requested
++    // properties — a valid binding the standard representative mask just missed.
++    uint32_t typeMask = requirements.memoryTypeBits & getMemoryTypeMask(allocationInfo.properties);
++    if (!typeMask) {
++      for (auto ti : bit::BitMask(requirements.memoryTypeBits)) {
++        if ((m_memTypes[ti].properties.propertyFlags & allocationInfo.properties) == allocationInfo.properties)
++          typeMask |= 1u << ti;
++      }
++      Logger::err(str::format("DxvkMemory: vstpoc superset type fallback → typeMask=", typeMask,
++        " (props=", uint32_t(allocationInfo.properties), " typeBits=", requirements.memoryTypeBits, ")"));
++    }
++
++    for (auto typeIndex : bit::BitMask(typeMask)) {
+       auto& type = m_memTypes[typeIndex];
+ 
+       // Use correct memory pool depending on property flags. This way we avoid
+@@ -710,6 +727,10 @@
+       }
+     }
+ 
++    Logger::err(str::format("DxvkMemory: vstpoc allocateMemory FAILED size=", size,
++      " typeBits=", requirements.memoryTypeBits, " props=", uint32_t(allocationInfo.properties),
++      " getMemoryTypeMask=", getMemoryTypeMask(allocationInfo.properties),
++      " maskedTypes=", (requirements.memoryTypeBits & getMemoryTypeMask(allocationInfo.properties))));
+     return nullptr;
+   }
+ 
+@@ -722,7 +743,17 @@
+ 
+     DxvkDeviceMemory memory = { };
+ 
+-    for (auto typeIndex : bit::BitMask(requirements.memoryTypeBits & getMemoryTypeMask(allocationInfo.properties))) {
++    // vstpoc: see allocateMemory() — superset fallback when getMemoryTypeMask's
++    // representative type isn't in the resource's memoryTypeBits (a750 Turnip).
++    uint32_t typeMask = requirements.memoryTypeBits & getMemoryTypeMask(allocationInfo.properties);
++    if (!typeMask) {
++      for (auto ti : bit::BitMask(requirements.memoryTypeBits)) {
++        if ((m_memTypes[ti].properties.propertyFlags & allocationInfo.properties) == allocationInfo.properties)
++          typeMask |= 1u << ti;
++      }
++    }
++
++    for (auto typeIndex : bit::BitMask(typeMask)) {
+       auto& type = m_memTypes[typeIndex];
+       memory = allocateDeviceMemory(type, requirements.size, next);
+ 
+@@ -1170,6 +1201,13 @@
+         freeEmptyChunksInHeap(*type.heap, VkDeviceSize(-1), high_resolution_clock::time_point());
+ 
+         VkResult vr2 = vk->vkAllocateMemory(vk->device(), &memoryInfo, nullptr, &result.memory);
++        // vstpoc: the a750 HAL Turnip (libadrenotools) transiently fails
++        // vkAllocateMemory for a valid memory type despite ample free heap —
++        // the same driver-init flakiness that made vkCreateDevice need priming.
++        // Retry several more times before giving up; this gets the allocation
++        // through and avoids the downstream NULL-deref crash in the plugin.
++        for (int attempt = 0; vr2 && attempt < 16; attempt++)
++          vr2 = vk->vkAllocateMemory(vk->device(), &memoryInfo, nullptr, &result.memory);
+         if (vr2) {
+           Logger::err(str::format("DxvkMemory: vkAllocateMemory returned ", vr1,
+             " (retry: ", vr2, ") size=", size,
