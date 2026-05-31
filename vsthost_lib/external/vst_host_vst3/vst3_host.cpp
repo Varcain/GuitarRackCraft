@@ -159,6 +159,7 @@ static constexpr unsigned ZR_RAX   = 1u << 0;
 static constexpr unsigned ZR_XMM0  = 1u << 1;
 static constexpr unsigned ZR_XMM1  = 1u << 2;
 static constexpr unsigned ZR_R14   = 1u << 8;
+static constexpr unsigned ZR_RDI   = 1u << 9;
 
 static VehPattern g_veh_patterns[] = {
     /* TH-U +0x2DF0C3: popup-dismiss vector race. Hard-coded address (no
@@ -227,6 +228,37 @@ static VehPattern g_veh_patterns[] = {
         /* memset_rsi_count */ 16,
         /* hit_count */ {0},
     },
+    /* AmpliTube 5 editor-init NULL object (Turnip/D3D11 path). ASLR'd, match
+     * by bytes. The faulting instruction loads an optional sub-object pointer
+     * from a NULL parent (rcx=0) and the plugin's OWN code immediately
+     * null-checks the result and branches:
+     *   48 8b 79 40   mov rdi, [rcx+0x40]   ← faults (rcx=NULL)
+     *   48 8b da      mov rbx, rdx
+     *   48 85 ff      test rdi, rdi
+     *   0f 84 ..      jz  <null-path>        ← handles rdi==0
+     * Recovery: zero rdi + skip the faulting load (4 bytes); the plugin's own
+     * jz then takes its null-handling path. x86 PE code, so recoverable
+     * (unlike AmpliTube's earlier native-ARM64 +FE7784 crash). */
+    {
+        "amplitube-editor-null-obj",
+        /* read */ 0,
+        /* fault_addr_max */ 0x1000,
+        /* exact_pc */ 0,    /* ASLR, match by bytes only */
+        /* byte_count */ 16,
+        /* bytes */ {
+            0x48, 0x8b, 0x79, 0x40,
+            0x48, 0x8b, 0xda, 0x48,
+            0x85, 0xff, 0x0f, 0x84,
+            0x22, 0x01, 0x00, 0x00,
+        },
+        /* rax_must_be */ 0xFFFFFFFFFFFFFFFFULL,
+        Recovery::Skip,
+        /* skip_bytes */ 4,
+        /* set_rip */ 0,
+        /* zero_regs_mask */ ZR_RDI,
+        /* memset_rsi_* */ 0, 0,
+        /* hit_count */ {0},
+    },
 };
 
 /* Helper: VirtualQuery + state checks for safe memory access. */
@@ -248,6 +280,33 @@ static bool addr_is_writable(const void *addr)
                             PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY)) != 0;
 }
 
+static bool addr_is_executable(const void *addr)
+{
+    MEMORY_BASIC_INFORMATION mbi;
+    if (VirtualQuery(addr, &mbi, sizeof(mbi)) != sizeof(mbi)) return false;
+    if (mbi.State != MEM_COMMIT) return false;
+    return (mbi.Protect & (PAGE_EXECUTE | PAGE_EXECUTE_READ |
+                            PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY)) != 0;
+}
+
+/* Dump likely return addresses from the stack to reveal the call chain that
+ * led to a fault. Best-effort + bounds-checked; helps RE which plugin/D3D
+ * call produced a NULL object. */
+static void dump_backtrace(PCONTEXT ctx)
+{
+    DWORD64 sp = ctx->Rsp;
+    int logged = 0;
+    for (int i = 0; i < 96 && logged < 20; i++) {
+        const void *slot = (const void *)(sp + (DWORD64)i * 8);
+        if (!addr_is_committed(slot)) continue;
+        DWORD64 val = *(const DWORD64 *)slot;
+        if (val > 0x10000 && addr_is_executable((const void *)val)) {
+            LOG("VEH: bt[%d] rsp+0x%x = %p\n", logged, (unsigned)(i * 8), (void *)val);
+            logged++;
+        }
+    }
+}
+
 /* Apply zero_regs_mask to ContextRecord. */
 static void zero_regs(PCONTEXT ctx, USHORT mask)
 {
@@ -255,6 +314,7 @@ static void zero_regs(PCONTEXT ctx, USHORT mask)
     if (mask & ZR_XMM0) { ctx->Xmm0.Low = 0; ctx->Xmm0.High = 0; }
     if (mask & ZR_XMM1) { ctx->Xmm1.Low = 0; ctx->Xmm1.High = 0; }
     if (mask & ZR_R14)  ctx->R14 = 0;
+    if (mask & ZR_RDI)  ctx->Rdi = 0;
 }
 
 /* Try to match `info` against a single catalog entry. Return true if
@@ -282,6 +342,12 @@ static bool try_pattern(PEXCEPTION_POINTERS info, const VehPattern &p)
 
     /* Match — apply recovery. */
     PCONTEXT ctx = info->ContextRecord;
+
+    /* vstpoc: log the call chain for the AmpliTube editor NULL (name starts
+     * with 'a') so we can RE which call produced the NULL object. */
+    if (p.name[0] == 'a')
+        dump_backtrace(ctx);
+
     zero_regs(ctx, p.zero_regs_mask);
 
     switch (p.recovery) {
@@ -374,6 +440,35 @@ static bool try_pattern(PEXCEPTION_POINTERS info, const VehPattern &p)
 
 static LONG WINAPI pluginmain_veh(PEXCEPTION_POINTERS info)
 {
+    /* vstpoc: diagnose the AmpliTube C++ exception storm (84% CPU spin). MSVC
+     * C++ throw = code 0xE06D7363. Walk the throw info to log the thrown TYPE
+     * name (rate-limited) so we know what its render init keeps failing on.
+     * All derefs are VirtualQuery-guarded; never recover, just observe. */
+    if (info->ExceptionRecord->ExceptionCode == 0xE06D7363u
+        && info->ExceptionRecord->NumberParameters >= 4) {
+        static std::atomic<int> cpp_logged{0};
+        int n = cpp_logged.fetch_add(1, std::memory_order_relaxed);
+        if (n < 10) {
+            const ULONG_PTR *ei = info->ExceptionRecord->ExceptionInformation;
+            DWORD64 base = (DWORD64)ei[3];
+            const char *tname = "?";
+            const int *ti = (const int *)ei[2];               /* ThrowInfo */
+            if (base && addr_is_committed(ti) && addr_is_committed(ti + 3)) {
+                const int *cta = (const int *)(base + (DWORD64)(unsigned)ti[3]);
+                if (addr_is_committed(cta) && addr_is_committed(cta + 1) && cta[0] > 0) {
+                    const int *ct = (const int *)(base + (DWORD64)(unsigned)cta[1]);
+                    if (addr_is_committed(ct) && addr_is_committed(ct + 1)) {
+                        const char *td = (const char *)(base + (DWORD64)(unsigned)ct[1]);
+                        if (addr_is_committed(td + 16)) tname = td + 16;  /* TypeDescriptor.name */
+                    }
+                }
+            }
+            LOG("VEH: C++ throw #%d type='%.96s' pc=%p\n", n + 1, tname,
+                info->ExceptionRecord->ExceptionAddress);
+        }
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+
     if (info->ExceptionRecord->ExceptionCode != EXCEPTION_ACCESS_VIOLATION
         || info->ExceptionRecord->NumberParameters < 2)
         return EXCEPTION_CONTINUE_SEARCH;

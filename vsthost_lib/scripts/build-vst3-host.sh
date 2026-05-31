@@ -69,6 +69,14 @@ echo "Building $OUT ..."
     "${SDK_SRCS[@]}" \
     -Wl,--stack,16777216 \
     -lole32 -loleaut32 -luuid -static -static-libgcc -static-libstdc++
+    # PE stack reserve = 16MB (default). A 64MB experiment (2026-05-31) to mask
+    # AmpliTube's deep-recursion AV REGRESSED the working plugins: the oversized
+    # main-thread reserve confused FEX's guest-stack mapping, producing
+    # "NtRaiseException: Exception frame is not in stack limits" (rsp landed far
+    # below the wine-registered stack) — crashed TONEX after a clean Turnip
+    # D3D11 device + setProcessing. Reverted; AmpliTube's editor crash is past
+    # this point now anyway. Do NOT re-bump globally; if a plugin genuinely
+    # needs a deeper stack, size that thread explicitly instead.
 
 "${CXX%-g++}-strip" "$OUT" 2>/dev/null || true
 file "$OUT"

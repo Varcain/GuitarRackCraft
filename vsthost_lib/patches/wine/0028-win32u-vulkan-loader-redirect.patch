@@ -1,0 +1,31 @@
+--- a/dlls/win32u/vulkan.c
++++ b/dlls/win32u/vulkan.c
+@@ -26,6 +26,7 @@
+ 
+ #include <dlfcn.h>
+ #include <pthread.h>
++#include <stdlib.h>
+ #include <unistd.h>
+ 
+ #include "ntstatus.h"
+@@ -3046,8 +3047,18 @@
+     VkResult res;
+ 
+ #ifdef SONAME_LIBVULKAN
+-    vulkan_handle = dlopen( SONAME_LIBVULKAN, RTLD_NOW );
+-    if (!vulkan_handle) ERR( "Failed to load %s\n", SONAME_LIBVULKAN );
++    /* vstpoc: allow redirecting the host Vulkan loader. The system Qualcomm
++     * proprietary Adreno driver rejects VK_EXT_robustness2 nullDescriptor at
++     * vkCreateDevice (which DXVK requires), so D3D11 plugins (AmpliTube) can't
++     * render. Point VSTPOC_VULKAN_LOADER at our bundled Khronos loader (which
++     * loads Turnip/Mesa via VK_ICD_FILENAMES); Turnip implements nullDescriptor
++     * correctly. Unset → system libvulkan (unchanged, safe). */
++    {
++        const char *vstpoc_loader = getenv( "VSTPOC_VULKAN_LOADER" );
++        const char *vulkan_name = (vstpoc_loader && *vstpoc_loader) ? vstpoc_loader : SONAME_LIBVULKAN;
++        vulkan_handle = dlopen( vulkan_name, RTLD_NOW );
++        if (!vulkan_handle) ERR( "Failed to load %s\n", vulkan_name );
++    }
+ #else
+     ERR( "Wine was built without Vulkan support.\n" );
+ #endif

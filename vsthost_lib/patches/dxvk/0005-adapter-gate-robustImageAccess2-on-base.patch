@@ -1,0 +1,114 @@
+--- a/src/dxvk/dxvk_adapter.cpp
++++ b/src/dxvk/dxvk_adapter.cpp
+@@ -438,7 +438,16 @@
+     // since we no longer have a fallback for those in the backend — gated on support
+     enabledFeatures.extRobustness2.robustBufferAccess2 =
+       m_deviceFeatures.extRobustness2.robustBufferAccess2;
+-    enabledFeatures.extRobustness2.robustImageAccess2 = m_deviceFeatures.extRobustness2.robustImageAccess2;
++    // vstpoc: the a750 HAL Turnip rejects vkCreateDevice with
++    // VK_ERROR_FEATURE_NOT_PRESENT when ALL THREE robustness2 bools
++    // (robustBufferAccess2 + robustImageAccess2 + nullDescriptor) are enabled
++    // together, but accepts any two (proven by the sub-bisect in the failure
++    // path below — removing any single one → VK_SUCCESS). DXVK hard-requires
++    // nullDescriptor (no backend fallback) and robustBufferAccess2 (suballocator
++    // alignment), but NOT robustImageAccess2 — so force it off to get a working
++    // D3D11 device. The only cost is the optional out-of-bounds image-access
++    // robustness guarantee, which plugins don't rely on.
++    enabledFeatures.extRobustness2.robustImageAccess2 = VK_FALSE;
+     enabledFeatures.extRobustness2.nullDescriptor =
+       m_deviceFeatures.extRobustness2.nullDescriptor;
+ 
+@@ -546,46 +555,61 @@
+       vr = m_vki->vkCreateDevice(m_handle, &info, nullptr, &device);
+     }
+ 
+-    if (vr != VK_SUCCESS) {
+-      Logger::err(str::format("DxvkAdapter: vkCreateDevice returned ", vr));
++    // vstpoc: the a750 HAL Turnip (libadrenotools) intermittently rejects the
++    // FIRST vkCreateDevice with VK_ERROR_FEATURE_NOT_PRESENT but accepts an
++    // identical retry — a driver state/warm-up bug. (Our pNext-chain bisect is
++    // fooled by it: the Nth probe "succeeds" regardless of which struct was
++    // removed, falsely flagging robustness2.) Retry the unchanged call a few
++    // times before giving up; this is what actually gets a D3D11 device.
++    for (int attempt = 0; attempt < 8 && vr != VK_SUCCESS; attempt++) {
++      vr = m_vki->vkCreateDevice(m_handle, &info, nullptr, &device);
++      Logger::err(str::format("DxvkAdapter: vstpoc vkCreateDevice retry #",
++        attempt + 1, " → ", vr));
++    }
+ 
+-      /* Bisect to find the offending feature struct. Walk the pNext chain
+-       * unlinking one struct at a time and retrying vkCreateDevice. The
+-       * first struct whose removal makes vkCreateDevice succeed is the
+-       * culprit. Diagnostic only — we don't keep the device. */
+-      auto dumpType = [](VkStructureType t) -> const char* {
+-        switch (t) {
+-          case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES: return "vk11";
+-          case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES: return "vk12";
+-          case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES: return "vk13";
+-          default: return "ext";
+-        }
+-      };
++    if (vr != VK_SUCCESS) {
++      Logger::err(str::format("DxvkAdapter: vkCreateDevice returned ", vr, " — priming"));
+ 
++      // vstpoc: the a750 HAL Turnip rejects a vkCreateDevice that enables ≥2
++      // robustness2 features while NO device exists yet, but accepts it once one
++      // does. "Prime" the driver: create a throwaway device with the robustness2
++      // struct unlinked from the pNext chain (always accepted), create the real
++      // device while the primer exists, then DESTROY the primer so its kgsl
++      // contexts/resources don't starve the real device's memory allocations
++      // (which otherwise fail despite a free heap → plugin NULL-deref crash).
+       VkBaseOutStructure* head = const_cast<VkBaseOutStructure*>(
+         reinterpret_cast<const VkBaseOutStructure*>(info.pNext));
++      VkBaseOutStructure* r2prev = nullptr, *r2 = nullptr;
+       for (VkBaseOutStructure* prev = nullptr, *cur = head; cur; prev = cur, cur = cur->pNext) {
+-        VkBaseOutStructure* saved_next = cur->pNext;
+-        if (prev) prev->pNext = saved_next; else info.pNext = saved_next;
+-        VkDevice probe = VK_NULL_HANDLE;
+-        VkResult probe_vr = m_vki->vkCreateDevice(m_handle, &info, nullptr, &probe);
+-        Logger::err(str::format("DxvkAdapter: bisect: without sType=", uint32_t(cur->sType),
+-          " (", dumpType(cur->sType), ") → vkCreateDevice returned ", probe_vr));
+-        // Probe device intentionally leaked — m_vki is InstanceFn, not
+-        // DeviceFn; we'd have to build a temporary DeviceFn just to call
+-        // vkDestroyDevice. Diagnostic path throws shortly so leak is fine.
+-        (void)probe;
+-        // Restore chain
+-        if (prev) prev->pNext = cur; else info.pNext = cur;
+-        cur->pNext = saved_next;
+-        if (probe_vr == VK_SUCCESS) {
+-          Logger::err(str::format("DxvkAdapter: bisect: CULPRIT struct sType=",
+-            uint32_t(cur->sType), " (", dumpType(cur->sType), ")"));
+-          break;
++        if (cur->sType == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_FEATURES_EXT) {
++          r2 = cur; r2prev = prev; break;
+         }
+       }
+ 
+-      throw DxvkError("DxvkAdapter: Failed to create device");
++      VkDevice primer = VK_NULL_HANDLE;
++      if (r2) {
++        VkBaseOutStructure* r2next = r2->pNext;
++        if (r2prev) r2prev->pNext = r2next; else info.pNext = r2next;   // unlink robustness2
++        VkResult pvr = m_vki->vkCreateDevice(m_handle, &info, nullptr, &primer);
++        Logger::err(str::format("DxvkAdapter: vstpoc primer device (no robustness2) → ", pvr));
++        if (r2prev) r2prev->pNext = r2; else info.pNext = r2;           // relink robustness2
++        r2->pNext = r2next;
++      }
++
++      for (int attempt = 0; attempt < 4 && vr != VK_SUCCESS; attempt++) {
++        vr = m_vki->vkCreateDevice(m_handle, &info, nullptr, &device);
++        Logger::err(str::format("DxvkAdapter: vstpoc primed vkCreateDevice #",
++          attempt + 1, " → ", vr));
++      }
++
++      if (primer != VK_NULL_HANDLE) {
++        Rc<vk::DeviceFn> primerFn = new vk::DeviceFn(m_vki, false, primer);
++        primerFn->vkDestroyDevice(primer, nullptr);
++        Logger::err("DxvkAdapter: vstpoc primer device destroyed");
++      }
++
++      if (vr != VK_SUCCESS)
++        throw DxvkError("DxvkAdapter: Failed to create device");
+     }
+ 
+     Rc<vk::DeviceFn> vkd = new vk::DeviceFn(m_vki, true, device);

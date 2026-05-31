@@ -1,0 +1,21 @@
+--- a/loader/main.c
++++ b/loader/main.c
+@@ -175,6 +175,18 @@
+ {
+     void *handle;
+ 
++    /* vstpoc: disable Android's fd-sanitizer for this wine process. Mesa/Turnip
++     * (our bundled Vulkan driver) closes file descriptors that a libc FILE*
++     * still owns, and fdsan ABORTS on that (Bionic's default is FATAL on recent
++     * Android). The forked launcher can't set this — it's reset by execve — so
++     * we do it here, the first wine code to run in the exec'd image. Winlator
++     * does the same for Mesa-on-Android. dlsym avoids the API-29 header guard;
++     * no-op when the symbol is absent. 0 = ANDROID_FDSAN_ERROR_LEVEL_DISABLED. */
++    {
++        void (*set_fdsan_level)( unsigned ) = dlsym( RTLD_DEFAULT, "android_fdsan_set_error_level" );
++        if (set_fdsan_level) set_fdsan_level( 0u );
++    }
++
+     init_reserved_areas();
+ 
+     /* WINELOADER_NTDLL: explicit absolute path to ntdll.so. Required for
