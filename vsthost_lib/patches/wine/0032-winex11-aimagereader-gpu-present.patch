@@ -1,0 +1,166 @@
+--- a/dlls/winex11.drv/vulkan.c
++++ b/dlls/winex11.drv/vulkan.c
+@@ -46,6 +46,138 @@
+ 
+ static const struct vulkan_driver_funcs x11drv_vulkan_driver_funcs;
+ 
++/* ============================================================================
++ * vstpoc GPU-present: real Android Vulkan surface backed by an AImageReader.
++ *
++ * On Android with adrenotools+Turnip, winex11 has no Xlib surface and the
++ * Android Vulkan loader filters out VK_EXT_headless_surface, so the only real
++ * surface is VK_KHR_android_surface — which needs an ANativeWindow. We get one
++ * with NO JVM via NDK AImageReader_getWindow(). DXVK creates a real swapchain
++ * on it; an image-available listener reads each rendered frame back and
++ * XPutImages it to the editor's X11 window, where our X server composites it.
++ * ============================================================================ */
++static void *g_vstpoc_vk_handle;   /* host Vulkan loader handle, set in VulkanInit */
++
++typedef int vstpoc_media_status;
++typedef void (*vstpoc_image_cb)( void *ctx, void *reader );
++struct vstpoc_image_listener { void *context; vstpoc_image_cb onImageAvailable; };
++typedef struct { VkStructureType sType; const void *pNext; uint32_t flags; void *window; }
++        vstpoc_android_surface_ci;
++
++static vstpoc_media_status (*p_AImageReader_newWithUsage)( int32_t, int32_t, int32_t, uint64_t, int32_t, void ** );
++static vstpoc_media_status (*p_AImageReader_getWindow)( void *, void ** );
++static vstpoc_media_status (*p_AImageReader_setImageListener)( void *, struct vstpoc_image_listener * );
++static vstpoc_media_status (*p_AImageReader_acquireLatestImage)( void *, void ** );
++static vstpoc_media_status (*p_AImage_getPlaneData)( const void *, int, uint8_t **, int * );
++static vstpoc_media_status (*p_AImage_getPlaneRowStride)( const void *, int, int32_t * );
++static void (*p_AImage_delete)( void * );
++
++struct vstpoc_surface_ctx
++{
++    void *reader;
++    Window x11_window;
++    Display *dpy;          /* dedicated connection for the listener thread */
++    GC gc;
++    int width, height, depth;
++    int in_use;
++};
++static struct vstpoc_surface_ctx g_vstpoc_surfaces[16];
++static struct vstpoc_image_listener g_vstpoc_listeners[16];
++
++static int vstpoc_load_media(void)
++{
++    static int loaded;
++    if (loaded) return loaded > 0;
++    void *m = dlopen( "libmediandk.so", RTLD_NOW );
++    if (!m) { loaded = -1; ERR( "vstpoc: dlopen libmediandk.so failed: %s\n", dlerror() ); return 0; }
++    p_AImageReader_newWithUsage       = dlsym( m, "AImageReader_newWithUsage" );
++    p_AImageReader_getWindow          = dlsym( m, "AImageReader_getWindow" );
++    p_AImageReader_setImageListener   = dlsym( m, "AImageReader_setImageListener" );
++    p_AImageReader_acquireLatestImage = dlsym( m, "AImageReader_acquireLatestImage" );
++    p_AImage_getPlaneData             = dlsym( m, "AImage_getPlaneData" );
++    p_AImage_getPlaneRowStride        = dlsym( m, "AImage_getPlaneRowStride" );
++    p_AImage_delete                   = dlsym( m, "AImage_delete" );
++    int ok = p_AImageReader_newWithUsage && p_AImageReader_getWindow && p_AImageReader_setImageListener
++          && p_AImageReader_acquireLatestImage && p_AImage_getPlaneData && p_AImage_delete;
++    loaded = ok ? 1 : -1;
++    if (!ok) ERR( "vstpoc: missing AImageReader symbols in libmediandk.so\n" );
++    return ok;
++}
++
++/* AImageReader image-available callback: runs on the reader's own thread.
++ * Acquire the freshest frame, read its pixels, XPutImage to the editor window. */
++static void vstpoc_on_image( void *context, void *reader )
++{
++    struct vstpoc_surface_ctx *s = context;
++    void *image = NULL;
++    if (p_AImageReader_acquireLatestImage( reader, &image ) != 0 || !image) return;
++    uint8_t *data = NULL; int len = 0; int32_t stride = s->width * 4;
++    if (p_AImage_getPlaneData( image, 0, &data, &len ) == 0 && data)
++    {
++        if (p_AImage_getPlaneRowStride) p_AImage_getPlaneRowStride( image, 0, &stride );
++        XImage *xi = XCreateImage( s->dpy, DefaultVisual( s->dpy, DefaultScreen( s->dpy ) ),
++                                   s->depth, ZPixmap, 0, (char *)data, s->width, s->height, 32, stride );
++        if (xi)
++        {
++            xi->byte_order = LSBFirst;
++            xi->red_mask = 0x000000ff; xi->green_mask = 0x0000ff00; xi->blue_mask = 0x00ff0000;
++            XPutImage( s->dpy, s->x11_window, s->gc, xi, 0, 0, 0, 0, s->width, s->height );
++            XFlush( s->dpy );
++            xi->data = NULL;
++            XDestroyImage( xi );
++        }
++    }
++    p_AImage_delete( image );
++}
++
++static VkResult vstpoc_create_android_surface( const struct vulkan_instance *instance,
++                                               Window x11_window, VkSurfaceKHR *handle )
++{
++    if (!vstpoc_load_media() || !g_vstpoc_vk_handle) return VK_ERROR_INITIALIZATION_FAILED;
++
++    Window root; int gx, gy; unsigned int w = 0, h = 0, bw = 0, depth = 0;
++    XGetGeometry( gdi_display, x11_window, &root, &gx, &gy, &w, &h, &bw, &depth );
++    if (!w || !h) { w = 1280; h = 720; }
++    if (depth < 24) depth = 24;
++
++    void *reader = NULL, *anw = NULL;
++    /* AIMAGE_FORMAT_RGBA_8888=0x1; usage GPU_COLOR_OUTPUT(0x200)|CPU_READ_OFTEN(0x3) */
++    if (p_AImageReader_newWithUsage( (int32_t)w, (int32_t)h, 0x1, 0x203ull, 4, &reader ) != 0 || !reader)
++    { ERR( "vstpoc: AImageReader_newWithUsage failed\n" ); return VK_ERROR_INITIALIZATION_FAILED; }
++    if (p_AImageReader_getWindow( reader, &anw ) != 0 || !anw)
++    { ERR( "vstpoc: AImageReader_getWindow failed\n" ); return VK_ERROR_INITIALIZATION_FAILED; }
++
++    PFN_vkGetInstanceProcAddr gipa = (PFN_vkGetInstanceProcAddr)dlsym( g_vstpoc_vk_handle, "vkGetInstanceProcAddr" );
++    VkResult (*create_android)( VkInstance, const vstpoc_android_surface_ci *, const VkAllocationCallbacks *, VkSurfaceKHR * ) = NULL;
++    if (gipa) create_android = (void *)gipa( instance->host.instance, "vkCreateAndroidSurfaceKHR" );
++    if (!create_android) { ERR( "vstpoc: no vkCreateAndroidSurfaceKHR entry point\n" ); return VK_ERROR_INITIALIZATION_FAILED; }
++
++    vstpoc_android_surface_ci ci = { .sType = (VkStructureType)1000008000, .pNext = NULL, .flags = 0, .window = anw };
++    VkResult vr = create_android( instance->host.instance, &ci, NULL, handle );
++    if (vr != VK_SUCCESS) { ERR( "vstpoc: vkCreateAndroidSurfaceKHR -> %d\n", vr ); return vr; }
++
++    int idx = -1;
++    for (int i = 0; i < 16; i++) if (!g_vstpoc_surfaces[i].in_use) { idx = i; break; }
++    if (idx >= 0)
++    {
++        struct vstpoc_surface_ctx *s = &g_vstpoc_surfaces[idx];
++        s->in_use = 1; s->reader = reader; s->x11_window = x11_window;
++        s->width = (int)w; s->height = (int)h; s->depth = (int)depth;
++        s->dpy = XOpenDisplay( DisplayString( gdi_display ) );
++        if (s->dpy)
++        {
++            s->gc = XCreateGC( s->dpy, x11_window, 0, NULL );
++            g_vstpoc_listeners[idx].context = s;
++            g_vstpoc_listeners[idx].onImageAvailable = vstpoc_on_image;
++            p_AImageReader_setImageListener( reader, &g_vstpoc_listeners[idx] );
++            ERR( "vstpoc: GPU-present ACTIVE — android_surface + AImageReader readback (%ux%u depth=%u win=0x%lx)\n",
++                 w, h, depth, x11_window );
++        }
++        else ERR( "vstpoc: XOpenDisplay for readback failed — surface created but no present\n" );
++    }
++    return VK_SUCCESS;
++}
++
+ static VkResult X11DRV_vulkan_surface_create( HWND hwnd, const struct vulkan_instance *instance, VkSurfaceKHR *handle,
+                                               struct client_surface **client )
+ {
+@@ -71,8 +203,14 @@
+      * archived patch 008-winex11-vulkan-android (the 10.10 stub). */
+     if (!instance->p_vkCreateXlibSurfaceKHR)
+     {
++        /* vstpoc: create a REAL android_surface backed by an AImageReader so the
++         * plugin's D3D11 editor swapchain succeeds and we can present frames back
++         * to info.window (the editor's X11 window). Fall back to the stub only if
++         * that fails. */
++        if (vstpoc_create_android_surface( instance, info.window, handle ) == VK_SUCCESS)
++            return VK_SUCCESS;
+         *handle = (VkSurfaceKHR)(uintptr_t)*client;
+-        WARN("Android-Vulkan: returning stub VkSurfaceKHR (no host xlib/android surface entry point)\n");
++        WARN("Android-Vulkan: real surface failed; returning stub VkSurfaceKHR\n");
+         return VK_SUCCESS;
+     }
+ 
+@@ -152,6 +290,8 @@
+      * Vulkan bridge) is the one actually loaded, not a stale cached copy. */
+     ERR( "vstpoc: winex11 Android Vulkan bridge ACTIVE (android_surface + stub)\n" );
+ 
++    g_vstpoc_vk_handle = vulkan_handle;   /* for vkCreateAndroidSurfaceKHR lookup */
++
+     /* vstpoc: probe whether the host Vulkan loader exposes VK_EXT_headless_surface
+      * (+ android_surface). Turnip implements headless, but the Android system
+      * Vulkan loader (which adrenotools wraps) curates instance extensions and may

@@ -1,18 +1,25 @@
 From: Kamil Lulko <limakzagan@gmail.com>
-Subject: ntdll/sync: RtlWaitOnAddress + CV sent-message drain (11.9 port of patch 020)
+Subject: ntdll/sync: RtlWaitOnAddress + CV sent-message drain w/ stack-headroom guard (11.9)
 
-Ports the dlls/ntdll/sync.c portion of patch 0003 (020-cv-drain-sent-
-messages) to 11.9. Without it vst3_host.exe deadlocks during ARM64EC init
-(threads spin in RtlWaitOnAddress, main() never reached). Drains queued
-cross-thread QS_SENDMESSAGE sends via dynamically-resolved
-win32u!NtUserPeekMessage on each short-timeout wake. (win32u/message.c +
-input.c + wininet parts of 0003 deferred — not needed for init.)
+Ports the dlls/ntdll/sync.c portion of patch 0003 (020-cv-drain-sent-messages)
+to 11.9, PLUS a stack-headroom guard. Without the drain, vst3_host.exe
+deadlocks during ARM64EC VST3 init (threads spin in RtlWaitOnAddress, main()
+never reached): it drains queued cross-thread QS_SENDMESSAGE sends via
+win32u!NtUserPeekMessage on each short-timeout / infinite-CV wake. The guard
+caps an unbounded drain feedback (BIAS FX 2's UI thread waits -> drain
+dispatches a sent WM -> that WindowProc waits -> drains again -> ~32KB/level
+recursion -> 8MB stack overflow): skip the drain when <1MB of stack remains
+(read from the TEB DeallocationStack; a __thread depth counter is unreliable
+in ntdll and silently re-broke TONEX/TH-U). Shallow drains (every VST3 init
+needs them to break its cross-thread SendMessage deadlock) run normally; only
+the deep runaway is capped, so BIAS FX 2 loads + runs audio instead of
+crashing, with no regression to the other plugins.
 
 diff --git a/dlls/ntdll/sync.c b/dlls/ntdll/sync.c
-index e118cbee86a..d54df8b14fb 100644
+index e118cbee86a..dd31dc1dc7e 100644
 --- a/dlls/ntdll/sync.c
 +++ b/dlls/ntdll/sync.c
-@@ -791,18 +791,61 @@ NTSTATUS WINAPI RtlSleepConditionVariableCS( RTL_CONDITION_VARIABLE *variable, R
+@@ -791,18 +791,84 @@ NTSTATUS WINAPI RtlSleepConditionVariableCS( RTL_CONDITION_VARIABLE *variable, R
   * NOTES
   *  the behaviour is undefined if the thread doesn't own the lock.
   */
@@ -46,6 +53,30 @@ index e118cbee86a..d54df8b14fb 100644
 +    return cached;
 +}
 +
++/* vstpoc: stack-headroom guard for the sent-message drain below. The drain
++ * calls NtUserPeekMessage, which DISPATCHES a queued cross-thread WM to this
++ * thread's WindowProc. That WindowProc can itself block on a CV /
++ * RtlWaitOnAddress and NEED a further drain to break a nested cross-thread
++ * SendMessage deadlock — EVERY VST3 init relies on this (TONEX/TH-U/AmpliTube),
++ * so the drain must keep working for shallow nesting. But an unbounded feedback
++ * (BIAS FX 2's WM_USER async storm) recurses ~32KB/level until the 8MB stack
++ * overflows. Gate on the REMAINING STACK (read from the TEB) rather than a
++ * __thread depth counter (TLS is unreliable in ntdll — a garbage value there
++ * silently disabled the drain and re-broke TONEX/TH-U). Shallow drains run
++ * normally (plenty of headroom); the deep runaway stops ~1MB before the guard
++ * page, so it never overflows. */
++static void vstpoc_drain_sent_messages(void)
++{
++    PFN_NtUserPeekMessage peek;
++    TEB *teb = NtCurrentTeb();
++    char local;
++    if (teb && teb->DeallocationStack &&
++        (ULONG_PTR)&local < (ULONG_PTR)teb->DeallocationStack + 0x100000) /* <1MB stack left */
++        return;
++    if (!(peek = vstpoc_get_peek_msg())) return;
++    { VSTPOC_MSG_t dummy; peek(&dummy, NULL, 0, 0, 0); }
++}
++
  NTSTATUS WINAPI RtlSleepConditionVariableSRW( RTL_CONDITION_VARIABLE *variable, RTL_SRWLOCK *lock,
                                                const LARGE_INTEGER *timeout, ULONG flags )
  {
@@ -65,8 +96,7 @@ index e118cbee86a..d54df8b14fb 100644
 +        status = RtlWaitOnAddress( &variable->Ptr, &value, sizeof(value), eff_timeout );
 +        if (status != STATUS_TIMEOUT) break;
 +        if (vstpoc_is_infinite) {
-+            PFN_NtUserPeekMessage peek = vstpoc_get_peek_msg();
-+            if (peek) { VSTPOC_MSG_t dummy; peek(&dummy, NULL, 0, 0, 0); }
++            vstpoc_drain_sent_messages();
 +            value = *(int *)&variable->Ptr;
 +            continue;
 +        }
@@ -75,7 +105,7 @@ index e118cbee86a..d54df8b14fb 100644
  
      if (flags & RTL_CONDITION_VARIABLE_LOCKMODE_SHARED)
          RtlAcquireSRWLockShared( lock );
-@@ -881,6 +924,12 @@ NTSTATUS WINAPI RtlWaitOnAddress( const void *addr, const void *cmp, SIZE_T size
+@@ -881,6 +947,12 @@ NTSTATUS WINAPI RtlWaitOnAddress( const void *addr, const void *cmp, SIZE_T size
      struct futex_queue *queue = get_futex_queue( addr );
      struct futex_entry entry;
      NTSTATUS ret;
@@ -88,7 +118,7 @@ index e118cbee86a..d54df8b14fb 100644
  
      TRACE("addr %p cmp %p size %#Ix timeout %s\n", addr, cmp, size, debugstr_timeout( timeout ));
  
-@@ -917,6 +966,18 @@ NTSTATUS WINAPI RtlWaitOnAddress( const void *addr, const void *cmp, SIZE_T size
+@@ -917,6 +989,15 @@ NTSTATUS WINAPI RtlWaitOnAddress( const void *addr, const void *cmp, SIZE_T size
          spin_unlock( &queue->lock );
      }
  
@@ -99,10 +129,7 @@ index e118cbee86a..d54df8b14fb 100644
 +     * QS_SENDMESSAGE without touching the posted-message queue. Done before
 +     * the STATUS_ALERTED→SUCCESS rewrite so we still see the raw wake cause. */
 +    if (vstpoc_short_timeout && (ret == STATUS_TIMEOUT || ret == STATUS_ALERTED))
-+    {
-+        PFN_NtUserPeekMessage peek = vstpoc_get_peek_msg();
-+        if (peek) { VSTPOC_MSG_t dummy; peek(&dummy, NULL, 0, 0, 0); }
-+    }
++        vstpoc_drain_sent_messages();
 +
      TRACE("returning %#lx\n", ret);
  

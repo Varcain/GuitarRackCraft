@@ -1,0 +1,63 @@
+From: Kamil Lulko <limakzagan@gmail.com>
+Subject: winex11.drv: state-change value-match accept + DROP/mismatch diagnostics
+
+Two coupled changes in handle_state_change() (entangled in adjacent context, so
+kept in one patch; supersedes 0027-state-change-drop-err-log):
+
+1. BEHAVIORAL FIX (permanent): accept a value-CORRECT confirmation that arrives
+   with an 'old' serial. Our headless X server's PropertyNotify confirmations lag
+   wine's rapid re-requests during an init relayout storm (BIAS FX 2 sets
+   WM_NORMAL_HINTS many times). 11.9's serial-strict machine otherwise drops the
+   correct confirmation (serial < expect_serial), the state never converges, the
+   plugin keeps re-requesting, and its UI thread spins/recurses to a stack
+   overflow (black editor). If the received value already matches the pending
+   desired state, the window IS in that state - accept it. Genuine value
+   mismatches still drop.
+
+2. DIAGNOSTICS (TEMP): ERR-log dropped confirmations and value mismatches so they
+   surface in err+all without the timing-perturbing warn+x11drv flood. Remove
+   once the state machine is stable; leave hunk 1.
+
+diff --git a/dlls/winex11.drv/window.c b/dlls/winex11.drv/window.c
+index d2d53a40be3..0f4f072a6e4 100644
+--- a/dlls/winex11.drv/window.c
++++ b/dlls/winex11.drv/window.c
+@@ -1822,9 +1822,26 @@ static BOOL handle_state_change( unsigned long serial, unsigned long *expect_ser
+                                  void *desired, void *pending, void *current, const char *expected,
+                                  const char *prefix, const char *received, const char *reason )
+ {
+-    if (serial < *expect_serial) reason = "old ";
++    /* vstpoc: our headless X server's confirmations can lag rapid re-requests
++     * (e.g. BIAS FX 2's UI relayout storm sets WM_NORMAL_HINTS many times during
++     * init) → a value-CORRECT confirmation arrives with an "old" serial because
++     * wine already issued newer requests. Dropping it as "old" leaves the state
++     * unconfirmed forever, so the plugin keeps re-requesting → its UI thread
++     * spins/recurses until the stack overflows (black editor). If the received
++     * value already matches the pending desired state, the window IS in that
++     * state — accept it instead of dropping. Genuine value mismatches (and old
++     * confirms when not awaiting one) still drop. */
++    if (serial < *expect_serial &&
++        !(*expect_serial && size && !memcmp( pending, value, size )))
++        reason = "old ";
+     if (reason)
+     {
++        /* vstpoc-state TEMP: a desired-state confirmation was DROPPED. On 11.9's
++         * serial-strict state machine this stalls window readiness (editor
++         * "Loading…"). ERR so it lands in err+all without warn+x11drv's timing-
++         * perturbing flood. "old "=our X-server event serial < the request serial;
++         * "transient "=benign WM transition skip. Names the stuck state. */
++        if (strcmp( reason, "transient " )) ERR( "vstpoc-state: DROP-confirm %s%s%s%s\n", prefix, reason, received, expected );
+         WARN( "Ignoring %s%s%s%s\n", prefix, reason, received, expected );
+         memcpy( current, value, size );
+         return FALSE;
+@@ -1835,6 +1852,10 @@ static BOOL handle_state_change( unsigned long serial, unsigned long *expect_ser
+     if (!reason) TRACE( "%s%s%s\n", prefix, received, expected );
+     else
+     {
++        /* vstpoc-state TEMP: value MISMATCH (serial ok, but our X server echoed a
++         * different value than wine requested — e.g. a config rect clipped to the
++         * virtual screen). Forces desired=pending=value, can prevent convergence. */
++        ERR( "vstpoc-state: %s-value %s%s%s%s\n", reason, prefix, reason, received, expected );
+         WARN( "%s%s%s%s\n", prefix, reason, received, expected );
+         /* avoid requesting the same state again */
+         memcpy( desired, value, size );
