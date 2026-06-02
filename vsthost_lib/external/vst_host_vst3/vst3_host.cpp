@@ -47,6 +47,7 @@ extern "C" {
 #include "pluginterfaces/vst/ivstprocesscontext.h"
 #include "pluginterfaces/vst/vsttypes.h"
 #include "pluginterfaces/gui/iplugview.h"
+#include "pluginterfaces/gui/iplugviewcontentscalesupport.h"
 #include "pluginterfaces/vst/ivstmessage.h"
 #include "public.sdk/source/vst/hosting/module.h"
 #include "public.sdk/source/vst/hosting/hostclasses.h"
@@ -307,6 +308,28 @@ static void dump_backtrace(PCONTEXT ctx)
     }
 }
 
+/* Proper x64 stack walk via the unwind tables — gives the REAL call chain
+ * (return addresses), unlike the heuristic scan. */
+static void unwind_backtrace(PCONTEXT start)
+{
+    CONTEXT ctx = *start;
+    for (int i = 0; i < 32; i++) {
+        DWORD64 pc = ctx.Rip;
+        if (!pc) break;
+        LOG("VEH: uw[%d] = %p\n", i, (void *)pc);
+        DWORD64 imgbase = 0;
+        PRUNTIME_FUNCTION fn = RtlLookupFunctionEntry( pc, &imgbase, NULL );
+        if (!fn) {
+            if (!addr_is_committed( (void *)ctx.Rsp )) break;
+            ctx.Rip = *(DWORD64 *)ctx.Rsp;
+            ctx.Rsp += 8;
+            continue;
+        }
+        PVOID handlerData = NULL; DWORD64 establisher = 0;
+        RtlVirtualUnwind( 0 /*UNW_FLAG_NHANDLER*/, imgbase, pc, fn, &ctx, &handlerData, &establisher, NULL );
+    }
+}
+
 /* Apply zero_regs_mask to ContextRecord. */
 static void zero_regs(PCONTEXT ctx, USHORT mask)
 {
@@ -343,10 +366,10 @@ static bool try_pattern(PEXCEPTION_POINTERS info, const VehPattern &p)
     /* Match — apply recovery. */
     PCONTEXT ctx = info->ContextRecord;
 
-    /* vstpoc: log the call chain for the AmpliTube editor NULL (name starts
-     * with 'a') so we can RE which call produced the NULL object. */
+    /* vstpoc: proper unwound call chain for the AmpliTube editor NULL (name
+     * starts with 'a') — RE which render-init call produced the NULL object. */
     if (p.name[0] == 'a')
-        dump_backtrace(ctx);
+        unwind_backtrace(ctx);
 
     zero_regs(ctx, p.zero_regs_mask);
 
@@ -465,6 +488,48 @@ static LONG WINAPI pluginmain_veh(PEXCEPTION_POINTERS info)
             }
             LOG("VEH: C++ throw #%d type='%.96s' pc=%p\n", n + 1, tname,
                 info->ExceptionRecord->ExceptionAddress);
+            /* Dump the thrown object (Info[1]) — for a NotAvailableError it
+             * should carry the requested property key, inline (MSVC SSO string)
+             * or via a char* member. */
+            const unsigned char *obj = (const unsigned char *)ei[1];
+            if (addr_is_committed(obj)) {
+                char asc[97];
+                for (int k = 0; k < 96; k++) {
+                    unsigned char c = addr_is_committed(obj + k) ? obj[k] : 0;
+                    asc[k] = (c >= 32 && c < 127) ? (char)c : '.';
+                }
+                asc[96] = 0;
+                LOG("VEH: C++ obj inline: %s\n", asc);
+                /* vstpoc: the miss is an ENUM key (binary, not a string). Hex +
+                 * uint32 dump of the NotAvailableError object so we can read the
+                 * requested property enum value and the call chain it came from. */
+                char hexb[160]; int hp = 0;
+                for (int k = 0; k < 48 && hp < (int)sizeof(hexb) - 4; k++) {
+                    unsigned char c = addr_is_committed(obj + k) ? obj[k] : 0;
+                    hp += snprintf(hexb + hp, sizeof(hexb) - hp, "%02x%s", c, (k & 3) == 3 ? " " : "");
+                }
+                hexb[hp] = 0;
+                LOG("VEH: C++ obj hex: %s\n", hexb);
+                char u32s[200]; int up = 0;
+                for (int k = 0; k + 4 <= 48 && up < (int)sizeof(u32s) - 18; k += 4) {
+                    unsigned int v = 0;
+                    if (addr_is_committed(obj + k)) memcpy(&v, obj + k, 4);
+                    up += snprintf(u32s + up, sizeof(u32s) - up, "[+%d]=%u ", k, v);
+                }
+                LOG("VEH: C++ obj u32: %s\n", u32s);
+                for (int off = 8; off <= 48; off += 8) {
+                    if (!addr_is_committed(obj + off)) continue;
+                    const char *p = *(const char *const *)(obj + off);
+                    if (!addr_is_committed(p)) continue;
+                    char s[65]; int j = 0;
+                    for (; j < 64 && addr_is_committed(p + j) && p[j] >= 32 && p[j] < 127; j++) s[j] = p[j];
+                    s[j] = 0;
+                    if (j >= 2) LOG("VEH: C++ obj[+%d]->'%s'\n", off, s);
+                }
+            }
+            /* Proper unwound backtrace at the throw → the real IK ATK call
+             * chain that requested the unavailable property. */
+            if (n < 3) unwind_backtrace( info->ContextRecord );
         }
         return EXCEPTION_CONTINUE_SEARCH;
     }
@@ -668,7 +733,47 @@ struct EditorThreadCtx {
     HWND        parent;
     int32       width;
     int32       height;
+    bool        pump_during_attach;   /* gated: AmpliTube needs the editor
+                                       * window's queue pumped *during* attached() */
 };
+
+/* vstpoc: for plugins (AmpliTube/IK ATK) whose attached() blocks waiting on
+ * window messages delivered to the editor thread's own queue, we must run
+ * attached() on a worker thread and keep pumping the editor window's queue
+ * meanwhile — the editor thread can't pump while synchronously inside attached().
+ * The host main/audio thread already pumps ITS queue during attached()
+ * (see the audio loop), but per-thread queues mean that doesn't cover the
+ * editor window. Gated to AmpliTube to avoid cross-thread parent/child window
+ * affinity changes for the working plugins (TONEX/AmpCraft/TH-U). */
+struct AttachWork {
+    IPlugView* view;
+    HWND       parent;
+    volatile int done;
+    tresult    result;
+};
+static DWORD WINAPI attach_worker_proc(LPVOID p)
+{
+    AttachWork* a = (AttachWork*)p;
+    a->result = a->view->attached((void*)a->parent, kPlatformTypeHWND);
+    __atomic_store_n(&a->done, 1, __ATOMIC_RELEASE);
+    /* CRITICAL: the plugin (AmpliTube/IK ATK) creates its render child window
+     * on THIS thread during attached(), so it lives on THIS thread's message
+     * queue. If this thread exited now, that window would be orphaned and never
+     * receive WM_PAINT → the editor renders nothing (blank). So keep pumping
+     * this thread's queue for the editor's lifetime. The editor thread pumps
+     * its own (parent) queue separately. */
+    MSG m;
+    while (!(g_shm && g_shm->stop_flag)) {
+        while (PeekMessageA(&m, NULL, 0, 0, PM_REMOVE)) {
+            TranslateMessage(&m);
+            DispatchMessageA(&m);
+        }
+        MsgWaitForMultipleObjects(0, NULL, FALSE, 10, QS_ALLINPUT);
+    }
+    /* removed() must run on the same thread that called attached() (VST3). */
+    a->view->removed();
+    return 0;
+}
 
 /* Minimal WndProc — VST3 plugins create their own child window inside the
  * HWND we pass to attached(); they handle paints/input there. We just need
@@ -752,8 +857,41 @@ static DWORD WINAPI editor_thread_proc(LPVOID arg)
         __sync_synchronize();
     }
 
-    LOG("editor: calling attached(hwnd=%p, HWND)\n", parent);
-    tresult ar = ctx->view->attached((void*)parent, kPlatformTypeHWND);
+    LOG("editor: calling attached(hwnd=%p, HWND)%s\n", parent,
+        ctx->pump_during_attach ? " [worker+pump]" : "");
+    tresult ar;
+    /* Function-scope so the worker (which references aw and keeps running until
+     * shutdown) outlives this block. */
+    AttachWork aw{ ctx->view, parent, 0, kResultFalse };
+    HANDLE attach_worker = NULL;
+    if (ctx->pump_during_attach) {
+        /* Run attached() on a worker; pump THIS (editor) thread's queue —
+         * including our host window 'parent' — until it completes, so the
+         * plugin's attached()-time SendMessage/PostMessage to our window can be
+         * serviced instead of deadlocking. The worker then KEEPS pumping its
+         * own queue (which owns the plugin's render child window) for the
+         * editor's lifetime — see attach_worker_proc. */
+        HANDLE wt = CreateThread(NULL, 0, attach_worker_proc, &aw, 0, NULL);
+        if (!wt) {
+            /* Couldn't spawn worker — fall back to the synchronous call. */
+            ar = ctx->view->attached((void*)parent, kPlatformTypeHWND);
+        } else {
+            MSG m;
+            while (!__atomic_load_n(&aw.done, __ATOMIC_ACQUIRE)) {
+                while (PeekMessageA(&m, NULL, 0, 0, PM_REMOVE)) {
+                    TranslateMessage(&m);
+                    DispatchMessageA(&m);
+                }
+                /* Don't busy-spin; MsgWaitForMultipleObjects wakes on either a
+                 * new message or the worker finishing (1ms cap as a backstop). */
+                MsgWaitForMultipleObjects(1, &wt, FALSE, 1, QS_ALLINPUT);
+            }
+            ar = aw.result;
+            attach_worker = wt;   /* keep pumping plugin window; joined at shutdown */
+        }
+    } else {
+        ar = ctx->view->attached((void*)parent, kPlatformTypeHWND);
+    }
     LOG("editor: attached result=0x%x\n", (unsigned)ar);
 
     if (ar != kResultTrue && ar != kResultOk) {
@@ -815,7 +953,15 @@ static DWORD WINAPI editor_thread_proc(LPVOID arg)
     }
 
     LOG("editor: closing view\n");
-    ctx->view->removed();
+    if (attach_worker) {
+        /* The worker owns the plugin window and calls removed() itself (same
+         * thread as attached()); it exits once stop_flag is set above. Wait for
+         * it before destroying the parent. */
+        WaitForSingleObject(attach_worker, INFINITE);
+        CloseHandle(attach_worker);
+    } else {
+        ctx->view->removed();
+    }
     DestroyWindow(parent);
     return 0;
 }
@@ -1121,6 +1267,20 @@ int main(int argc, char** argv)
                 tresult fRes = view->setFrame(frame);
                 LOG("setFrame returned 0x%x\n", (unsigned)fRes);
 
+                /* vstpoc: provide the content scale factor. Some editors (IK ATK)
+                 * leave their DocView view-model unpopulated (→ NotAvailableError
+                 * storm) if the host never sets the scale. Standard VST3 host step
+                 * the SDK editorhost does too. */
+                IPlugViewContentScaleSupport* scaleSupport = nullptr;
+                if (view->queryInterface(IPlugViewContentScaleSupport::iid,
+                                         (void**)&scaleSupport) == kResultOk && scaleSupport) {
+                    tresult scRes = scaleSupport->setContentScaleFactor(1.0f);
+                    LOG("setContentScaleFactor(1.0) returned 0x%x\n", (unsigned)scRes);
+                    scaleSupport->release();
+                } else {
+                    LOG("view: no IPlugViewContentScaleSupport\n");
+                }
+
                 ViewRect rect{};
                 tresult szRes = view->getSize(&rect);
                 LOG("getSize returned 0x%x rect=(%d,%d)-(%d,%d)\n",
@@ -1133,6 +1293,19 @@ int main(int argc, char** argv)
                                     ? rect.bottom - rect.top : 600;
                 LOG("editor view size: %dx%d (defaulted if getSize failed)\n",
                     (int)editorCtx.width, (int)editorCtx.height);
+                /* Gate the worker+pump attach path to AmpliTube (IK ATK editor
+                 * blocks on editor-thread window messages during attached();
+                 * the synchronous attach can't pump its own queue). Match
+                 * "amplit" case-insensitively in the plugin path. */
+                editorCtx.pump_during_attach = false;
+                for (const char* s = pluginPath; *s; ++s) {
+                    if ((s[0]|0x20)=='a' && (s[1]|0x20)=='m' && (s[2]|0x20)=='p'
+                     && (s[3]|0x20)=='l' && (s[4]|0x20)=='i' && (s[5]|0x20)=='t') {
+                        editorCtx.pump_during_attach = true;
+                        break;
+                    }
+                }
+                LOG("editor: pump_during_attach=%d\n", (int)editorCtx.pump_during_attach);
                 editorThread = CreateThread(NULL, 0, editor_thread_proc,
                                             &editorCtx, 0, NULL);
             } else {

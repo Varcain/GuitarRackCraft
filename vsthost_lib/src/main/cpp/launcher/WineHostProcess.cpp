@@ -201,7 +201,13 @@ void WineHostProcess::setupWineEnvChild(const Config& cfg) {
          * IMPORTANT: do NOT set VSTPOC_VULKAN_LOADER — patch 0024 keeps the
          * android_surface bridge active when it's unset, which is exactly what
          * the Android libvulkan needs (it has android_surface, not xlib). */
-        const std::string turnipDir = wineRoot + "/turnip";
+        /* Trailing slash is REQUIRED: adrenotools_open_libvulkan builds the
+         * driver path as (customDriverDir + customDriverName) with no separator,
+         * so without it the path becomes ".../turnipvulkan.ad07xx.so" and the
+         * dlopen fails → silent fallback to system (Qualcomm) Vulkan, whose
+         * broken VK_EXT_robustness2 nullDescriptor makes DXVK/D3D11 plugins
+         * (AmpliTube) render black. */
+        const std::string turnipDir = wineRoot + "/turnip/";
         ::setenv("VSTPOC_ADRENOTOOLS_HOOKDIR",   cfg.nativeLibDir.c_str(), 1);
         ::setenv("VSTPOC_ADRENOTOOLS_DRIVERDIR", turnipDir.c_str(),        1);
         ::setenv("VSTPOC_ADRENOTOOLS_DRIVERNAME", "vulkan.ad07xx.so",      1);
@@ -632,7 +638,13 @@ bool WineHostProcess::start() {
              * DRIVERDIR, DRIVERNAME). Do NOT set VSTPOC_VULKAN_LOADER — patch
              * 0024 keeps the android_surface bridge (correct for the Android
              * libvulkan adrenotools returns). See setupWineEnvChild for detail. */
-            const std::string turnipDir = wineRoot + "/turnip";
+            /* Trailing slash is REQUIRED: adrenotools_open_libvulkan builds the
+         * driver path as (customDriverDir + customDriverName) with no separator,
+         * so without it the path becomes ".../turnipvulkan.ad07xx.so" and the
+         * dlopen fails → silent fallback to system (Qualcomm) Vulkan, whose
+         * broken VK_EXT_robustness2 nullDescriptor makes DXVK/D3D11 plugins
+         * (AmpliTube) render black. */
+        const std::string turnipDir = wineRoot + "/turnip/";
             ::setenv("VSTPOC_ADRENOTOOLS_HOOKDIR",   cfg_.nativeLibDir.c_str(), 1);
             ::setenv("VSTPOC_ADRENOTOOLS_DRIVERDIR", turnipDir.c_str(),         1);
             ::setenv("VSTPOC_ADRENOTOOLS_DRIVERNAME", "vulkan.ad07xx.so",       1);
@@ -894,7 +906,20 @@ bool WineHostProcess::start() {
                  * vst_host logs and visible UI lag. */
                 ::setenv("WINEDEBUG", "-all,err+all,trace+seh,trace+menu,trace+x11drv,trace+event,trace+msg,trace+win,trace+key,trace+sync,trace+wininet,trace+winsock,trace+mouse,trace+cursor,trace+iphlpapi,trace+netapi32,trace+reg,trace+file", 1);
             } else {
-                ::setenv("WINEDEBUG", "-all,err+all,trace+seh", 1);
+                /* vstpoc 2026-06-01: DROPPED trace+seh. The old comment claimed
+                 * it's "cheap until an SEH event fires" — true for normal plugins
+                 * (rare exceptions), CATASTROPHIC for AmpliTube, whose IK::ATK
+                 * init throws ~47k C++ exceptions across 4 threads as normal
+                 * control-flow (property-bag probing). With trace+seh every throw
+                 * runs the full SEH trace path (register dump + format + write
+                 * under wine's debug-log lock) AND FEX holds its internal unwind
+                 * CS longer → the threads deadlock on FEX's exception lock
+                 * (0x…E2E478 in libarm64ecfex.dll) before init completes →
+                 * editor renderer never created → black screen. Our own VEH
+                 * (pluginmain_veh) still logs throw types + AV backtraces, so we
+                 * lose no crash diagnostics. Re-enable trace+seh only when
+                 * debugging a specific non-AmpliTube crash. */
+                ::setenv("WINEDEBUG", "-all,err+all", 1);
             }
         }
 

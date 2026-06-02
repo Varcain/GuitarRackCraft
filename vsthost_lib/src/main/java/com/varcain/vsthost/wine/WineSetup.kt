@@ -127,6 +127,8 @@ object WineSetup {
         seedFonts(ctx, winePrefix)
         seedCommonControlsManifests(winePrefix)
         seedRpcSsService(winePrefix)
+        seedCryptoProviders(winePrefix)
+        seedComClasses(winePrefix)
         seedWow64Emulator(winePrefix)  // wine 11.x: point ARM64EC/wow64 at FEX
         /* Also seed every existing wineprefix_template_<id> dir (installer
          * mode plugins like X50II clone from their own template, not from
@@ -137,6 +139,14 @@ object WineSetup {
         }?.forEach { template ->
             seedRpcSsService(template)
         }
+        /* Crypto providers must reach EVERY existing per-plugin prefix
+         * (imported wineprefix_v, installer wineprefix_e, and templates) —
+         * those were cloned from the base BEFORE this seed existed, so they'd
+         * otherwise stay empty. Required for any plugin whose license check
+         * calls CryptAcquireContext (e.g. AmpliTube 5's authorization thread). */
+        winePrefix.parentFile?.listFiles { f ->
+            f.isDirectory && f.name.startsWith("wineprefix_")
+        }?.forEach { p -> seedCryptoProviders(p); seedComClasses(p) }
         versionFile.writeText(expected)
         Log.i(TAG, "wine install ready in ${System.currentTimeMillis() - t0} ms")
 
@@ -624,6 +634,112 @@ object WineSetup {
 """
         systemReg.appendText(body)
         Log.i(TAG, "seeded RpcSs service registration in system.reg")
+    }
+
+    /** Seed the Microsoft cryptographic service provider (CSP) registrations
+     *  into system.reg.
+     *
+     *  Our prefix deliberately never runs wine.inf / rsaenh's DllRegisterServer
+     *  (wineboot's update path hangs in our Bionic env — see ensure()), so
+     *  HKLM\Software\Microsoft\Cryptography\Defaults\Provider\* ends up EMPTY.
+     *  wine's advapi32 CryptAcquireContext(named-provider) has no fallback: it
+     *  opens that key and returns NTE_KEYSET_NOT_DEF if absent (crypt.c ~L434),
+     *  and reads "Image Path" which MUST be REG_SZ (crypt.c ~L456) to load the
+     *  CSP DLL. All wine CSPs are implemented by rsaenh.dll.
+     *
+     *  Symptom this fixes: AmpliTube 5's authorization thread calls
+     *  CryptAcquireContext("Microsoft Enhanced RSA and AES Cryptographic
+     *  Provider", PROV_RSA_AES). With the key missing it fails ~11k times in a
+     *  tight loop, never validates the license, never writes UserSerial; its
+     *  editor threads then busy-spin forever re-reading UserSerial and the GUI
+     *  never renders (blank screen, audio works). */
+    private fun seedCryptoProviders(winePrefix: File) {
+        val systemReg = File(winePrefix, "system.reg")
+        if (!systemReg.exists()) return
+        val markerKey = "Defaults\\\\Provider\\\\Microsoft Enhanced RSA and AES " +
+            "Cryptographic Provider]"
+        if (systemReg.readText().contains(markerKey)) return
+        val now = System.currentTimeMillis() / 1000
+        // name -> PROV_* type. All implemented by rsaenh.dll.
+        val providers = listOf(
+            "Microsoft Base Cryptographic Provider v1.0" to 1,
+            "Microsoft Enhanced Cryptographic Provider v1.0" to 1,
+            "Microsoft Strong Cryptographic Provider" to 1,
+            "Microsoft Enhanced RSA and AES Cryptographic Provider" to 24,
+        )
+        // Default provider per type (CRYPT_GetTypeKeyName lookup, no name given).
+        val types = listOf(
+            1 to "Microsoft Strong Cryptographic Provider",
+            24 to "Microsoft Enhanced RSA and AES Cryptographic Provider",
+        )
+        val sb = StringBuilder("\n")
+        for ((name, type) in providers) {
+            sb.append(
+                "[Software\\\\Microsoft\\\\Cryptography\\\\Defaults\\\\Provider\\\\$name] $now\n"
+            )
+            sb.append("\"Image Path\"=\"rsaenh.dll\"\n")        // REG_SZ (required)
+            sb.append("\"Type\"=dword:%08x\n".format(type))
+            sb.append("\"SigInFile\"=dword:00000000\n\n")
+        }
+        for ((type, name) in types) {
+            sb.append(
+                ("[Software\\\\Microsoft\\\\Cryptography\\\\Defaults\\\\" +
+                    "Provider Types\\\\Type %03d] $now\n").format(type)
+            )
+            sb.append("\"Name\"=\"$name\"\n")
+            sb.append("\"TypeName\"=\"RSA Full (Signature and Key Exchange)\"\n\n")
+        }
+        systemReg.appendText(sb.toString())
+        Log.i(TAG, "seeded Microsoft crypto providers in ${winePrefix.name}/system.reg")
+    }
+
+    /** Register the COM classes (HKCR\CLSID) of a few wine DLLs that plugins
+     *  CoCreateInstance but that aren't registered in our prefix.
+     *
+     *  Same root cause as [seedCryptoProviders]: we skip wine.inf / wineboot's
+     *  RegisterDlls, so almost no COM class is registered (only the ~6 we seed).
+     *  When a plugin's CoCreateInstance hits REGDB_E_CLASSNOTREG, some plugins
+     *  RETRY on the failure path and recurse until the thread STACK OVERFLOWS,
+     *  killing the editor UI thread → black screen (observed: BIAS FX 2's UI
+     *  uses DirectManipulation + msctf + mmdevapi). Registering CLSID →
+     *  InprocServer32 → the (already-symlinked) DLL makes CoCreateInstance
+     *  return an object (wine's real/stub impl) instead, breaking the recursion.
+     */
+    private fun seedComClasses(winePrefix: File) {
+        val systemReg = File(winePrefix, "system.reg")
+        if (!systemReg.exists()) return
+        // Marker = the newest-added class; bump when adding more so it re-seeds.
+        val marker = "Classes\\\\CLSID\\\\{e77cc89b-7401-4c04-8ced-149db35add04}]"
+        if (systemReg.readText().contains(marker)) return
+        val now = System.currentTimeMillis() / 1000
+        // clsid, friendly name, providing DLL, ThreadingModel
+        data class Com(val clsid: String, val name: String, val dll: String, val threading: String)
+        val classes = listOf(
+            // DirectManipulation (touch/pan-zoom gesture API) — BIAS FX 2 UI.
+            Com("54e211b6-3650-4f75-8334-fa359598e1c5", "DirectManipulationManager", "directmanipulation.dll", "Both"),
+            Com("99793286-77cc-4b57-96db-3b354f6f9fb5", "DirectManipulationSharedManager", "directmanipulation.dll", "Both"),
+            Com("79dea627-a08a-43ac-8ef5-6900b9299126", "DCompManipulationCompositor", "directmanipulation.dll", "Both"),
+            // Text Services Framework (text input) — full set; plugins walk it.
+            Com("529a9e6b-6587-4f23-ab9e-9c7d683e3c50", "TF_ThreadMgr", "msctf.dll", "Apartment"),
+            Com("33c53a50-f456-4884-b049-85fd643ecfed", "TF_InputProcessorProfiles", "msctf.dll", "Apartment"),
+            Com("a4b544a1-438d-4b41-9325-869523e2d6c7", "TF_CategoryMgr", "msctf.dll", "Apartment"),
+            Com("ebb08c45-6c4a-4fdc-ae53-4eb8c4c7db8e", "TF_LangBarMgr", "msctf.dll", "Apartment"),
+            Com("3ce74de4-53d3-4d74-8b83-431b3828ba53", "TF_DisplayAttributeMgr", "msctf.dll", "Apartment"),
+            // Core Audio device enumerator.
+            Com("bcde0395-e52f-467c-8e3d-c4579291692e", "MMDeviceEnumerator", "mmdevapi.dll", "Both"),
+            // Windows Parental Controls (BIAS FX 2 probes it during UI init).
+            Com("e77cc89b-7401-4c04-8ced-149db35add04", "WindowsParentalControls", "wpc.dll", "Both"),
+        )
+        val sb = StringBuilder("\n")
+        for (c in classes) {
+            sb.append("[Software\\\\Classes\\\\CLSID\\\\{${c.clsid}}] $now\n")
+            sb.append("@=\"${c.name}\"\n\n")
+            sb.append("[Software\\\\Classes\\\\CLSID\\\\{${c.clsid}}\\\\InprocServer32] $now\n")
+            sb.append("@=\"C:\\\\windows\\\\system32\\\\${c.dll}\"\n")
+            sb.append("\"ThreadingModel\"=\"${c.threading}\"\n\n")
+        }
+        systemReg.appendText(sb.toString())
+        Log.i(TAG, "seeded COM class registrations in ${winePrefix.name}/system.reg")
     }
 
     /** Symlink every PE DLL from <wineRoot>/lib/wine/aarch64-windows/ into

@@ -1,0 +1,46 @@
+--- a/src/dxgi/dxgi_output.cpp
++++ b/src/dxgi/dxgi_output.cpp
+@@ -232,17 +232,32 @@
+     // So we just pick our color space based on the DXVK_HDR env var
+     // and the punting from SetColorSpace1.
+     pDesc->ColorSpace            = m_monitorInfo->CurrentColorSpace();
+-    pDesc->RedPrimary[0]         = m_metadata.redPrimary[0];
+-    pDesc->RedPrimary[1]         = m_metadata.redPrimary[1];
+-    pDesc->GreenPrimary[0]       = m_metadata.greenPrimary[0];
+-    pDesc->GreenPrimary[1]       = m_metadata.greenPrimary[1];
+-    pDesc->BluePrimary[0]        = m_metadata.bluePrimary[0];
+-    pDesc->BluePrimary[1]        = m_metadata.bluePrimary[1];
+-    pDesc->WhitePoint[0]         = m_metadata.whitePoint[0];
+-    pDesc->WhitePoint[1]         = m_metadata.whitePoint[1];
+-    pDesc->MinLuminance          = m_metadata.minLuminance;
+-    pDesc->MaxLuminance          = m_metadata.maxLuminance;
+-    pDesc->MaxFullFrameLuminance = m_metadata.maxFullFrameLuminance;
++    // vstpoc: Android/wine has no real monitor EDID, so m_metadata parses as
++    // all-zero ("Failed to parse display metadata, using blank"). Some apps
++    // (e.g. AmpliTube's DocView) treat zeroed display colorimetry/luminance as
++    // "display info not available" and throw in a tight retry loop. Substitute
++    // valid Rec.709/sRGB SDR defaults so it looks like a normal display.
++    if (m_metadata.maxLuminance == 0.0f && m_metadata.redPrimary[0] == 0.0f) {
++      pDesc->RedPrimary[0]         = 0.640f;  pDesc->RedPrimary[1]   = 0.330f;
++      pDesc->GreenPrimary[0]       = 0.300f;  pDesc->GreenPrimary[1] = 0.600f;
++      pDesc->BluePrimary[0]        = 0.150f;  pDesc->BluePrimary[1]  = 0.060f;
++      pDesc->WhitePoint[0]         = 0.3127f; pDesc->WhitePoint[1]   = 0.3290f;
++      pDesc->MinLuminance          = 0.5f;
++      pDesc->MaxLuminance          = 270.0f;
++      pDesc->MaxFullFrameLuminance = 270.0f;
++    } else {
++      pDesc->RedPrimary[0]         = m_metadata.redPrimary[0];
++      pDesc->RedPrimary[1]         = m_metadata.redPrimary[1];
++      pDesc->GreenPrimary[0]       = m_metadata.greenPrimary[0];
++      pDesc->GreenPrimary[1]       = m_metadata.greenPrimary[1];
++      pDesc->BluePrimary[0]        = m_metadata.bluePrimary[0];
++      pDesc->BluePrimary[1]        = m_metadata.bluePrimary[1];
++      pDesc->WhitePoint[0]         = m_metadata.whitePoint[0];
++      pDesc->WhitePoint[1]         = m_metadata.whitePoint[1];
++      pDesc->MinLuminance          = m_metadata.minLuminance;
++      pDesc->MaxLuminance          = m_metadata.maxLuminance;
++      pDesc->MaxFullFrameLuminance = m_metadata.maxFullFrameLuminance;
++    }
+     return S_OK;
+   }
+ 
