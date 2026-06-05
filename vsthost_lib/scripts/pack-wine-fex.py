@@ -388,6 +388,37 @@ def main() -> int:
     else:
         print(f"WARN: toolchain/wine-fonts not found; run fetch-x11-libs.sh first", file=sys.stderr)
 
+    # --- wine's own built-in core fonts --------------------------------------
+    # Stock wine ships real Windows core faces (Tahoma, System, MS Sans Serif,
+    # Symbol, Marlett, Wingdings, Webdings, Courier, Fixedsys, Small Fonts) as
+    # pre-built .ttf in its source fonts/ dir. These are what makes a normal
+    # wine install render CEF/Chromium UIs out of the box: wine's user32 system
+    # metrics return "MS Shell Dlg"/"System", which resolve to real Tahoma/
+    # System here, so CEF's gfx::win::SystemFonts CreateSkTypeface() succeeds
+    # and never enters its infinite GetSystemFont re-entry (the FEX
+    # manually-mapped-region miscompile that black-screened BIAS FX 2's editor).
+    # They are upstream files (survive build-wine-android.sh's source reset), so
+    # copy them straight from the wine tree. WineSetup.seedFontRegistry()
+    # registers them full-path for DirectWrite.
+    wine_core_fonts = [
+        "tahoma.ttf", "tahomabd.ttf", "system.ttf", "ms_sans_serif.ttf",
+        "symbol.ttf", "marlett.ttf", "wingding.ttf", "webdings.ttf",
+        "courier.ttf", "fixedsys.ttf", "small_fonts.ttf",
+    ]
+    wine_fonts_src = repo / "external/wine-upstream/fonts"
+    if wine_fonts_src.exists():
+        wc = 0
+        for name in wine_core_fonts:
+            f = wine_fonts_src / name
+            if f.exists():
+                shutil.copy2(f, out_fonts / name)
+                wc += 1
+            else:
+                print(f"WARN: wine core font missing: {f}", file=sys.stderr)
+        print(f"wine core fonts → {out_fonts} ({wc} files)")
+    else:
+        print(f"WARN: wine source fonts dir not found at {wine_fonts_src}", file=sys.stderr)
+
     return 0
 
 

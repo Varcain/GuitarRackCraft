@@ -143,10 +143,21 @@ object WineSetup {
          * (imported wineprefix_v, installer wineprefix_e, and templates) —
          * those were cloned from the base BEFORE this seed existed, so they'd
          * otherwise stay empty. Required for any plugin whose license check
-         * calls CryptAcquireContext (e.g. AmpliTube 5's authorization thread). */
+         * calls CryptAcquireContext (e.g. AmpliTube 5's authorization thread).
+         * Same for fonts: prefixes cloned before we shipped wine's real core
+         * fonts (Tahoma/System/…) + the full-path DirectWrite registration
+         * would lack them, so CEF/Chromium plugins (BIAS FX 2) would still hit
+         * the SystemFonts recursion → black editor. seedFonts is idempotent
+         * (skips existing files; marker-gated registry/substitute appends).
+         * Same for user folders: prefixes cloned before this seed laid out the
+         * C:\users\<user> profile would lack Documents/AppData/etc., so any
+         * plugin generating first-run user data (BIAS FX 2's FX/preset catalog)
+         * would silently fail. seedUserFolders is idempotent (mkdirs no-ops). */
         winePrefix.parentFile?.listFiles { f ->
             f.isDirectory && f.name.startsWith("wineprefix_")
-        }?.forEach { p -> seedCryptoProviders(p); seedComClasses(p) }
+        }?.forEach { p ->
+            seedCryptoProviders(p); seedComClasses(p); seedFonts(ctx, p); seedUserFolders(ctx, p)
+        }
         versionFile.writeText(expected)
         Log.i(TAG, "wine install ready in ${System.currentTimeMillis() - t0} ms")
 
@@ -485,17 +496,35 @@ object WineSetup {
     }
 
     private fun seedUserFolders(ctx: Context, winePrefix: File) {
-        val username = "u0_a${ctx.applicationInfo.uid % 100000 - 10000}"
+        // Wine derives the Windows profile name from the Unix username, which
+        // on Android (Bionic getpwuid) is "u<userId>_a<appId>" for app uids:
+        // userId = uid / 100000, appId = uid % 100000 - 10000. Match that
+        // exactly so the dirs we create line up with the profile wine resolves
+        // (e.g. uid 11110 -> "u0_a1110"; uid 1011110 on a secondary profile
+        // -> "u10_a1110").
+        val uid = ctx.applicationInfo.uid
+        val username = "u${uid / 100000}_a${uid % 100000 - 10000}"
             .takeIf { it.matches(Regex("u\\d+_a\\d+")) }
             ?: System.getProperty("user.name")
             ?: "wine"
+        // Our minimal Bionic config never runs the full wineboot, so the user
+        // profile (C:\users\<user>\…) is never laid out. We create it
+        // ourselves. Without these dirs, any plugin whose FIRST RUN generates
+        // user data silently fails: SHGetFolderPath hands back a path that
+        // doesn't exist, the write is dropped, and the editor hangs. BIAS FX 2
+        // is the concrete case — it writes its FX/preset catalog under
+        // Documents\{BIAS_Pedal,PositiveGrid} on first launch; with no
+        // Documents dir GetAvailableFxs returns null and the CEF editor sticks
+        // on "Loading". (This previously early-returned when the dir was
+        // absent, so on device it never ran at all.)
         val userDir = File(winePrefix, "drive_c/users/$username")
-        if (!userDir.exists()) return  // wineboot owns layout; bail if missing
         val folders = listOf(
             "Documents", "Documents/IRs",
             "Desktop", "Downloads", "Music",
             "Pictures", "Videos", "Contacts", "Favorites",
-            "Links", "Searches", "AppData/LocalLow",
+            "Links", "Searches",
+            "AppData/Roaming", "AppData/Local", "AppData/Local/Temp",
+            "AppData/LocalLow",
         )
         var created = 0
         for (rel in folders) {
@@ -535,7 +564,54 @@ object WineSetup {
         } catch (e: Exception) {
             Log.w(TAG, "seedFonts failed: ${e.message}")
         }
+        seedFontRegistry(winePrefix, fontsDir)
         seedFontSubstitutes(winePrefix)
+    }
+
+    /** Register every .ttf in the prefix Fonts dir under
+     *  HKLM\\Software\\Microsoft\\Windows NT\\CurrentVersion\\Fonts with a
+     *  FULL path. This is what DirectWrite reads — unlike the GDI Fonts-dir
+     *  scan (which our freetype-built wine does not surface to dwrite) and
+     *  unlike FontSubstitutes (GDI-only, dwrite ignores them). Without these
+     *  entries Chromium/CEF's dwrite font collection is empty of TrueType
+     *  faces, CreateSkTypeface() fails for the system UI font, and
+     *  gfx::win::SystemFonts re-enters GetSystemFont infinitely (a FEX
+     *  manually-mapped-region miscompile turns the re-entry guard into an
+     *  unbounded recursion -> GDI handle exhaustion -> black editor).
+     *
+     *  wine's load_registry_fonts() only add_font_resource()s entries whose
+     *  value begins with '\\' (a full path), so we must write the absolute
+     *  C:\\windows\\Fonts\\<file> path, not a bare filename. The key name is
+     *  cosmetic — dwrite enumerates each face by its internal name table, so
+     *  wine's real tahoma.ttf surfaces as "Tahoma", system.ttf as "System",
+     *  etc., exactly as on a stock wine install. */
+    private fun seedFontRegistry(winePrefix: File, fontsDir: File) {
+        val systemReg = File(winePrefix, "system.reg")
+        if (!systemReg.exists()) return  // wineboot hasn't run yet; reapply next launch
+        val marker = "#vstpoc-font-registry-v1"
+        val text = systemReg.readText()
+        // Idempotency: wineserver rewrites system.reg on flush and DROPS the
+        // bare "#" comment marker (it's not a real key), so checking the marker
+        // alone would re-append the whole block every launch. Also key off a
+        // real registry VALUE that survives the rewrite — wine's lowercase
+        // "tahoma.ttf" path only appears in this block (the old alias hack used
+        // capitalized "Tahoma.ttf"), so its presence means we already seeded.
+        if (text.contains(marker) || text.contains("tahoma.ttf")) return
+        val ttfs = fontsDir.listFiles { f -> f.name.endsWith(".ttf", true) }
+            ?.sortedBy { it.name } ?: return
+        if (ttfs.isEmpty()) return
+        val sb = StringBuilder()
+        sb.append("\n").append(marker).append("\n")
+        sb.append("[Software\\\\Microsoft\\\\Windows NT\\\\CurrentVersion\\\\Fonts]\n")
+        for (f in ttfs) {
+            val stem = f.name.removeSuffix(".ttf").removeSuffix(".TTF")
+            // value: C:\windows\Fonts\<file>  (each backslash doubled for .reg)
+            sb.append("\"").append(stem).append(" (TrueType)\"=")
+                .append("\"C:\\\\windows\\\\Fonts\\\\").append(f.name).append("\"\n")
+        }
+        sb.append("\n")
+        systemReg.appendText(sb.toString())
+        Log.i(TAG, "seedFontRegistry: registered ${ttfs.size} fonts (full-path) for DirectWrite in system.reg")
     }
 
     /** Append HKLM\\Software\\Microsoft\\Windows NT\\CurrentVersion\\

@@ -4,6 +4,8 @@
 #include <algorithm>
 #include <chrono>
 #include <cstring>
+#include <fstream>
+#include <sstream>
 #include <sys/stat.h>
 #include <thread>
 #include <unistd.h>
@@ -69,6 +71,31 @@ void WineVstPlugin::activate(float sampleRate, uint32_t bufferSize) {
     if (picker_) cfg.pickerShmPath = pickerPath;
     cfg.pluginPaths       = { entry_.dllPath };
     cfg.logSuffix         = "v" + entry_.uuid;
+
+    // vstpoc experiment hook (2026-06-02, BIAS FX 2 / CEF editors): inject extra
+    // host argv WITHOUT a rebuild. vst3_host.exe reads only argv[1]=shm + argv[2]=
+    // plugin and ignores the rest, but a libcef-based editor (BIAS FX 2 ships
+    // Chromium 116) parses GetCommandLineW(), so Chromium switches appended here
+    // flow through to it (unless the plugin sets command_line_args_disabled). Drop
+    // whitespace/newline-separated tokens in <cache>/cef_args.txt and relaunch the
+    // plugin to iterate switch sets (e.g. "--disable-gpu-compositing
+    // --disable-audio-output") without recompiling. Lines starting with '#' are
+    // skipped. Absent file = no extra args (default, zero regression).
+    {
+        std::ifstream af(cfg.cacheDir + "/cef_args.txt");
+        std::string line;
+        while (std::getline(af, line)) {
+            size_t b = line.find_first_not_of(" \t\r\n");
+            if (b == std::string::npos || line[b] == '#') continue;
+            std::istringstream ls(line.substr(b));
+            std::string tok;
+            while (ls >> tok) cfg.extraArgs.push_back(tok);
+        }
+        if (!cfg.extraArgs.empty())
+            LOGI("WineVstPlugin[%s]: cef_args.txt injected %zu host arg(s); first=%s",
+                 entry_.displayName.c_str(), cfg.extraArgs.size(),
+                 cfg.extraArgs.front().c_str());
+    }
 
     // CRITICAL: bring up the in-process X11 server on this plugin's display
     // BEFORE forking wine. Wine's winex11.drv calls XOpenDisplay at startup;

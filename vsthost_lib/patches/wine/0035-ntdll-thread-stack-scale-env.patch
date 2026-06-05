@@ -1,0 +1,39 @@
+From: Kamil Lulko <limakzagan@gmail.com>
+Subject: ntdll: env-gated thread stack scaling (VSTPOC_STACK_PCT)
+
+FEX/arm64ec amplifies per-frame stack usage, so a recursion that fits in 8MB
+natively can overflow under emulation (BIAS FX 2's Chromium UI thread tid 00a0,
+const PC 0x7fffb99874 -> the editor goes black). VSTPOC_STACK_PCT scales the
+resolved reserve for real (>=1MB) thread stacks (e.g. 1000 = 10x). Done in
+virtual_alloc_thread_stack AFTER reserve_size is resolved from the image default,
+because default-created threads pass reserve_size=0 (so scaling in
+init_thread_stack misses them). No env set = no change.
+
+diff --git a/dlls/ntdll/unix/virtual.c b/dlls/ntdll/unix/virtual.c
+index a2ea5244b9f..b51922ca1b5 100644
+--- a/dlls/ntdll/unix/virtual.c
++++ b/dlls/ntdll/unix/virtual.c
+@@ -4407,6 +4407,23 @@ NTSTATUS virtual_alloc_thread_stack( INITIAL_TEB *stack, ULONG_PTR limit_low, UL
+     if (!reserve_size) reserve_size = main_image_info.MaximumStackSize;
+     if (!commit_size) commit_size = main_image_info.CommittedStackSize;
+ 
++    /* vstpoc: env-gated stack scaling (VSTPOC_STACK_PCT). FEX/arm64ec amplifies
++     * per-frame stack usage, overflowing a recursion that fits natively (BIAS
++     * FX 2's Chromium UI thread tid 00a0, const PC 0x7fffb99874 -> black editor).
++     * Done HERE, the single choke point, AFTER reserve_size is resolved — default
++     * threads pass reserve_size=0 and the real (8MB) size is filled in just above,
++     * so scaling in init_thread_stack misses them. Scale only real (>=1MB) stacks
++     * so the 256KB chpev2/wow emulator stacks are untouched. 400=4x, 1000=10x;
++     * no env = no change. */
++    {
++        const char *vstpoc_pct = getenv( "VSTPOC_STACK_PCT" );
++        if (vstpoc_pct && reserve_size >= 0x100000)
++        {
++            unsigned long pct = strtoul( vstpoc_pct, NULL, 10 );
++            if (pct) reserve_size = (SIZE_T)(((unsigned long long)reserve_size * pct) / 100);
++        }
++    }
++
+     size = max( reserve_size, commit_size );
+     if (size < 1024 * 1024) size = 1024 * 1024;  /* Xlib needs a large stack */
+     size = ROUND_SIZE( 0, size, granularity_mask );

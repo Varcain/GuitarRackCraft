@@ -1,0 +1,155 @@
+From: Kamil Lulko <limakzagan@gmail.com>
+Subject: winex11: can_activate_window allows top-level WS_CHILD (+ focus diag)
+
+can_activate_window mirror of the win32u WS_CHILD fix: a top-level WS_CHILD editor (parent==desktop) must be activatable, else WM_TAKE_FOCUS never reaches set_focus. NOTE: also carries the vstpoc_wmtf_log focus diagnostic (writes cache/wmtf.log) used for the BIAS FX 2 CEF input dig — remove that helper + its two call sites before shipping.
+
+diff --git a/dlls/winex11.drv/event.c b/dlls/winex11.drv/event.c
+index 2983d7bfe8a..f22bd9def36 100644
+--- a/dlls/winex11.drv/event.c
++++ b/dlls/winex11.drv/event.c
+@@ -48,6 +48,30 @@
+ WINE_DEFAULT_DEBUG_CHANNEL(event);
+ WINE_DECLARE_DEBUG_CHANNEL(xdnd);
+ 
++/* vstpoc diagnostic: the BIAS FX 2 (CEF) editor window is owned by a
++ * CefSubprocess whose stderr is discarded, so wine TRACE/ERR for its
++ * WM_TAKE_FOCUS handling is invisible. Log directly to a file (this is the
++ * unix side, so plain POSIX I/O works) to see why our synthetic WM_TAKE_FOCUS
++ * fails to activate the render window (the text-input caret bug). */
++#include <fcntl.h>
++#include <unistd.h>
++#include <stdio.h>
++static void vstpoc_wmtf_log( const char *fmt, ... )
++{
++    static int fd = -2;
++    char buf[512];
++    va_list ap;
++    int n;
++    if (fd == -2)
++        fd = open( "/data/data/com.varcain.guitarrackcraft/cache/wmtf.log",
++                   O_WRONLY | O_APPEND | O_CREAT, 0644 );
++    if (fd < 0) return;
++    va_start( ap, fmt );
++    n = vsnprintf( buf, sizeof(buf), fmt, ap );
++    va_end( ap );
++    if (n > 0) write( fd, buf, n < (int)sizeof(buf) ? n : (int)sizeof(buf) );
++}
++
+ #define DndNotDnd       -1    /* OffiX drag&drop */
+ #define DndUnknown      0
+ #define DndRawData      1
+@@ -589,7 +613,19 @@ static inline BOOL can_activate_window( HWND hwnd )
+     }
+ 
+     if (!(style & WS_VISIBLE)) return FALSE;
+-    if ((style & (WS_POPUP|WS_CHILD)) == WS_CHILD) return FALSE;
++    if ((style & (WS_POPUP|WS_CHILD)) == WS_CHILD)
++    {
++        /* vstpoc patch (winex11 mirror of 013-focus-ws-child-top-level):
++         * allow a TOP-LEVEL WS_CHILD window (VST plugin editor — vst_host
++         * effEditOpen passes the desktop as parent HWND, the plugin then
++         * makes its editor WS_CHILD) to be activatable. Upstream returns
++         * FALSE for ALL WS_CHILD here, so WM_TAKE_FOCUS never reaches
++         * set_focus, wine's foreground stays NULL, INPUT_KEYBOARD is dropped,
++         * and typed characters never reach the editor (X50II activation
++         * form, etc.). Real WS_CHILD (parent is another window) still FALSE. */
++        HWND parent = NtUserGetAncestor( hwnd, GA_PARENT );
++        if (parent && parent != NtUserGetDesktopWindow()) return FALSE;
++    }
+     if (style & WS_MINIMIZE) return FALSE;
+     if (NtUserGetWindowLongW( hwnd, GWL_EXSTYLE ) & WS_EX_NOACTIVATE) return FALSE;
+     if (hwnd == NtUserGetDesktopWindow()) return FALSE;
+@@ -739,6 +775,20 @@ static void handle_wm_protocols( HWND hwnd, XClientMessageEvent *event )
+     {
+         HWND last_focus = x11drv_thread_data()->last_focus, foreground = NtUserGetForegroundWindow();
+ 
++        {
++            HWND ga_parent = NtUserGetAncestor( hwnd, GA_PARENT );
++            HWND ga_root = NtUserGetAncestor( hwnd, GA_ROOT );
++            vstpoc_wmtf_log( "WMTF win=%lx hwnd=%p style=%#x ex=%#x can_act=%d desk=%d fg=%p parent=%p(desk=%d) root=%p rootstyle=%#x can_act_root=%d focus=%p\n",
++                         (unsigned long)event->window, hwnd,
++                         (unsigned)NtUserGetWindowLongW( hwnd, GWL_STYLE ),
++                         (unsigned)NtUserGetWindowLongW( hwnd, GWL_EXSTYLE ),
++                         can_activate_window( hwnd ),
++                         hwnd == NtUserGetDesktopWindow(),
++                         foreground, ga_parent, ga_parent == NtUserGetDesktopWindow(),
++                         ga_root, (unsigned)NtUserGetWindowLongW( ga_root, GWL_STYLE ),
++                         can_activate_window( ga_root ), get_focus() );
++        }
++
+         if (window_has_pending_wm_state( hwnd, -1 ) || (hwnd != foreground && !window_should_take_focus( foreground, event_time )))
+         {
+             WARN( "Ignoring window %p/%lx WM_TAKE_FOCUS serial %lu, event_time %ld, foreground %p during WM_STATE change\n",
+@@ -762,6 +812,8 @@ static void handle_wm_protocols( HWND hwnd, XClientMessageEvent *event )
+         if (can_activate_window(hwnd))
+         {
+             set_focus( event->display, hwnd, event_time );
++            vstpoc_wmtf_log( "  pathA after set_focus(%p): fg=%p focus=%p active=%p\n",
++                             hwnd, NtUserGetForegroundWindow(), get_focus(), get_active_window() );
+             return;
+         }
+         else if (hwnd == NtUserGetDesktopWindow())
+@@ -1257,8 +1309,12 @@ static void handle_xembed_info_notify( HWND hwnd, XPropertyEvent *event )
+     struct x11drv_win_data *data;
+     UINT value = 0;
+ 
+-    if (!(data = get_win_data( hwnd ))) return;
++    /* vstpoc 11.9: do the X round-trip BEFORE taking win_data_mutex. Holding
++     * the global win_data_mutex across an X server round-trip deadlocks the
++     * editor thread's window creation (get_win_data) against this event
++     * handler when the X server can't reply until the editor finishes. */
+     if (event->state == PropertyNewValue) value = get_window_xembed_info( event->display, event->window );
++    if (!(data = get_win_data( hwnd ))) return;
+     window_wm_state_notify( data, event->serial, value ? NormalState : WithdrawnState, event->time );
+     release_win_data( data );
+ }
+@@ -1268,8 +1324,8 @@ static void handle_net_wm_state_notify( HWND hwnd, XPropertyEvent *event )
+     struct x11drv_win_data *data;
+     UINT value = 0;
+ 
+-    if (!(data = get_win_data( hwnd ))) return;
+     if (event->state == PropertyNewValue) value = get_window_net_wm_state( event->display, event->window );
++    if (!(data = get_win_data( hwnd ))) return;  /* vstpoc 11.9: X round-trip before lock (see handle_xembed_info_notify) */
+     window_net_wm_state_notify( data, event->serial, value );
+     release_win_data( data );
+ 
+@@ -1281,8 +1337,11 @@ static void handle_wm_hints_notify( HWND hwnd, XPropertyEvent *event )
+     struct x11drv_win_data *data;
+     XWMHints empty = {0}, *hints;
+ 
+-    if (!(data = get_win_data( hwnd ))) return;
++    /* vstpoc 11.9: XGetWMHints (X round-trip) BEFORE win_data_mutex. This was
++     * the confirmed editor-create deadlock: this handler held win_data_mutex
++     * across XGetWMHints while the editor thread blocked in get_win_data. */
+     hints = event->state == PropertyNewValue ? XGetWMHints( event->display, event->window ) : &empty;
++    if (!(data = get_win_data( hwnd ))) { if (hints != &empty) XFree( hints ); return; }
+     window_wm_hints_notify( data, event->serial, hints );
+     if (hints != &empty) XFree( hints );
+     release_win_data( data );
+@@ -1293,8 +1352,8 @@ static void handle_mwm_hints_notify( HWND hwnd, XPropertyEvent *event )
+     struct x11drv_win_data *data;
+     MwmHints hints = {0};
+ 
++    if (event->state == PropertyNewValue) get_window_mwm_hints( event->display, event->window, &hints );  /* vstpoc 11.9: X round-trip before lock */
+     if (!(data = get_win_data( hwnd ))) return;
+-    if (event->state == PropertyNewValue) get_window_mwm_hints( event->display, event->window, &hints );
+     window_mwm_hints_notify( data, event->serial, &hints );
+     release_win_data( data );
+ }
+@@ -1305,11 +1364,15 @@ static void handle_wm_normal_hints_notify( HWND hwnd, XPropertyEvent *event )
+     XSizeHints *hints;
+     long len = 0;
+ 
+-    if (!(data = get_win_data( hwnd ))) return;
++    /* vstpoc 11.9: alloc + XGetWMNormalHints (X round-trip) before win_data_mutex */
+     if ((hints = XAllocSizeHints()))
+     {
+         if (event->state == PropertyNewValue) XGetWMNormalHints( event->display, event->window, hints, &len );
+         if (len < sizeof(*hints)) memset( (char *)hints + len, 0, sizeof(*hints) - len );
++    }
++    if (!(data = get_win_data( hwnd ))) { if (hints) XFree( hints ); return; }
++    if (hints)
++    {
+         window_wm_normal_hints_notify( data, event->serial, hints );
+         XFree( hints );
+     }

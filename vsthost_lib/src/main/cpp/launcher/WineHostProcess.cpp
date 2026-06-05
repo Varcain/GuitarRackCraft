@@ -9,6 +9,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
+#include <fstream>
 #include <dirent.h>
 #include <dlfcn.h>
 #include <fcntl.h>
@@ -164,6 +165,62 @@ extern "C" int vstpoc_get_hot_seconds() {
     return g_vstpoc_hot_seconds.load(std::memory_order_acquire);
 }
 
+/* vstpoc experiment hook (2026-06-02): file-driven env overrides so we can tune
+ * wine/FEX env vars WITHOUT a rebuild. Drop KEY=VAL lines in <cache>/wine_env.txt
+ * and relaunch the plugin. Used e.g. for VSTPOC_STACK_PCT (patch 0035 thread
+ * stack scaling — BIAS FX 2's tid 00a0 FEX overflow). '#' lines skipped; absent
+ * file = no-op. Applied LAST in each env block so it can override defaults. */
+static void vstpocApplyEnvFile(const std::string& cacheDir) {
+    std::ifstream f(cacheDir + "/wine_env.txt");
+    std::string line;
+    while (std::getline(f, line)) {
+        size_t b = line.find_first_not_of(" \t\r\n");
+        if (b == std::string::npos || line[b] == '#') continue;
+        size_t eq = line.find('=', b);
+        if (eq == std::string::npos) continue;
+        std::string k = line.substr(b, eq - b);
+        std::string v = line.substr(eq + 1);
+        size_t e = v.find_last_not_of(" \t\r\n");
+        v.resize(e == std::string::npos ? 0 : e + 1);
+        if (!k.empty()) ::setenv(k.c_str(), v.c_str(), 1);
+    }
+}
+
+/* vstpoc: write the FEX Config.json = base cache entries + any KEY=VAL lines from
+ * <appCache>/fex_hacks.txt as extra Config entries (e.g. "Multiblock=0",
+ * "X87ReducedPrecision=0", "TSOEnabled=1", "O0=1"). Lets FEX Hacks/CPU knobs be
+ * tried WITHOUT a rebuild while chasing the BIAS FX 2 gfx::SystemFonts re-entrant
+ * recursion under FEX. fexRoot = "<appCache>/fex_aot"; '#' lines skipped. */
+static void vstpocWriteFexConfig(const std::string& configFile, const std::string& fexRoot) {
+    std::string appCache = fexRoot;
+    auto pos = appCache.rfind("/fex_aot");
+    if (pos != std::string::npos) appCache.resize(pos);
+    std::string body =
+        "    \"EnableCodeCachingWIP\": \"1\",\n"
+        "    \"EnableLazyCodeCachingWIP\": \"1\",\n"
+        "    \"EnableCodeCacheValidation\": \"1\"";
+    std::ifstream hf(appCache + "/fex_hacks.txt");
+    std::string line;
+    while (std::getline(hf, line)) {
+        size_t b = line.find_first_not_of(" \t\r\n");
+        if (b == std::string::npos || line[b] == '#') continue;
+        size_t eq = line.find('=', b);
+        if (eq == std::string::npos) continue;
+        std::string k = line.substr(b, eq - b);
+        std::string v = line.substr(eq + 1);
+        size_t ke = k.find_last_not_of(" \t");
+        k.resize(ke == std::string::npos ? 0 : ke + 1);
+        size_t e = v.find_last_not_of(" \t\r\n");
+        v.resize(e == std::string::npos ? 0 : e + 1);
+        if (!k.empty()) body += ",\n    \"" + k + "\": \"" + v + "\"";
+    }
+    FILE* f = std::fopen(configFile.c_str(), "w");
+    if (f) {
+        std::fprintf(f, "{\n  \"Config\": {\n%s\n  }\n}\n", body.c_str());
+        std::fclose(f);
+    }
+}
+
 /* Set wine env vars in the current process. Used by both the vst_host
  * fork child (start()) and the wineboot fork child (bootServicesIfNeeded()).
  * Safe to call only after fork — mutates ::setenv. */
@@ -255,18 +312,7 @@ void WineHostProcess::setupWineEnvChild(const Config& cfg) {
         /* Write Config.json on first launch (idempotent — same content
          * each time). FEX reads it from <config_dir>/Config.json. */
         const std::string configFile = configDir + "Config.json";
-        FILE* f = std::fopen(configFile.c_str(), "w");
-        if (f) {
-            std::fputs(
-                "{\n"
-                "  \"Config\": {\n"
-                "    \"EnableCodeCachingWIP\": \"1\",\n"
-                "    \"EnableLazyCodeCachingWIP\": \"1\",\n"
-                "    \"EnableCodeCacheValidation\": \"1\"\n"
-                "  }\n"
-                "}\n", f);
-            std::fclose(f);
-        }
+        vstpocWriteFexConfig(configFile, fexRoot);
         ::setenv("FEX_APP_CONFIG_LOCATION", configDir.c_str(), 1);
         ::setenv("FEX_APP_DATA_LOCATION",   dataDir.c_str(),   1);
         ::setenv("FEX_APP_CACHE_LOCATION",  cacheDir.c_str(),  1);
@@ -284,6 +330,9 @@ void WineHostProcess::setupWineEnvChild(const Config& cfg) {
      * audio-breakup diagnosis with Helix Native showed the JIT cost was
      * eating real-time deadlines even at moderate CPU. */
     ::setenv("FEX_SMCCHECKS", "mtrack", 1);
+    /* vstpoc: file-driven env overrides (VSTPOC_STACK_PCT etc.) — see start()'s
+     * inline copy. Both blocks per feedback_winehostprocess_dup_env. */
+    vstpocApplyEnvFile(cfg.cacheDir);
     /* FEX TSO config: leave at defaults.
      *   FEX_HALFBARRIERTSOENABLED=1 (default) — half-barrier optimisation
      *     on; faster than the strict-barrier path.
@@ -683,18 +732,7 @@ bool WineHostProcess::start() {
             ::mkdir(dataDir.c_str(),   0700);
             ::mkdir(cacheDir.c_str(),  0700);
             const std::string configFile = configDir + "Config.json";
-            FILE* f = std::fopen(configFile.c_str(), "w");
-            if (f) {
-                std::fputs(
-                    "{\n"
-                    "  \"Config\": {\n"
-                    "    \"EnableCodeCachingWIP\": \"1\",\n"
-                    "    \"EnableLazyCodeCachingWIP\": \"1\",\n"
-                    "    \"EnableCodeCacheValidation\": \"1\"\n"
-                    "  }\n"
-                    "}\n", f);
-                std::fclose(f);
-            }
+            vstpocWriteFexConfig(configFile, fexRoot);
             ::setenv("FEX_APP_CONFIG_LOCATION", configDir.c_str(), 1);
             ::setenv("FEX_APP_DATA_LOCATION",   dataDir.c_str(),   1);
             ::setenv("FEX_APP_CACHE_LOCATION",  cacheDir.c_str(),  1);
@@ -709,6 +747,12 @@ bool WineHostProcess::start() {
                           "127.0.0.1:%d", cfg_.displayNumber);
             ::setenv("DISPLAY", displayBuf, 1);
         }
+        /* vstpoc: file-driven env overrides (e.g. VSTPOC_STACK_PCT for patch 0035
+         * thread-stack scaling — BIAS FX 2's tid 00a0 FEX overflow). This is the
+         * REAL vst_host launch path, so the override MUST be here (the other copy
+         * in setupWineEnvChild only covers wineboot/rpcss). Applied late so it
+         * wins over the defaults above. */
+        vstpocApplyEnvFile(cfg_.cacheDir);
         /* DXVK debug logging — duplicated from setupWineEnvChild because
          * the actual vst_host launch uses this inline block. Per
          * feedback_winehostprocess_dup_env: env vars must be in BOTH or
@@ -941,6 +985,13 @@ bool WineHostProcess::start() {
             std::fprintf(stderr, "[launcher] sched_setaffinity failed: %s\n",
                 std::strerror(errno));
         }
+
+        /* vstpoc: re-apply file env overrides LAST (after the WINEDEBUG/FEX/DXVK
+         * setenvs above) so wine_env.txt can also override WINEDEBUG — e.g.
+         * "WINEDEBUG=+gdi,+tid" to trace the BIAS FX 2 tid 00a0 runaway recursion
+         * (creates a GDI object per level). The earlier call (post-DISPLAY) covers
+         * vars read before this point; this one wins for everything. */
+        vstpocApplyEnvFile(cfg_.cacheDir);
 
         // vstpoc 2026-05-24 (Fix A.1 — priority-inversion mitigation):
         // Reverted from nice=-10 to nice=0. Bionic does NOT implement
