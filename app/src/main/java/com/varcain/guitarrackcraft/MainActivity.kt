@@ -115,6 +115,7 @@ class MainActivity : ComponentActivity() {
                 prepareLv2AndInitEngine()
             }
             engineReady = true
+            maybeAutostartEditor()
         }
 
         setContent {
@@ -231,6 +232,58 @@ class MainActivity : ComponentActivity() {
             }
         } catch (e: Exception) {
             android.util.Log.e("MainActivity", "Failed to copy asset: $assetPath", e)
+        }
+    }
+
+    /**
+     * Debug autostart: if cache/autostart_editor.txt contains a plugin name (or
+     * id substring), open that plugin's X11 editor on launch — a faithful BIAS
+     * FX 2 black-editor repro with no manual rack interaction, so the FEX stack
+     * recursion can be iterated on without anyone driving the device. Marker
+     * absent (the normal case) = no-op. Drop the marker with:
+     *   adb shell run-as <pkg> sh -c 'echo "BIAS FX 2" > cache/autostart_editor.txt'
+     */
+    private suspend fun maybeAutostartEditor() {
+        try {
+            val marker = File(cacheDir, "autostart_editor.txt")
+            if (!marker.exists()) return
+            val want = marker.readText().trim()
+            if (want.isEmpty()) return
+            val rm = com.varcain.guitarrackcraft.engine.RackManager
+            val match = withContext(Dispatchers.IO) {
+                rm.getAvailablePlugins().firstOrNull {
+                    it.name.contains(want, ignoreCase = true) ||
+                    it.fullId.contains(want, ignoreCase = true) ||
+                    it.id.contains(want, ignoreCase = true)
+                }
+            }
+            if (match == null) {
+                android.util.Log.w("Autostart", "no plugin matches '$want'")
+                return
+            }
+            // Re-add to the MAIN rack (audio chain) so it behaves like a restored
+            // session, not just the editor window. Guard on empty rack so config
+            // changes / re-creates don't stack duplicates. Heavy (loads plugin) -> IO.
+            // Debug toggle: cache/autostart_norack present => editor only (clean,
+            // single vst_host log for pipe tracing). Absent (normal) => add to rack.
+            if (!File(cacheDir, "autostart_norack").exists()) {
+                withContext(Dispatchers.IO) {
+                    if (rm.getRackSize() == 0) {
+                        val pos = rm.addPlugin(match.fullId)
+                        android.util.Log.i("Autostart", "added ${match.name} to rack at pos=$pos")
+                    } else {
+                        android.util.Log.i("Autostart", "rack already has ${rm.getRackSize()} plugin(s), skip add")
+                    }
+                }
+            }
+            // Also open its X11 editor (the BIAS FX 2 black-editor repro).
+            android.util.Log.i("Autostart", "opening editor for ${match.name} (${match.fullId})")
+            startActivity(
+                android.content.Intent(this@MainActivity, X11PluginUIActivity::class.java)
+                    .putExtra(X11PluginUIActivity.EXTRA_PLUGIN_ID, match.fullId)
+            )
+        } catch (e: Exception) {
+            android.util.Log.e("Autostart", "failed", e)
         }
     }
 

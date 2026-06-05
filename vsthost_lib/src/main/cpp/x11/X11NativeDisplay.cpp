@@ -1141,6 +1141,40 @@ struct X11NativeDisplay::Impl {
                     hit.localY = t.y;
                     fellBack = true;
                 }
+                /* Dead-overlay redirect (BIAS FX 2's CEF editor): the tap can
+                 * hit-test to a maskless overlay window (BIAS stacks a huge
+                 * 3072x1620 window with event-mask=0 over the content) that is a
+                 * SIBLING of the real editor under the desktop — so neither the
+                 * click nor the focus-walk reaches the editor and wine focuses
+                 * the desktop instead, dropping all keyboard input. If the hit
+                 * window selects no ButtonPress, redirect to the real editor:
+                 * the mapped NON-desktop window (parent != root) that DOES carry
+                 * ButtonPressMask and contains the tap point (where rendering
+                 * goes). No-op for normal plugins whose editor selects input. */
+                if (!fellBack) {
+                    std::lock_guard<std::mutex> mapLock(windowMapMutex);
+                    if (!(windowManager_.getEventMask(hit.wid) & 0x4 /*ButtonPressMask*/)) {
+                        uint32_t best = 0; long long bestArea = -1;
+                        for (uint32_t cw : windowManager_.childWindows()) {
+                            if (windowManager_.isUnmapped(cw)) continue;
+                            auto p = windowManager_.getPosition(cw);
+                            if (p.parent == 0 || p.parent == kRootWindowId) continue; // skip desktop
+                            if (!(windowManager_.getEventMask(cw) & 0x4)) continue;
+                            auto ap = windowManager_.getAbsolutePos(cw);
+                            auto sz = windowManager_.getSize(cw);
+                            if (t.x < ap.first || t.x >= ap.first + sz.first ||
+                                t.y < ap.second || t.y >= ap.second + sz.second) continue;
+                            long long area = (long long)sz.first * (long long)sz.second;
+                            if (bestArea < 0 || area < bestArea) { best = cw; bestArea = area; }
+                        }
+                        if (best) {
+                            auto ap = windowManager_.getAbsolutePos(best);
+                            hit.wid = best;
+                            hit.localX = t.x - ap.first;
+                            hit.localY = t.y - ap.second;
+                        }
+                    }
+                }
                 grabWindow = hit.wid;
                 {
                     static thread_local int bpDbg = 0;
@@ -1178,13 +1212,23 @@ struct X11NativeDisplay::Impl {
                 // is useless because it doesn't subscribe to keyboard input.
                 {
                     uint32_t topLevel = hit.wid;
-                    uint32_t bestKeyTarget = 0;  // highest ancestor with KeyPressMask
+                    uint32_t bestKeyTarget = 0;  // highest NON-DESKTOP ancestor w/ KeyPressMask
                     for (int depth = 0; depth < 32; ++depth) {
                         std::lock_guard<std::mutex> mapLock(windowMapMutex);
-                        uint32_t mask = windowManager_.getEventMask(topLevel);
-                        if (mask & 0x1 /*KeyPressMask*/) bestKeyTarget = topLevel;
                         auto pos = windowManager_.getPosition(topLevel);
-                        if (pos.parent == 0 || pos.parent == kRootWindowId) break;
+                        bool isDesktop = (pos.parent == 0 || pos.parent == kRootWindowId);
+                        uint32_t mask = windowManager_.getEventMask(topLevel);
+                        /* Don't target the wine desktop window (the top-level
+                         * directly under our real root). Both the editor AND the
+                         * desktop carry KeyPressMask; picking the HIGHEST lands
+                         * on the desktop, so wine focuses the desktop instead of
+                         * the editor and keys never reach the plugin — BIAS
+                         * FX 2's CEF editor gets its keyboard focus stuck on the
+                         * desktop (focus=desktop while fg=editor). Stop at the
+                         * editor: the highest KeyPressMask window that is NOT the
+                         * desktop. */
+                        if ((mask & 0x1 /*KeyPressMask*/) && !isDesktop) bestKeyTarget = topLevel;
+                        if (isDesktop) break;
                         topLevel = pos.parent;
                     }
                     if (bestKeyTarget) topLevel = bestKeyTarget;
@@ -1333,6 +1377,35 @@ struct X11NativeDisplay::Impl {
         if (!keysPending.empty()) {
             uint32_t focused = focusedWindowId.load(std::memory_order_acquire);
             uint32_t target = focused;
+            /* Never drain keys to the wine DESKTOP window or to a window that
+             * doesn't select KeyPressMask: wine sometimes sets SetInputFocus to
+             * the desktop (BIAS FX 2 — focus lands on the desktop, not the CEF
+             * editor), so the keystrokes would vanish into the void. When the
+             * focus target is the desktop / maskless / unset, route keys to the
+             * real editor = the mapped NON-desktop window that carries
+             * KeyPressMask (same window the click-redirect targets). */
+            {
+                std::lock_guard<std::mutex> lk(windowMapMutex);
+                bool ok = false;
+                if (target) {
+                    auto p = windowManager_.getPosition(target);
+                    bool isDesktop = (p.parent == 0 || p.parent == kRootWindowId);
+                    ok = !isDesktop && (windowManager_.getEventMask(target) & 0x1 /*KeyPressMask*/);
+                }
+                if (!ok) {
+                    uint32_t best = 0; long long bestArea = -1;
+                    for (uint32_t cw : windowManager_.childWindows()) {
+                        if (windowManager_.isUnmapped(cw)) continue;
+                        auto p = windowManager_.getPosition(cw);
+                        if (p.parent == 0 || p.parent == kRootWindowId) continue;
+                        if (!(windowManager_.getEventMask(cw) & 0x1 /*KeyPressMask*/)) continue;
+                        auto sz = windowManager_.getSize(cw);
+                        long long area = (long long)sz.first * (long long)sz.second;
+                        if (bestArea < 0 || area < bestArea) { best = cw; bestArea = area; }
+                    }
+                    if (best) target = best;
+                }
+            }
             if (target == 0) {
                 target = slotWid;
                 if (target == 0 && !pluginSlotWindows.empty()) target = pluginSlotWindows[0];
@@ -3016,8 +3089,9 @@ struct X11NativeDisplay::Impl {
                         int dstY = (int)(int16_t)read16(buf, 22);
                         int cw = (int)read16(buf, 24);
                         int ch = (int)read16(buf, 26);
-                        LOGI("X11 handle CopyArea src=0x%x dst=0x%x %dx%d (%d,%d)->(%d,%d)",
-                             srcId, dstId, cw, ch, srcX, srcY, dstX, dstY);
+                        if (reqLogCount <= 40)
+                            LOGI("X11 handle CopyArea src=0x%x dst=0x%x %dx%d (%d,%d)->(%d,%d)",
+                                 srcId, dstId, cw, ch, srcX, srcY, dstX, dstY);
 
                         /* Resolve source */
                         const uint32_t* srcPixels = nullptr;
@@ -3098,14 +3172,37 @@ struct X11NativeDisplay::Impl {
                             return false;
                         };
                         if (srcPixels && dstPixels && cw > 0 && ch > 0) {
+                            /* Precompute the in-bounds column span once (same for
+                             * every row): the per-pixel loop's bounds checks ×
+                             * 559k px cost ~18-37ms for an 860x650 full-window
+                             * blit under FEX (BIAS/CEF does one per frame) and
+                             * starve the X server thread → input + repaint back
+                             * up. memmove whole rows; per-pixel only the rare
+                             * rows a mapped sibling-above actually crosses. */
+                            int c0 = 0;
+                            if (-srcX > c0) c0 = -srcX;
+                            if (-dstX > c0) c0 = -dstX;
+                            int c1 = cw;
+                            if (sW - srcX < c1) c1 = sW - srcX;
+                            if (dW - dstX < c1) c1 = dW - dstX;
                             for (int row = 0; row < ch; row++) {
                                 int sy = srcY + row, dy = dstY + row;
                                 if (sy < 0 || sy >= sH || dy < 0 || dy >= dH) continue;
-                                for (int col = 0; col < cw; col++) {
-                                    int sx = srcX + col, dx = dstX + col;
-                                    if (sx < 0 || sx >= sW || dx < 0 || dx >= dW) continue;
-                                    if (!sibRects.empty() && clipped(dx, dy)) continue;
-                                    dstPixels[dy * dW + dx] = srcPixels[sy * sW + sx];
+                                if (c1 <= c0) continue;
+                                bool rowClipped = false;
+                                for (auto& r : sibRects) {
+                                    if (dy >= r.y1 && dy < r.y2) { rowClipped = true; break; }
+                                }
+                                if (!rowClipped) {
+                                    memmove(&dstPixels[dy * dW + dstX + c0],
+                                            &srcPixels[sy * sW + srcX + c0],
+                                            (size_t)(c1 - c0) * sizeof(uint32_t));
+                                } else {
+                                    for (int col = c0; col < c1; col++) {
+                                        int sx = srcX + col, dx = dstX + col;
+                                        if (clipped(dx, dy)) continue;
+                                        dstPixels[dy * dW + dx] = srcPixels[sy * sW + sx];
+                                    }
                                 }
                             }
                             if (dstIsWindow) {

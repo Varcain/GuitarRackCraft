@@ -1,0 +1,61 @@
+diff --git a/src/util/util_sleep.cpp b/src/util/util_sleep.cpp
+index b50b65e6..cf867395 100644
+--- a/src/util/util_sleep.cpp
++++ b/src/util/util_sleep.cpp
+@@ -3,6 +3,8 @@
+ 
+ #include "./log/log.h"
+ 
++#include <cstdlib>
++
+ using namespace std::chrono_literals;
+ 
+ namespace dxvk {
+@@ -76,11 +78,24 @@ namespace dxvk {
+     if (!m_initialized.load(std::memory_order_acquire))
+       initialize();
+ 
++    // vstpoc: the busy-wait tail below spins on high_resolution_clock::now()
++    // (QueryPerformanceCounter). Under FEX/arm64ec every now() is an emulated
++    // syscall, so spinning the last ~m_sleepThreshold + duration/6 (~6-7ms per
++    // 60Hz frame) burns ~40% of a core on CEF's vsync thread (DXVK
++    // WaitForVBlank) and competes with audio → xruns. Default to a plain
++    // NtDelayExecution for the remainder instead (≈1ms accurate with the 1ms
++    // timer res Chromium sets — plenty for vsync pacing). Set VSTPOC_DXVK_SPIN=1
++    // to restore the original busy-wait (A/B). Checked once.
++    static const bool s_spin = [] {
++      const char* e = std::getenv("VSTPOC_DXVK_SPIN");
++      return e && e[0] == '1';
++    }();
++
+     // Busy-wait for the last couple of milliseconds since sleeping
+     // on Windows is highly inaccurate and inconsistent.
+     TimerDuration sleepThreshold = m_sleepThreshold;
+ 
+-    if (m_sleepGranularity != TimerDuration::zero())
++    if (s_spin && m_sleepGranularity != TimerDuration::zero())
+       sleepThreshold += duration / 6;
+ 
+     TimerDuration remaining = duration;
+@@ -96,11 +111,17 @@ namespace dxvk {
+       t0 = t1;
+     }
+ 
+-    // Busy-wait until we have slept long enough
+-    while (remaining > TimerDuration::zero()) {
++    if (s_spin) {
++      // Busy-wait until we have slept long enough (original accurate path)
++      while (remaining > TimerDuration::zero()) {
++        t1 = dxvk::high_resolution_clock::now();
++        remaining -= std::chrono::duration_cast<TimerDuration>(t1 - t0);
++        t0 = t1;
++      }
++    } else if (remaining > TimerDuration::zero()) {
++      // FEX: one more system sleep instead of spinning on emulated QPC
++      systemSleep(remaining);
+       t1 = dxvk::high_resolution_clock::now();
+-      remaining -= std::chrono::duration_cast<TimerDuration>(t1 - t0);
+-      t0 = t1;
+     }
+ 
+     return t1;

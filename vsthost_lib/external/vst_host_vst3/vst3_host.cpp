@@ -32,6 +32,7 @@ extern "C" {
 
 /* Wine + Windows headers (we're a Windows PE running under wine). */
 #include <windows.h>
+#include <tlhelp32.h>
 #include <stdio.h>
 #include <string.h>
 #include <stdint.h>
@@ -64,6 +65,12 @@ using namespace Steinberg::Vst;
 
 /* Shared-memory pointer for the VEH to use during crash logging. */
 static volatile VstpocShared* g_shm = NULL;
+
+/* libcef.dll guest base, captured by dump_guest_modules the moment libcef
+ * appears in the PEB Ldr list. Used by the BREAKPOINT epoch probe to read
+ * libcef's MSVC magic-static guard state (_Init_global_epoch vs the recursing
+ * thread's _Init_thread_epoch) and settle the FEX TLS-misfire hypothesis. */
+static volatile unsigned char* g_libcef_base = NULL;
 
 /* ----- VEH pattern catalog ------------------------------------------------
  *
@@ -290,6 +297,289 @@ static bool addr_is_executable(const void *addr)
                             PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY)) != 0;
 }
 
+/* vstpoc (BIAS FX 2 tid 00a0 runaway recursion): dump the full guest PE module
+ * table by walking PEB->Ldr->InLoadOrderModuleList with raw offsets (no
+ * winternl.h dependency). The unix-side stack-overflow scanner (virtual.c) logs
+ * the recursing guest return addresses but /proc/maps cannot resolve them (all
+ * guest PEs live inside one giant anonymous FEX region). Logging every module's
+ * [base,end) here — before the overflow — lets us map those addresses to the
+ * actual recursing module (libcef vs winevulkan vs win32u/gdi32). x86_64 PEB is
+ * at gs:[0x60]; LDR_DATA_TABLE_ENTRY: DllBase@0x30, SizeOfImage@0x40,
+ * BaseDllName UNICODE_STRING@0x58 (Length u16 @+0, Buffer ptr @+8). */
+static void dump_guest_modules(const char *tag)
+{
+    unsigned char *peb = (unsigned char *)__readgsqword(0x60);
+    if (!peb || !addr_is_committed(peb)) return;
+    unsigned char *ldr = *(unsigned char **)(peb + 0x18);
+    if (!ldr || !addr_is_committed(ldr)) return;
+    void *head = ldr + 0x10;                 /* InLoadOrderModuleList LIST_ENTRY */
+    void *cur  = *(void **)head;              /* first entry's InLoadOrderLinks   */
+    int n = 0;
+    while (cur && cur != head && n < 256) {
+        unsigned char *ent = (unsigned char *)cur;
+        if (!addr_is_committed(ent + 0x60)) break;
+        void          *base    = *(void **)(ent + 0x30);
+        unsigned int   size    = *(unsigned int *)(ent + 0x40);
+        unsigned short namelen = *(unsigned short *)(ent + 0x58);  /* BaseDllName.Length (bytes) */
+        wchar_t       *nbuf    = *(wchar_t **)(ent + 0x60);
+        char nm[160]; int j = 0;
+        if (nbuf && addr_is_committed(nbuf))
+            for (int i = 0; i < namelen / 2 && j < (int)sizeof(nm) - 1; i++)
+                nm[j++] = (char)nbuf[i];
+        nm[j] = 0;
+        if (base)
+            LOG("modtable[%s]: base=%p end=%p size=0x%x name=%s\n",
+                tag, base, (void *)((char *)base + size), size, nm);
+        /* Capture libcef base for the epoch probe (case-insensitive "libcef"). */
+        if (base && !g_libcef_base) {
+            int lc = (nm[0]=='l'||nm[0]=='L') && (nm[1]=='i'||nm[1]=='I') &&
+                     (nm[2]=='b'||nm[2]=='B') && (nm[3]=='c'||nm[3]=='C') &&
+                     (nm[4]=='e'||nm[4]=='E') && (nm[5]=='f'||nm[5]=='F');
+            if (lc) { g_libcef_base = (unsigned char *)base;
+                      LOG("modtable: captured libcef base=%p\n", base); }
+        }
+        cur = *(void **)cur;                 /* InLoadOrderLinks.Flink */
+        n++;
+    }
+    LOG("modtable[%s]: %d modules\n", tag, n);
+}
+
+/* Watcher: libcef.dll loads lazily inside the plugin's attached(); poll for it
+ * on a side thread (not blocked by the recursion) and dump the module table the
+ * moment it appears, then once more after it settles. */
+/* vstpoc: log this thread's guest TEB stack bounds vs the actual stack. If the
+ * TEB's NT_TIB.StackBase/StackLimit don't bracket a real local, Chromium's
+ * GetCurrentThreadStackLimits-based recursion guards misfire under FEX/arm64ec
+ * → unbounded recursion → guest stack overflow (BIAS FX 2 black editor). */
+static void log_teb_stack(const char *tag)
+{
+    NT_TIB *tib = (NT_TIB *)NtCurrentTeb();   /* TEB starts with NT_TIB */
+    volatile int local = 0;
+    void *sp = (void *)&local;
+    LOG("tebstack[%s]: StackBase=%p StackLimit=%p &local=%p in_range=%d\n",
+        tag, tib->StackBase, tib->StackLimit, sp,
+        (sp < tib->StackBase && sp >= tib->StackLimit) ? 1 : 0);
+}
+
+static DWORD WINAPI libcef_modtable_watcher(LPVOID)
+{
+    log_teb_stack("watcher");
+    /* GetModuleHandleA("libcef.dll") proved unreliable under arm64ec (libcef
+     * loads mid-DllMain before LdrLoadDll registers the base name), so just
+     * re-dump the full PEB module table on a timer — dump_guest_modules walks
+     * the Ldr list directly and will list libcef the moment it appears. */
+    for (int i = 0; i < 24; i++) {                 /* ~7.2s */
+        char tag[24];
+        snprintf(tag, sizeof(tag), "t%d", i);
+        dump_guest_modules(tag);
+        Sleep(300);
+    }
+    return 0;
+}
+
+/* vstpoc: sampling profiler. When VSTPOC_RIP_SAMPLE is set, a side thread
+ * periodically suspends every OTHER thread in this process, reads its guest
+ * x86_64 RIP via GetThreadContext (vst3_host.exe runs as an x86_64 PE under
+ * FEX, so GetThreadContext returns the emulated guest context directly — no
+ * ChpeV2CpuAreaInfo poking needed), and logs it. The hot/spinning thread's RIP
+ * dominates the histogram; map (rip - module_base) against the modtable dump to
+ * identify the looping function. Built to find what BIAS's native side
+ * busy-waits on while the CEF editor is stuck on "Loading" (host tid spins ~40%
+ * in non-vulkan guest code after the page loads). Log AFTER ResumeThread so we
+ * never hold a thread suspended across the stdio lock that LOG()/fprintf takes
+ * (would self-deadlock if we suspended a thread mid-fprintf). */
+/* For each OTHER thread: suspend, copy its stack from RSP, scan for return
+ * addresses that land in the exe/DLL/libcef/BIAS range (skip ntdll +
+ * libarm64ecfex = the wait machinery) and log them. Reveals which BIAS/CEF
+ * function each parked thread is blocked in = the stalled native handshake
+ * handler. Stack is copied while suspended; LOG happens after resume. */
+static void vstpoc_dump_thread_bts(DWORD myPid, DWORD myTid, const char *tag)
+{
+    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+    if (snap == INVALID_HANDLE_VALUE) return;
+    THREADENTRY32 te; te.dwSize = sizeof(te);
+    if (Thread32First(snap, &te)) {
+        do {
+            if (te.th32OwnerProcessID != myPid || te.th32ThreadID == myTid) continue;
+            HANDLE h = OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT, FALSE,
+                                  te.th32ThreadID);
+            if (!h) continue;
+            DWORD64 buf[0x100]; int nbuf = 0; DWORD64 rip = 0;
+            if (SuspendThread(h) != (DWORD)-1) {
+                alignas(16) CONTEXT ctx; memset(&ctx, 0, sizeof(ctx));
+                ctx.ContextFlags = CONTEXT_CONTROL | CONTEXT_INTEGER;
+                if (GetThreadContext(h, &ctx)) {
+                    rip = ctx.Rip;
+                    DWORD64 rsp = ctx.Rsp;
+                    MEMORY_BASIC_INFORMATION mbi;
+                    if (rsp && VirtualQuery((void *)rsp, &mbi, sizeof(mbi)) == sizeof(mbi)
+                        && mbi.State == MEM_COMMIT
+                        && !(mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD))) {
+                        DWORD64 end = (DWORD64)mbi.BaseAddress + mbi.RegionSize;
+                        int n = (int)((end - rsp) / 8);
+                        if (n > 0x100) n = 0x100;
+                        for (int i = 0; i < n; i++) buf[nbuf++] = *(DWORD64 *)(rsp + i * 8);
+                    }
+                }
+                ResumeThread(h);    /* resume BEFORE logging */
+            }
+            char line[640]; int p = 0;
+            p += snprintf(line + p, sizeof(line) - p, "ripbt[%s] tid=%lx rip=%p ret:",
+                          tag, (unsigned long)te.th32ThreadID, (void *)rip);
+            int found = 0;
+            for (int i = 0; i < nbuf && found < 14 && p < (int)sizeof(line) - 20; i++) {
+                DWORD64 v = buf[i];
+                if ((v >= 0x140000000ULL && v < 0x140160000ULL) ||
+                    (v >= 0x7fd0000000ULL && v < 0x7fffa90000ULL)) {  /* exe+DLLs+libcef+BIAS, skip ntdll/fex */
+                    p += snprintf(line + p, sizeof(line) - p, " %llx", (unsigned long long)v);
+                    found++;
+                }
+            }
+            LOG("%s\n", line);
+            CloseHandle(h);
+        } while (Thread32Next(snap, &te));
+    }
+    CloseHandle(snap);
+}
+
+/* vstpoc: CROSS-PROCESS sampler. The CEF browser + renderer + gpu/utility run in
+ * separate CefSubprocess.exe processes (BIAS's binary, not ours) — the host
+ * (vst3_host) only runs BIAS's vst3 code, so the in-process sampler never sees
+ * Chromium/libcef threads. To find what Chromium is blocked on while the editor
+ * is stuck on "Loading", reach into each CefSubprocess via OpenProcess +
+ * cross-process GetThreadContext + ReadProcessMemory. For each such process we
+ * dump (a) its big committed regions so the manually-mapped libcef base can be
+ * identified offline (libcef isn't in the PEB Ldr list), and (b) every thread's
+ * RIP + a stack-scan backtrace. Offline: addresses in [libcef_base, +size) →
+ * RVA → symbolize with the libcef.dll PDB to read the blocked Chromium stacks. */
+static void vstpoc_xproc_sample(const char *tag)
+{
+    HANDLE psnap = CreateToolhelp32Snapshot( TH32CS_SNAPPROCESS, 0 );
+    if (psnap == INVALID_HANDLE_VALUE) { LOG("xproc[%s]: no proc snapshot\n", tag); return; }
+    PROCESSENTRY32W pe; pe.dwSize = sizeof(pe);
+    for (BOOL ok = Process32FirstW( psnap, &pe ); ok; ok = Process32NextW( psnap, &pe ))
+    {
+        if (!wcsstr( pe.szExeFile, L"CefSubprocess" )) continue;
+        DWORD pid = pe.th32ProcessID;
+        HANDLE hp = OpenProcess( PROCESS_VM_READ | PROCESS_QUERY_INFORMATION |
+                                 PROCESS_SUSPEND_RESUME, FALSE, pid );
+        if (!hp) { LOG("xproc[%s] pid=%lu OpenProcess fail=%lu\n", tag, pid, GetLastError()); continue; }
+        LOG("xproc[%s] pid=%lu BEGIN\n", tag, pid);
+        /* (a) memory map: big committed regions (libcef ≈ 200MB MZ region). */
+        unsigned char *addr = 0; MEMORY_BASIC_INFORMATION mbi;
+        while (VirtualQueryEx( hp, addr, &mbi, sizeof(mbi) ) == sizeof(mbi))
+        {
+            unsigned char *next = (unsigned char *)mbi.BaseAddress + mbi.RegionSize;
+            if (mbi.State == MEM_COMMIT && mbi.RegionSize >= 0x100000)
+            {
+                unsigned char hdr[2] = {0}; SIZE_T got = 0;
+                ReadProcessMemory( hp, mbi.BaseAddress, hdr, 2, &got );
+                LOG("xregion pid=%lu base=%p alloc=%p size=0x%zx prot=0x%lx mz=%d\n",
+                    pid, mbi.BaseAddress, mbi.AllocationBase, (size_t)mbi.RegionSize,
+                    mbi.Protect, (got==2 && hdr[0]=='M' && hdr[1]=='Z'));
+            }
+            if (next <= addr) break;
+            addr = next;
+        }
+        /* (b) thread backtraces (cross-process). */
+        HANDLE tsnap = CreateToolhelp32Snapshot( TH32CS_SNAPTHREAD, 0 );
+        if (tsnap != INVALID_HANDLE_VALUE)
+        {
+            THREADENTRY32 te; te.dwSize = sizeof(te);
+            for (BOOL t = Thread32First( tsnap, &te ); t; t = Thread32Next( tsnap, &te ))
+            {
+                if (te.th32OwnerProcessID != pid) continue;
+                HANDLE ht = OpenThread( THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT, FALSE,
+                                        te.th32ThreadID );
+                if (!ht) continue;
+                DWORD64 rip = 0, stack[64]; int n = 0;
+                if (SuspendThread( ht ) != (DWORD)-1)
+                {
+                    alignas(16) CONTEXT ctx; memset(&ctx, 0, sizeof(ctx));
+                    ctx.ContextFlags = CONTEXT_CONTROL | CONTEXT_INTEGER;
+                    if (GetThreadContext( ht, &ctx ))
+                    {
+                        rip = ctx.Rip;
+                        SIZE_T got = 0;
+                        if (ReadProcessMemory( hp, (void *)ctx.Rsp, stack, sizeof(stack), &got ))
+                            n = (int)(got / 8);
+                    }
+                    ResumeThread( ht );
+                }
+                char line[760]; int p = 0;
+                p += snprintf( line + p, sizeof(line) - p, "xbt pid=%lu tid=%lx rip=%llx ret:",
+                               pid, (unsigned long)te.th32ThreadID, (unsigned long long)rip );
+                int found = 0;
+                for (int i = 0; i < n && found < 18 && p < (int)sizeof(line) - 20; i++)
+                {
+                    DWORD64 v = stack[i];
+                    if (v > 0x10000ULL && v < 0x800000000000ULL)
+                    { p += snprintf( line + p, sizeof(line) - p, " %llx", (unsigned long long)v ); found++; }
+                }
+                LOG("%s\n", line);
+                CloseHandle( ht );
+            }
+            CloseHandle( tsnap );
+        }
+        LOG("xproc[%s] pid=%lu END\n", tag, pid);
+        CloseHandle( hp );
+    }
+    CloseHandle( psnap );
+}
+
+static DWORD WINAPI vstpoc_rip_sampler(LPVOID)
+{
+    if (!getenv("VSTPOC_RIP_SAMPLE")) return 0;
+    const DWORD myPid = GetCurrentProcessId();
+    const DWORD myTid = GetCurrentThreadId();
+    Sleep(8000);                       /* let the editor load + reach the stall */
+    dump_guest_modules("ripsample");   /* module bases for RIP→module mapping   */
+    LOG("ripsample: start pid=%lx\n", (unsigned long)myPid);
+    for (int bt = 0; bt < 3; bt++) {   /* backtrace parked threads (find the stalled handler) */
+        char t[16]; snprintf(t, sizeof(t), "p%d", bt);
+        vstpoc_dump_thread_bts(myPid, myTid, t);
+        Sleep(2000);
+    }
+    /* Cross-process: dump the CEF browser/renderer/gpu/utility Chromium threads
+     * (they're blocked while the editor sticks on "Loading") for PDB symbolization. */
+    for (int xp = 0; xp < 2; xp++) {
+        char t[16]; snprintf(t, sizeof(t), "x%d", xp);
+        vstpoc_xproc_sample(t);
+        Sleep(3000);
+    }
+    for (int sweep = 0; sweep < 2000; sweep++) {        /* ~40s at 20ms */
+        HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+        if (snap != INVALID_HANDLE_VALUE) {
+            THREADENTRY32 te; te.dwSize = sizeof(te);
+            if (Thread32First(snap, &te)) {
+                do {
+                    if (te.th32OwnerProcessID != myPid) continue;
+                    if (te.th32ThreadID == myTid) continue;
+                    HANDLE h = OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT,
+                                          FALSE, te.th32ThreadID);
+                    if (!h) continue;
+                    if (SuspendThread(h) != (DWORD)-1) {
+                        alignas(16) CONTEXT ctx;
+                        memset(&ctx, 0, sizeof(ctx));
+                        ctx.ContextFlags = CONTEXT_CONTROL;
+                        BOOL ok = GetThreadContext(h, &ctx);
+                        DWORD64 rip = ok ? ctx.Rip : 0;
+                        ResumeThread(h);    /* resume BEFORE logging */
+                        if (ok)
+                            LOG("ripsample tid=%lx rip=%p\n",
+                                (unsigned long)te.th32ThreadID, (void *)rip);
+                    }
+                    CloseHandle(h);
+                } while (Thread32Next(snap, &te));
+            }
+            CloseHandle(snap);
+        }
+        Sleep(20);
+    }
+    LOG("ripsample: done\n");
+    return 0;
+}
+
 /* Dump likely return addresses from the stack to reveal the call chain that
  * led to a fault. Best-effort + bounds-checked; helps RE which plugin/D3D
  * call produced a NULL object. */
@@ -463,6 +753,118 @@ static bool try_pattern(PEXCEPTION_POINTERS info, const VehPattern &p)
 
 static LONG WINAPI pluginmain_veh(PEXCEPTION_POINTERS info)
 {
+    /* vstpoc: STACK OVERFLOW diagnostic (BIAS FX 2 tid 00a0, FEX-induced, NOT
+     * reproducible on native). Runs with only ~1 page of reset stack, so do the
+     * MINIMUM: no CONTEXT copy, no RtlVirtualUnwind, no big locals — just log the
+     * guest Rip and SCAN raw stack qwords for plausible code return addresses
+     * into a STATIC buffer. A short repeating cycle => bounded recursion (bigger
+     * stack would fix it); varied addresses => not a simple recursion. Map the
+     * addresses with the startup "modbase" dump. Rate-limited to once. */
+    if (info->ExceptionRecord->ExceptionCode == 0xC00000FDu /*EXCEPTION_STACK_OVERFLOW*/) {
+        static std::atomic<int> so_logged{0};
+        if (so_logged.fetch_add(1, std::memory_order_relaxed) == 0) {
+            DWORD64 rip = info->ContextRecord->Rip;
+            DWORD64 rsp = info->ContextRecord->Rsp;
+            LOG("VEH: STACK OVERFLOW guest rip=%p rsp=%p\n", (void *)rip, (void *)rsp);
+            static char sob[1500];
+            int bp = 0;
+            for (int i = 0; i < 200 && bp < (int)sizeof(sob) - 20; i++) {
+                DWORD64 *slot = (DWORD64 *)(rsp + (DWORD64)i * 8);
+                if (!addr_is_committed(slot)) break;
+                DWORD64 v = *slot;
+                if (v > 0x10000 && v < 0x7fffffffffffULL)   /* plausible code addr */
+                    bp += snprintf(sob + bp, sizeof(sob) - bp, "%llx ", (unsigned long long)v);
+            }
+            sob[bp] = 0;
+            LOG("VEH: SO retaddr-scan: %s\n", sob);
+            /* module bases to map the scan (GetModuleHandle = PEB walk, light). */
+            LOG("VEH: SO modbase libcef=%p ntdll=%p combase=%p win32u=%p user32=%p vst3=%p\n",
+                (void *)GetModuleHandleA("libcef.dll"), (void *)GetModuleHandleA("ntdll.dll"),
+                (void *)GetModuleHandleA("combase.dll"), (void *)GetModuleHandleA("win32u.dll"),
+                (void *)GetModuleHandleA("user32.dll"), (void *)GetModuleHandleA(NULL));
+        }
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+
+    /* vstpoc: BREAKPOINT diagnostic (BIAS FX 2 tid 00a0 runaway). With a bigger
+     * stack (VSTPOC_STACK_PCT) the recursion hits GDI-handle exhaustion (65536) and
+     * wine raises EXCEPTION_BREAKPOINT INSTEAD of a stack overflow — and a
+     * breakpoint fires WITH stack room, so unwind_backtrace is SAFE here and gives
+     * the real recursive call chain (the repeating frames = the looping caller).
+     * Skip the int3 (Rip+=1) + CONTINUE_EXECUTION so winedbg does NOT launch. */
+    if (info->ExceptionRecord->ExceptionCode == 0x80000003u /*EXCEPTION_BREAKPOINT*/) {
+        static std::atomic<int> bp_logged{0};
+        if (bp_logged.fetch_add(1, std::memory_order_relaxed) < 1) {
+            /* This breakpoint = Chromium's CHECK firing when a GDI alloc returns
+             * NULL at the 65536 handle ceiling, i.e. the FEX recursion's crash
+             * point. unwind_backtrace crashes here (manually-mapped libcef has no
+             * registered unwind info), so do a RAW guest-stack scan instead +
+             * dump bytes at the recurring libcef return addresses for byte-matching
+             * against local libcef.dll. ContextRecord is the guest x64 context. */
+            DWORD64 rsp = info->ContextRecord->Rsp;
+            LOG("VEH: BREAKPOINT(GDI) at %p rsp=%p — raw guest-stack scan:\n",
+                info->ExceptionRecord->ExceptionAddress, (void *)rsp);
+            int logged = 0, bytes = 0;
+            for (int i = 0; i < 200000 && logged < 600; i++) {
+                DWORD64 *slot = (DWORD64 *)(rsp + (DWORD64)i * 8);
+                if (!addr_is_committed(slot)) break;
+                DWORD64 v = *slot;
+                if (v >= 0x7e00000000ULL && v < 0x7ff0000000ULL && (v & 0xfff)) {
+                    LOG("VEH-ovf=%llx\n", (unsigned long long)v);
+                    logged++;
+                    if (bytes < 20 && addr_is_committed((void *)(v - 8)) &&
+                        addr_is_committed((void *)(v + 16))) {
+                        const unsigned char *c = (const unsigned char *)(v - 8);
+                        LOG("VEH-ovfb %llx: %02x %02x %02x %02x %02x %02x %02x %02x | %02x %02x %02x %02x %02x %02x %02x %02x\n",
+                            (unsigned long long)v, c[0],c[1],c[2],c[3],c[4],c[5],c[6],c[7],
+                            c[8],c[9],c[10],c[11],c[12],c[13],c[14],c[15]);
+                        bytes++;
+                    }
+                }
+            }
+            LOG("VEH: scan done logged=%d\n", logged);
+
+            /* DECISIVE epoch probe: read libcef's MSVC magic-static guard state
+             * the same way the recursing guard does. RVAs confirmed by disasm:
+             *   _Init_global_epoch @ +0x9b58d8 (global int)
+             *   <static>_init_done @ +0x9b58dc (byte)
+             *   _tls_index         @ +0x95ef54 (int)
+             *   _Init_thread_epoch @ tls_block[+4]   (per-thread, via gs:0x58)
+             * If global_epoch > thread_epoch persistently -> guard always takes
+             * the slow (re-init) path -> SystemFonts recursion. thread==INT_MIN
+             * means the _Init_thread_footer write never stuck for this TEB; thread
+             * ==global while recursion persists means FEX's gs:0x58 != wine's. */
+            unsigned char *lc = (unsigned char *)g_libcef_base;
+            if (lc && addr_is_committed(lc + 0x9b58e0) &&
+                      addr_is_committed(lc + 0x95ef58)) {
+                int  gepoch = *(volatile int *)(lc + 0x9b58d8);
+                unsigned char idone = *(volatile unsigned char *)(lc + 0x9b58dc);
+                int  tlsidx = *(volatile int *)(lc + 0x95ef54);
+                void **tlsp = (void **)__readgsqword(0x58);   /* TEB->TLS pointer */
+                LOG("VEH: epoch probe libcef=%p _Init_global_epoch=%d(0x%x) init_done=%u "
+                    "_tls_index=%d gs:0x58=%p\n",
+                    lc, gepoch, (unsigned)gepoch, idone, tlsidx, (void *)tlsp);
+                if (tlsp && addr_is_committed(tlsp + tlsidx)) {
+                    unsigned char *blk = (unsigned char *)tlsp[tlsidx];
+                    if (blk && addr_is_committed(blk + 8)) {
+                        int tepoch = *(volatile int *)(blk + 4);
+                        LOG("VEH: epoch probe tls_block=%p _Init_thread_epoch=%d(0x%x)  "
+                            "VERDICT: global>thread=%d (1=slow-path/re-init every call)\n",
+                            (void *)blk, tepoch, (unsigned)tepoch, gepoch > tepoch);
+                    } else {
+                        LOG("VEH: epoch probe tls_block=%p not committed\n", (void *)blk);
+                    }
+                } else {
+                    LOG("VEH: epoch probe gs:0x58 TLS array not committed\n");
+                }
+            } else {
+                LOG("VEH: epoch probe SKIPPED (libcef base=%p not captured/committed)\n", lc);
+            }
+        }
+        info->ContextRecord->Rip += 1;   /* step over the int3 */
+        return EXCEPTION_CONTINUE_EXECUTION;
+    }
+
     /* vstpoc: diagnose the AmpliTube C++ exception storm (84% CPU spin). MSVC
      * C++ throw = code 0xE06D7363. Walk the throw info to log the thrown TYPE
      * name (rate-limited) so we know what its render init keeps failing on.
@@ -488,6 +890,20 @@ static LONG WINAPI pluginmain_veh(PEXCEPTION_POINTERS info)
             }
             LOG("VEH: C++ throw #%d type='%.96s' pc=%p\n", n + 1, tname,
                 info->ExceptionRecord->ExceptionAddress);
+            /* vstpoc: BIAS FX 2's CPipeException is UNHANDLED (its intra-process
+             * named-pipe op fails under FEX) and would terminate the whole editor
+             * process AFTER it's fully initialised (editor host window up, message
+             * pump running) — i.e. the lone thing between us and a rendered editor.
+             * Chromium overrides SetUnhandledExceptionFilter, but this VEH (chained,
+             * CALL_FIRST) still runs. The VEH executes in the faulting thread's
+             * context, so exit JUST this worker thread (same as log_and_exit_thread)
+             * — the UI thread survives and keeps rendering. If BIAS legitimately
+             * caught this elsewhere it'd not be unhandled; observed unhandled. */
+            if (tname && strstr(tname, "CPipeException")) {
+                LOG("VEH: CPipeException unhandled on tid %lx -> ExitThread (keep editor alive)\n",
+                    (unsigned long)GetCurrentThreadId());
+                ExitThread(0);   /* never returns */
+            }
             /* Dump the thrown object (Info[1]) — for a NotAvailableError it
              * should carry the requested property key, inline (MSVC SSO string)
              * or via a char* member. */
@@ -796,6 +1212,7 @@ static LRESULT CALLBACK editor_host_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPAR
 static DWORD WINAPI editor_thread_proc(LPVOID arg)
 {
     EditorThreadCtx* ctx = (EditorThreadCtx*)arg;
+    log_teb_stack("editor");
 
     /* Force wine to initialize this thread's UI state (window station +
      * desktop + display driver attachment). Without this, the first
@@ -856,6 +1273,16 @@ static DWORD WINAPI editor_thread_proc(LPVOID arg)
         g_shm->editor_height = (int32_t)ctx->height;
         __sync_synchronize();
     }
+
+    /* vstpoc (BIAS FX 2 tid 00a0 runaway recursion): capture the guest module
+     * map so the unix-side overflow scanner's return addresses are resolvable.
+     * libcef loads lazily *inside* attached(), so a pre-attached dump usually
+     * misses it — spawn a detached watcher that polls for libcef and dumps the
+     * full table the moment it appears (and once more shortly after). Runs on a
+     * thread the recursion does not block. Cheap; once. */
+    dump_guest_modules("pre-attach");
+    CreateThread(NULL, 0, libcef_modtable_watcher, NULL, 0, NULL);
+    CreateThread(NULL, 0, vstpoc_rip_sampler, NULL, 0, NULL);  /* no-op unless VSTPOC_RIP_SAMPLE set */
 
     LOG("editor: calling attached(hwnd=%p, HWND)%s\n", parent,
         ctx->pump_during_attach ? " [worker+pump]" : "");
@@ -1046,10 +1473,36 @@ static void process_block(IAudioProcessor* processor,
     processor->process(data);
 }
 
+/* vstpoc: main thread id, so the unhandled-exception filter never kills it. */
+static DWORD g_main_tid = 0;
+
+/* vstpoc: last-chance filter. BIAS FX 2's CPipe throws an UNHANDLED CPipeException
+ * (C++ code 0xE06D7363) from a CEF/worker thread when its intra-process pipe op
+ * fails under FEX — which would terminate the whole vst_host process and black
+ * out the (otherwise fully-initialised) editor. Instead, exit JUST that thread so
+ * the UI thread survives and can render. Never touch the main thread. This runs
+ * only for TRULY unhandled exceptions (after BIAS's own frame handlers declined),
+ * so legitimately-caught CPipeExceptions are unaffected. */
+static LONG WINAPI vstpoc_unhandled_filter(EXCEPTION_POINTERS *info)
+{
+    DWORD code = info->ExceptionRecord->ExceptionCode;
+    DWORD tid  = GetCurrentThreadId();
+    if (tid != g_main_tid) {
+        LOG("UnhandledFilter: code=%lx on tid %lx -> ExitThread (keep process+editor alive)\n",
+            (unsigned long)code, (unsigned long)tid);
+        ExitThread(code);   /* never returns; process (and UI thread) survives */
+    }
+    LOG("UnhandledFilter: code=%lx on MAIN tid %lx -> default\n", (unsigned long)code, (unsigned long)tid);
+    return EXCEPTION_EXECUTE_HANDLER;
+}
+
 /* ----- Main entry point ----------------------------------------------*/
 int main(int argc, char** argv)
 {
     LOG("vst3_host starting (argc=%d)\n", argc);
+    g_main_tid = GetCurrentThreadId();
+    SetUnhandledExceptionFilter(vstpoc_unhandled_filter);
+    log_teb_stack("main");
 
     if (argc < 3) {
         LOG("usage: vst3_host.exe <shm_path> <plugin.vst3> [plugin.vst3 ...]\n");

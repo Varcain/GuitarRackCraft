@@ -1,0 +1,82 @@
+From: Kamil Lulko <limakzagan@gmail.com>
+Subject: win32u: memoize get_text_metr_size (system-font metrics cache)
+
+SPI_GETNONCLIENTMETRICS recomputes the menu/caption/smcaption font metrics on
+EVERY query (normalize_nonclientmetrics -> get_text_metr_size creates, selects,
+measures and deletes a font per system font). BIAS FX 2's Chromium queries
+SPI_GETNONCLIENTMETRICS in a tight loop under FEX, so that per-query font work
+churned GDI handles and held the GDI lock long enough to ABBA-deadlock a
+DLL-loading thread (loader lock <-> GDI lock). The system fonts are stable, so
+memoize (LOGFONT,dpi)->(metrics,avg-width) in an 8-entry cache. Eliminates the
+redundant measurements (24700 -> 0 in the BIAS loop) and the deadlock window.
+(Does NOT stop the guest rendering recursion that creates the bulk of the GDI
+objects -- that is the remaining root cause.) General wine efficiency win.
+
+diff --git a/dlls/win32u/sysparams.c b/dlls/win32u/sysparams.c
+index 00fe10f30ca..cb442d519a6 100644
+--- a/dlls/win32u/sysparams.c
++++ b/dlls/win32u/sysparams.c
+@@ -5372,22 +5372,61 @@ LONG get_char_dimensions( HDC hdc, TEXTMETRICW *metric, int *height )
+  * for the specified dc */
+ static void get_text_metr_size( HDC hdc, LOGFONTW *lf, TEXTMETRICW *metric, UINT *psz )
+ {
++    /* vstpoc: memoize (LOGFONT,dpi) -> (metrics, avg-char-width). Every
++     * SPI_GETNONCLIENTMETRICS query calls this per system font (menu/caption/
++     * smcaption) and it creates+selects+measures+deletes a font each time.
++     * BIAS FX 2's Chromium queries SPI_GETNONCLIENTMETRICS in a runaway loop, so
++     * that per-query font work churned GDI handles to exhaustion (65536) and held
++     * the GDI lock long enough to ABBA-deadlock a DLL-loading thread (loader lock).
++     * The system fonts are stable, so cache. This removes the GDI-churn and
++     * deadlock failure modes (it does NOT stop the guest recursion itself). */
++    static pthread_mutex_t cache_lock = PTHREAD_MUTEX_INITIALIZER;
++    static struct { LOGFONTW lf; UINT dpi; TEXTMETRICW tm; UINT psz; BOOL valid; } cache[8];
++    static unsigned int next_slot;
++    UINT dpi = get_system_dpi();
+     HFONT hfont, hfontsav;
+     TEXTMETRICW tm;
+     UINT ret;
++    int i;
++
+     if (!metric) metric = &tm;
++
++    pthread_mutex_lock( &cache_lock );
++    for (i = 0; i < 8; i++)
++    {
++        if (cache[i].valid && cache[i].dpi == dpi &&
++            !memcmp( &cache[i].lf, lf, sizeof(LOGFONTW) ))
++        {
++            *metric = cache[i].tm;
++            if (psz) *psz = cache[i].psz;
++            pthread_mutex_unlock( &cache_lock );
++            return;
++        }
++    }
++    pthread_mutex_unlock( &cache_lock );
++
+     hfont = NtGdiHfontCreate( lf, sizeof(*lf), 0, 0, NULL );
+     if (!hfont || !(hfontsav = NtGdiSelectFont( hdc, hfont )))
+     {
+         metric->tmHeight = -1;
+         if (psz) *psz = 10;
+         if (hfont) NtGdiDeleteObjectApp( hfont );
+-        return;
++        return;   /* don't cache transient failures */
+     }
+     ret = get_char_dimensions( hdc, metric, NULL );
+-    if (psz) *psz = ret ? ret : 10;
++    ret = ret ? ret : 10;
++    if (psz) *psz = ret;
+     NtGdiSelectFont( hdc, hfontsav );
+     NtGdiDeleteObjectApp( hfont );
++
++    pthread_mutex_lock( &cache_lock );
++    i = next_slot++ & 7;
++    cache[i].lf  = *lf;
++    cache[i].dpi = dpi;
++    cache[i].tm  = *metric;
++    cache[i].psz = ret;
++    cache[i].valid = TRUE;
++    pthread_mutex_unlock( &cache_lock );
+ }
+ 
+ DWORD get_dialog_base_units(void)
