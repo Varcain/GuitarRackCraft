@@ -79,12 +79,18 @@ std::vector<uint8_t> X11ConnectionHandler::buildConnectionReply(
     for (size_t i = 0; i < 11; i++) body[40 + i] = (uint8_t)vendor[i];
     body[51] = 0;
 
-    // [52..59] PixmapFormat:  depth=32, bpp=24, scanline_pad=8.
-    // (Java declares it this way; wine accepts it; our older
-    // depth=24/bpp=32 setup made wine probe pixmaps endlessly.)
+    // [52..59] PixmapFormat:  depth=32, bpp=32, scanline_pad=32.
+    // (Was bpp=24/pad=8 to match the Java X server. But depth=32 windows
+    //  carry genuine 32-bit BGRA pixels — e.g. CEF/Chromium editors like
+    //  BIAS FX 2. With bpp=24, wine computes the PutImage width as
+    //  row_bytes/3 and ships the raw 4-byte BGRA mislabeled as 3-byte, so
+    //  our reader unpacks it 3-wide → garbled/striped render. bpp=32 makes
+    //  wine send 4-byte BGRA at the true width; the PutImage handler
+    //  auto-detects 3 vs 4 bytes, so 3-byte-era plugins are unaffected.
+    //  The "endless pixmap probing" warning was about depth=24, not this.)
     body[52] = 32;
-    body[53] = 24;
-    body[54] = 8;
+    body[53] = 32;
+    body[54] = 32;
     // [55..59] pad.
 
     // [60..91] Screen header (32 bytes).

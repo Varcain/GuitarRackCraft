@@ -1,0 +1,649 @@
+	(%0) IRHeader %2, #0x7edc1708b0, #50, #176
+	(%2) CodeBlock %3, %4
+		(%3 i0) BeginBlock %2
+		(%152 i0) GuestOpcode #0x0
+		(%1070 i0) PushTwo i64, R14, R15, R4
+		(%157 i0) GuestOpcode #0x2
+		(%162 i0) GuestOpcode #0x4
+		(%1071 i0) PushTwo i64, R12, R13, R4
+		(%167 i0) GuestOpcode #0x6
+		(%172 i0) GuestOpcode #0x8
+		(%1072 i0) PushTwo i64, R7, R6, R4
+		(%177 i0) GuestOpcode #0x9
+		(%182 i0) GuestOpcode #0xa
+		(%1073 i0) PushTwo i64, R3, R5, R4
+		(%187 i0) GuestOpcode #0xb
+		(%195 i64) InlineConstant #0x88
+		%196(R4) i64 = Sub R4, %195
+		%201(R7) i64 = StoreRegister R2
+		%203(R14) i64 = StoreRegister R1
+		(%204 i0) GuestOpcode #0x19
+		%205(r0) i64 = EntrypointOffset #0x9405788
+		%206(R0) i64 = LoadMemTSO GPR, r0, %Invalid, i8, SXTX, #0x1
+		%210(R0) i64 = Xor R0, R4
+		(%211 i0) InvalidateFlags #0x10
+		(%213 i64) InlineConstant #0x0
+		%214(R16) i64 = SubWithFlags R0, %213
+		(%215 i64) StorePF R16
+		(%217 i0) GuestOpcode #0x23
+		(%221 i64) InlineConstant #0x80
+		(%222 i64) StoreMem GPR, R0, R4, %221, i8, SXTX, #0x1
+		(%223 i0) GuestOpcode #0x2b
+		%224(r0) i64 = EntrypointOffset #0x30
+		%226(R4) i64 = Push i64, r0, R4
+		(%228 i64) InlineEntrypointOffset #0xfffffffffe13ff40
+		(%229 i64) ExitFunction %228, Call, r0, %5
+		(%4 i0) EndBlock %2
+	(%5) CodeBlock %6, %7
+		(%6 i0) BeginBlock %5
+		%231(R15) i64 = StoreRegister R0
+		(%232 i0) GuestOpcode #0x33
+		(%235 i64) InlineConstant #0x38
+		%236(R6) i64 = Add R4, %235
+		(%238 i0) GuestOpcode #0x38
+		%239(r0) i64 = EntrypointOffset #0x7d58970
+		%240(V0) i128 = LoadMem FPR, r0, %Invalid, i128, SXTX, #0x1
+		(%242 i0) GuestOpcode #0x3f
+		(%246 i64) InlineConstant #0xfffffffffffffff8
+		(%247 i128) StoreMem FPR, V0, R6, %246, i128, SXTX, #0x1
+		(%248 i0) GuestOpcode #0x43
+		(%251 i64) InlineConstant #0x30
+		%252(R12) i64 = Add R4, %251
+		%255(R1) i64 = StoreRegister R12
+		(%256 i0) GuestOpcode #0x4b
+		%257(r0) i64 = EntrypointOffset #0x50
+		%259(R4) i64 = Push i64, r0, R4
+		(%261 i64) InlineEntrypointOffset #0x1692360
+		(%262 i64) ExitFunction %261, Call, r0, %8
+		(%7 i0) EndBlock %5
+	(%8) CodeBlock %9, %10
+		(%9 i0) BeginBlock %8
+		%264(R1) i64 = StoreRegister R6
+		(%265 i0) GuestOpcode #0x53
+		%266(r0) i64 = EntrypointOffset #0x58
+		%268(R4) i64 = Push i64, r0, R4
+		(%270 i64) InlineEntrypointOffset #0x1692360
+		(%271 i64) ExitFunction %270, Call, r0, %11
+		(%10 i0) EndBlock %8
+	(%11) CodeBlock %12, %13
+		(%12 i0) BeginBlock %11
+		(%272 i0) GuestOpcode #0x58
+		(%275 i64) InlineConstant #0x68
+		%276(R13) i64 = Add R4, %275
+		(%278 i0) Jump %14
+		(%13 i0) EndBlock %11
+	(%14) CodeBlock %15, %16
+		(%15 i0) BeginBlock %14
+		(%279 i0) GuestOpcode #0x5d
+		%281(R0) i64 = LoadMemTSO GPR, R15, %Invalid, i8, SXTX, #0x1
+		(%283 i0) GuestOpcode #0x60
+		(%286 i64) InlineConstant #0x8
+		%287(r0) i64 = Add R0, %286
+		%288(R0) i64 = LoadMemTSO GPR, r0, %Invalid, i8, SXTX, #0x1
+		%291(R1) i64 = StoreRegister R15
+		%293(R2) i64 = StoreRegister R12
+		(%294 i0) GuestOpcode #0x6a
+		%295(r0) i64 = EntrypointOffset #0x9cae758
+		%296(r0) i64 = LoadMemTSO GPR, r0, %Invalid, i64, SXTX, #0x1
+		%297(r1) i64 = EntrypointOffset #0x70
+		%299(R4) i64 = Push i64, r1, R4
+		(%301 i64) ExitFunction r0, Call, r1, %17
+		(%16 i0) EndBlock %14
+	(%17) CodeBlock %18, %19
+		(%18 i0) BeginBlock %17
+		%303(R5) i64 = Bfe #0x20, #0x0, R0
+		(%306 i8) TestNZ R0, R0
+		(%307 i0) InvalidateFlags #0x10
+		(%308 i64) StorePF R0
+		(%309 i0) GuestOpcode #0x74
+		(%310 i0) CarryInvert
+		(%311 i0) CondJump %Invalid, %Invalid, %86, %20, EQ, Invalid, #0x1
+		(%19 i0) EndBlock %17
+	(%20) CodeBlock %21, %22
+		(%21 i0) BeginBlock %20
+		(%312 i0) GuestOpcode #0x7a
+		(%315 i64) InlineConstant #0x60
+		%316(R1) i64 = Add R4, %315
+		%319(R2) i64 = StoreRegister R12
+		(%320 i0) GuestOpcode #0x82
+		%321(r0) i64 = EntrypointOffset #0x87
+		%323(R4) i64 = Push i64, r0, R4
+		(%325 i64) InlineEntrypointOffset #0x7fa4b0
+		(%326 i64) ExitFunction %325, Call, r0, %23
+		(%22 i0) EndBlock %20
+	(%23) CodeBlock %24, %25
+		(%24 i0) BeginBlock %23
+		(%327 i0) GuestOpcode #0x87
+		(%330 i64) InlineConstant #0x60
+		%331(R0) i64 = LoadMem GPR, R4, %330, i8, SXTX, #0x1
+		(%335 i64) InlineConstant #0x0
+		(%336 i64) SubNZCV R0, %335
+		(%339 i0) GuestOpcode #0x8f
+		(%340 i0) CondJump %Invalid, %Invalid, %92, %26, EQ, Invalid, #0x1
+		(%25 i0) EndBlock %23
+	(%26) CodeBlock %27, %28
+		(%27 i0) BeginBlock %26
+		(%341 i0) GuestOpcode #0x95
+		(%345 i64) InlineConstant #0x68
+		(%346 i64) StoreMem GPR, R0, R4, %345, i8, SXTX, #0x1
+		(%347 i0) GuestOpcode #0x9a
+		(%350 i64) InlineConstant #0x4
+		%351(r0) i64 = Add R0, %350
+		%352(R1) i32 = LoadMemTSO GPR, r0, %Invalid, i8, SXTX, #0x1
+		(%354 i0) GuestOpcode #0x9d
+		(%358 i64) InlineConstant #0x78
+		(%359 i32) StoreMem GPR, R1, R4, %358, i8, SXTX, #0x1
+		(%362 i64) InlineConstant #0xc
+		(%364 i64) InlineConstant #0xc
+		%365(R0) i64 = Add R0, %364
+		(%369 i0) GuestOpcode #0xa5
+		(%373 i64) InlineConstant #0x70
+		(%374 i64) StoreMem GPR, R0, R4, %373, i8, SXTX, #0x1
+		(%376 i0) Jump %29
+		(%28 i0) EndBlock %26
+	(%29) CodeBlock %30, %31
+		(%30 i0) BeginBlock %29
+		(%377 i0) GuestOpcode #0xaa
+		%379(R0) i64 = LoadMemTSO GPR, R7, %Invalid, i8, SXTX, #0x1
+		(%383 i64) InlineConstant #0x0
+		%384(R16) i64 = SubWithFlags R0, %383
+		(%385 i0) InvalidateFlags #0x10
+		(%386 i64) StorePF R16
+		(%387 i0) GuestOpcode #0xb0
+		(%388 i0) CondJump %Invalid, %Invalid, %89, %32, EQ, Invalid, #0x1
+		(%31 i0) EndBlock %29
+	(%32) CodeBlock %33, %34
+		(%33 i0) BeginBlock %32
+		(%389 i0) GuestOpcode #0xb6
+		(%393 i64) InlineConstant #0x48
+		(%394 i64) StoreMem GPR, R0, R4, %393, i8, SXTX, #0x1
+		(%395 i0) GuestOpcode #0xbb
+		(%398 i64) InlineConstant #0x4
+		%399(r0) i64 = Add R0, %398
+		%400(R1) i32 = LoadMemTSO GPR, r0, %Invalid, i8, SXTX, #0x1
+		(%402 i0) GuestOpcode #0xbe
+		(%406 i64) InlineConstant #0x58
+		(%407 i32) StoreMem GPR, R1, R4, %406, i8, SXTX, #0x1
+		(%410 i64) InlineConstant #0xc
+		(%412 i64) InlineConstant #0xc
+		%413(R16) i64 = AddWithFlags R0, %412
+		(%414 i64) StoreAF R0
+		(%415 i64) StorePF R16
+		%416(R0) i64 = StoreRegister R16
+		(%417 i0) GuestOpcode #0xc6
+		(%421 i64) InlineConstant #0x50
+		(%422 i64) StoreMem GPR, R0, R4, %421, i8, SXTX, #0x1
+		(%423 i0) CarryInvert
+		(%424 i0) Jump %35
+		(%34 i0) EndBlock %32
+	(%35) CodeBlock %36, %37
+		(%36 i0) BeginBlock %35
+		(%425 i0) GuestOpcode #0xcb
+		(%428 i64) InlineConstant #0x48
+		%429(R1) i64 = Add R4, %428
+		%432(R2) i64 = StoreRegister R13
+		(%433 i0) GuestOpcode #0xd3
+		%434(r0) i64 = EntrypointOffset #0xd8
+		%436(R4) i64 = Push i64, r0, R4
+		(%438 i64) InlineEntrypointOffset #0x1e1c990
+		(%439 i64) ExitFunction %438, Call, r0, %38
+		(%37 i0) EndBlock %35
+	(%38) CodeBlock %39, %40
+		(%39 i0) BeginBlock %38
+		%441(R6) i64 = Bfe #0x20, #0x0, R0
+		(%443 i0) GuestOpcode #0xda
+		(%446 i64) InlineConstant #0x60
+		%447(R1) i64 = LoadMem GPR, R4, %446, i8, SXTX, #0x1
+		(%451 i64) InlineConstant #0x0
+		(%452 i64) SubNZCV R1, %451
+		(%455 i0) GuestOpcode #0xe2
+		(%456 i0) CondJump %Invalid, %Invalid, %44, %41, EQ, Invalid, #0x1
+		(%40 i0) EndBlock %38
+	(%41) CodeBlock %42, %43
+		(%42 i0) BeginBlock %41
+		(%457 i0) GuestOpcode #0xe4
+		(%460 i64) InlineConstant #0x8
+		%461(r0) i64 = Add R1, %460
+		%462(R0) i32 = LoadMemTSO GPR, r0, %Invalid, i8, SXTX, #0x1
+		(%466 i64) InlineConstant #0x2
+		%467(r0) i32 = And R0, %466
+		(%469 i64) InlineConstant #0x0
+		(%470 i32) SubNZCV r0, %469
+		(%473 i0) GuestOpcode #0xe9
+		(%474 i0) CondJump %Invalid, %Invalid, %68, %44, EQ, Invalid, #0x1
+		(%43 i0) EndBlock %41
+	(%44) CodeBlock %45, %46
+		(%45 i0) BeginBlock %44
+		%475(r0) i64 = Constant #0x1, NoPad, #0x0
+		%477(R3) i64 = Bfi #0x8, #0x0, R3, r0
+		(%480 i8) TestNZ R6, R6
+		(%481 i0) InvalidateFlags #0x10
+		(%482 i64) StorePF R6
+		(%483 i0) GuestOpcode #0xf0
+		(%484 i0) CarryInvert
+		(%485 i0) CondJump %Invalid, %Invalid, %14, %47, EQ, Invalid, #0x1
+		(%46 i0) EndBlock %44
+	(%47) CodeBlock %48, %49
+		(%48 i0) BeginBlock %47
+		(%488 i64) InlineConstant #0x0
+		%489(R16) i64 = SubWithFlags R15, %488
+		(%490 i0) InvalidateFlags #0x10
+		(%491 i64) StorePF R16
+		(%492 i0) GuestOpcode #0xf9
+		(%493 i0) CondJump %Invalid, %Invalid, %53, %50, EQ, Invalid, #0x1
+		(%49 i0) EndBlock %47
+	(%50) CodeBlock %51, %52
+		(%51 i0) BeginBlock %50
+		(%494 i0) GuestOpcode #0xfb
+		%496(R0) i64 = LoadMemTSO GPR, R15, %Invalid, i8, SXTX, #0x1
+		(%498 i0) GuestOpcode #0xfe
+		%500(R0) i64 = LoadMemTSO GPR, R0, %Invalid, i8, SXTX, #0x1
+		%503(R1) i64 = StoreRegister R15
+		%504(R2) i64 = Constant #0x1, NoPad, #0x0
+		(%506 i0) GuestOpcode #0x109
+		%507(r0) i64 = EntrypointOffset #0x9cae758
+		%508(r0) i64 = LoadMemTSO GPR, r0, %Invalid, i64, SXTX, #0x1
+		%509(r1) i64 = EntrypointOffset #0x10f
+		%511(R4) i64 = Push i64, r1, R4
+		(%513 i64) ExitFunction r0, Call, r1, %53
+		(%52 i0) EndBlock %50
+	(%53) CodeBlock %54, %55
+		(%54 i0) BeginBlock %53
+		(%515 i8) TestNZ R5, R5
+		(%516 i0) InvalidateFlags #0x10
+		(%517 i64) StorePF R5
+		(%518 i0) GuestOpcode #0x112
+		(%519 i0) CarryInvert
+		(%520 i0) CondJump %Invalid, %Invalid, %110, %56, EQ, Invalid, #0x1
+		(%55 i0) EndBlock %53
+	(%56) CodeBlock %57, %58
+		(%57 i0) BeginBlock %56
+		(%521 i0) GuestOpcode #0x118
+		(%524 i64) InlineConstant #0x38
+		%525(R1) i64 = Add R4, %524
+		(%527 i0) GuestOpcode #0x11d
+		%528(r0) i64 = EntrypointOffset #0x122
+		%530(R4) i64 = Push i64, r0, R4
+		(%532 i64) InlineEntrypointOffset #0x1692390
+		(%533 i64) ExitFunction %532, Call, r0, %59
+		(%58 i0) EndBlock %56
+	(%59) CodeBlock %60, %61
+		(%60 i0) BeginBlock %59
+		(%534 i0) GuestOpcode #0x122
+		(%537 i64) InlineConstant #0x30
+		%538(R1) i64 = Add R4, %537
+		(%540 i0) GuestOpcode #0x127
+		%541(r0) i64 = EntrypointOffset #0x12c
+		%543(R4) i64 = Push i64, r0, R4
+		(%545 i64) InlineEntrypointOffset #0x1692390
+		(%546 i64) ExitFunction %545, Call, r0, %62
+		(%61 i0) EndBlock %59
+	(%62) CodeBlock %63, %64
+		(%63 i0) BeginBlock %62
+		(%547 i0) GuestOpcode #0x12c
+		(%550 i64) InlineConstant #0x80
+		%551(R1) i64 = LoadMem GPR, R4, %550, i8, SXTX, #0x1
+		%555(R1) i64 = Xor R1, R4
+		(%556 i0) InvalidateFlags #0x10
+		(%558 i64) InlineConstant #0x0
+		%559(R16) i64 = SubWithFlags R1, %558
+		(%560 i64) StorePF R16
+		(%562 i0) GuestOpcode #0x137
+		%563(r0) i64 = EntrypointOffset #0x13c
+		%565(R4) i64 = Push i64, r0, R4
+		(%567 i64) InlineEntrypointOffset #0x2236720
+		(%568 i64) ExitFunction %567, Call, r0, %65
+		(%64 i0) EndBlock %62
+	(%65) CodeBlock %66, %67
+		(%66 i0) BeginBlock %65
+		%570(R0) i64 = Bfe #0x20, #0x0, R3
+		(%575 i64) InlineConstant #0x88
+		%576(R16) i64 = AddWithFlags R4, %575
+		(%577 i64) StoreAF R4
+		(%578 i64) StorePF R16
+		%579(R4) i64 = StoreRegister R16
+		(%580 i0) GuestOpcode #0x145
+		(%1074 i64) PopTwo i64, R4, R3, R5
+		(%587 i0) GuestOpcode #0x146
+		(%594 i0) GuestOpcode #0x147
+		(%1075 i64) PopTwo i64, R4, R7, R6
+		(%601 i0) GuestOpcode #0x148
+		(%608 i0) GuestOpcode #0x149
+		(%1076 i64) PopTwo i64, R4, R12, R13
+		(%615 i0) GuestOpcode #0x14b
+		(%622 i0) GuestOpcode #0x14d
+		(%1077 i64) PopTwo i64, R4, R14, R15
+		(%629 i0) GuestOpcode #0x14f
+		(%636 i0) GuestOpcode #0x151
+		(%640 i64) Pop i64, R4, r0
+		(%641 i0) CarryInvert
+		(%643 i64) ExitFunction r0, Return, %Invalid, %Invalid
+		(%67 i0) EndBlock %65
+	(%68) CodeBlock %69, %70
+		(%69 i0) BeginBlock %68
+		(%644 i0) GuestOpcode #0x152
+		%646(R0) i32 = LoadMemTSO GPR, R1, %Invalid, i8, SXTX, #0x1
+		(%648 i0) Jump %71
+		(%70 i0) EndBlock %68
+	(%71) CodeBlock %72, %73
+		(%72 i0) BeginBlock %71
+		(%651 i64) InlineConstant #0x1
+		%652(R16) i32 = SubWithFlags R0, %651
+		(%653 i64) StoreAF R0
+		(%654 i64) StorePF R16
+		(%655 i0) GuestOpcode #0x157
+		(%656 i0) CondJump %Invalid, %Invalid, %80, %74, NEQ, Invalid, #0x1
+		(%73 i0) EndBlock %71
+	(%74) CodeBlock %75, %76
+		(%75 i0) BeginBlock %74
+		(%657 i0) GuestOpcode #0x159
+		%658(r0) i64 = EntrypointOffset #0x15e
+		%660(R4) i64 = Push i64, r0, R4
+		(%662 i64) InlineEntrypointOffset #0x1e1a710
+		(%663 i64) ExitFunction %662, Call, r0, %77
+		(%76 i0) EndBlock %74
+	(%77) CodeBlock %78, %79
+		(%78 i0) BeginBlock %77
+		(%664 i0) GuestOpcode #0x15e
+		(%665 i0) Jump %44
+		(%79 i0) EndBlock %77
+	(%80) CodeBlock %81, %82
+		(%81 i0) BeginBlock %80
+		(%666 i0) GuestOpcode #0x160
+		(%669 i64) InlineConstant #0x1
+		%670(r0) i64 = Sub R0, %669
+		%671(R2) i64 = Bfe #0x20, #0x0, r0
+		(%673 i0) GuestOpcode #0x163
+		%675(r0) i32 = Bfe #0x20, #0x0, R2
+		%677(r1) i64 = Bfe #0x20, #0x0, R0
+		%680(r0) i32 = CAS R0, r0, R1
+		(%682 i32) SubNZCV r1, r0
+		%683(R0) i64 = NZCVSelect EQ, R0, r0
+		(%687 i0) GuestOpcode #0x167
+		(%688 i0) CondJump %Invalid, %Invalid, %44, %83, EQ, Invalid, #0x1
+		(%82 i0) EndBlock %80
+	(%83) CodeBlock %84, %85
+		(%84 i0) BeginBlock %83
+		(%689 i0) GuestOpcode #0x169
+		(%690 i0) Jump %71
+		(%85 i0) EndBlock %83
+	(%86) CodeBlock %87, %88
+		(%87 i0) BeginBlock %86
+		%695(R3) i64 = Constant #0x0, NoPad, #0x0
+		(%697 i0) GuestOpcode #0x16d
+		(%698 i0) Jump %47
+		(%88 i0) EndBlock %86
+	(%89) CodeBlock %90, %91
+		(%90 i0) BeginBlock %89
+		(%699 i0) GuestOpcode #0x16f
+		(%703 i64) InlineConstant #0x0
+		(%704 i64) InlineConstant #0x58
+		(%705 i32) StoreMem GPR, %703, R4, %704, i8, SXTX, #0x1
+		(%706 i0) GuestOpcode #0x177
+		(%709 i64) InlineConstant #0x0
+		(%710 i64) InlineConstant #0x50
+		(%711 i64) StoreMem GPR, %709, R4, %710, i8, SXTX, #0x1
+		(%712 i0) GuestOpcode #0x180
+		%713(r0) i64 = EntrypointOffset #0x946e3e0
+		%714(R0) i64 = LoadMemTSO GPR, r0, %Invalid, i8, SXTX, #0x1
+		(%716 i0) GuestOpcode #0x187
+		(%720 i64) InlineConstant #0x48
+		(%721 i64) StoreMem GPR, R0, R4, %720, i8, SXTX, #0x1
+		(%722 i0) GuestOpcode #0x18c
+		(%723 i0) Jump %35
+		(%91 i0) EndBlock %89
+	(%92) CodeBlock %93, %94
+		(%93 i0) BeginBlock %92
+		(%724 i0) GuestOpcode #0x191
+		(%728 i64) InlineConstant #0x0
+		(%729 i64) InlineConstant #0x78
+		(%730 i32) StoreMem GPR, %728, R4, %729, i8, SXTX, #0x1
+		(%731 i0) GuestOpcode #0x199
+		(%734 i64) InlineConstant #0x0
+		(%735 i64) InlineConstant #0x70
+		(%736 i64) StoreMem GPR, %734, R4, %735, i8, SXTX, #0x1
+		(%737 i0) GuestOpcode #0x1a2
+		%738(r0) i64 = EntrypointOffset #0x946e3e0
+		%739(R0) i64 = LoadMemTSO GPR, r0, %Invalid, i8, SXTX, #0x1
+		(%741 i0) GuestOpcode #0x1a9
+		(%745 i64) InlineConstant #0x68
+		(%746 i64) StoreMem GPR, R0, R4, %745, i8, SXTX, #0x1
+		(%747 i0) GuestOpcode #0x1ae
+		(%748 i0) Jump %29
+		(%94 i0) EndBlock %92
+	(%95) CodeBlock %96, %97
+		(%96 i0) BeginBlock %95
+		(%749 i0) GuestOpcode #0x1b3
+		%750(r0) i64 = EntrypointOffset #0x1b8
+		%752(R4) i64 = Push i64, r0, R4
+		(%754 i64) InlineEntrypointOffset #0x1e1a710
+		(%755 i64) ExitFunction %754, Call, r0, %98
+		(%97 i0) EndBlock %95
+	(%98) CodeBlock %99, %100
+		(%99 i0) BeginBlock %98
+		%757(R0) i32 = Bfe #0x8, #0x0, R3
+		(%760 i8) TestNZ R6, R6
+		(%761 i0) InvalidateFlags #0x10
+		(%762 i64) StorePF R6
+		%763(R3) i64 = Constant #0x1, NoPad, #0x0
+		%767(R3) i32 = NZCVSelect EQ, R0, R3
+		(%769 i0) GuestOpcode #0x1c6
+		(%772 i64) InlineConstant #0x28
+		%773(R1) i64 = Add R4, %772
+		(%775 i0) GuestOpcode #0x1cb
+		%776(r0) i64 = EntrypointOffset #0x1d0
+		%778(R4) i64 = Push i64, r0, R4
+		(%779 i0) CarryInvert
+		(%781 i64) InlineEntrypointOffset #0x1692390
+		(%782 i64) ExitFunction %781, Call, r0, %101
+		(%100 i0) EndBlock %98
+	(%101) CodeBlock %102, %103
+		(%102 i0) BeginBlock %101
+		(%783 i0) GuestOpcode #0x1d0
+		(%784 i0) Jump %56
+		(%103 i0) EndBlock %101
+	(%104) CodeBlock %105, %106
+		(%105 i0) BeginBlock %104
+		(%785 i0) GuestOpcode #0x1d5
+		%786(r0) i64 = EntrypointOffset #0x946e3e0
+		%787(R0) i64 = LoadMemTSO GPR, r0, %Invalid, i8, SXTX, #0x1
+		(%789 i0) GuestOpcode #0x1dc
+		(%793 i64) InlineConstant #0x48
+		(%794 i64) StoreMem GPR, R0, R4, %793, i8, SXTX, #0x1
+		%799(R2) i64 = Constant #0x0, NoPad, #0x0
+		(%802 i0) InvalidateFlags #0x10
+		%803(R16) i32 = SubWithFlags R0, R0
+		(%804 i64) StorePF R16
+		%805(R0) i64 = StoreRegister R2
+		(%806 i0) GuestOpcode #0x1e5
+		(%807 i0) Jump %131
+		(%106 i0) EndBlock %104
+	(%107) CodeBlock %108, %109
+		(%108 i0) BeginBlock %107
+		(%808 i0) GuestOpcode #0x1e7
+		%809(r0) i64 = EntrypointOffset #0x946e3e0
+		%810(R0) i64 = LoadMemTSO GPR, r0, %Invalid, i8, SXTX, #0x1
+		(%812 i0) GuestOpcode #0x1ee
+		(%816 i64) InlineConstant #0x68
+		(%817 i64) StoreMem GPR, R0, R4, %816, i8, SXTX, #0x1
+		%822(R1) i64 = Constant #0x0, NoPad, #0x0
+		%828(R0) i64 = StoreRegister R1
+		(%829 i0) GuestOpcode #0x1f7
+		(%830 i0) Jump %125
+		(%109 i0) EndBlock %107
+	(%110) CodeBlock %111, %112
+		(%111 i0) BeginBlock %110
+		%831(R0) i64 = Constant #0xaaaaaaaaaaaaaaaa, NoPad, #0x0
+		(%833 i0) GuestOpcode #0x203
+		(%836 i64) InlineConstant #0x28
+		%837(R6) i64 = Add R4, %836
+		(%839 i0) GuestOpcode #0x208
+		(%842 i64) StoreMemTSO GPR, R0, R6, %Invalid, i8, SXTX, #0x1
+		%844(R1) i64 = StoreRegister R6
+		(%845 i0) GuestOpcode #0x20e
+		%846(r0) i64 = EntrypointOffset #0x213
+		%848(R4) i64 = Push i64, r0, R4
+		(%850 i64) InlineEntrypointOffset #0x1692360
+		(%851 i64) ExitFunction %850, Call, r0, %113
+		(%112 i0) EndBlock %110
+	(%113) CodeBlock %114, %115
+		(%114 i0) BeginBlock %113
+		%853(R1) i64 = StoreRegister R14
+		%855(R2) i64 = StoreRegister R6
+		(%856 i0) GuestOpcode #0x219
+		%857(r0) i64 = EntrypointOffset #0x21e
+		%859(R4) i64 = Push i64, r0, R4
+		(%861 i64) InlineEntrypointOffset #0xfffffffffe13ff60
+		(%862 i64) ExitFunction %861, Call, r0, %116
+		(%115 i0) EndBlock %113
+	(%116) CodeBlock %117, %118
+		(%117 i0) BeginBlock %116
+		(%863 i0) GuestOpcode #0x21e
+		(%866 i64) InlineConstant #0x60
+		%867(R14) i64 = Add R4, %866
+		%870(R1) i64 = StoreRegister R14
+		%872(R2) i64 = StoreRegister R6
+		(%873 i0) GuestOpcode #0x229
+		%874(r0) i64 = EntrypointOffset #0x22e
+		%876(R4) i64 = Push i64, r0, R4
+		(%878 i64) InlineEntrypointOffset #0x7fa4b0
+		(%879 i64) ExitFunction %878, Call, r0, %119
+		(%118 i0) EndBlock %116
+	(%119) CodeBlock %120, %121
+		(%120 i0) BeginBlock %119
+		(%880 i0) GuestOpcode #0x22e
+		%882(R0) i64 = LoadMemTSO GPR, R14, %Invalid, i8, SXTX, #0x1
+		(%886 i64) InlineConstant #0x0
+		(%887 i64) SubNZCV R0, %886
+		(%890 i0) GuestOpcode #0x234
+		(%891 i0) CondJump %Invalid, %Invalid, %107, %122, EQ, Invalid, #0x1
+		(%121 i0) EndBlock %119
+	(%122) CodeBlock %123, %124
+		(%123 i0) BeginBlock %122
+		(%892 i0) GuestOpcode #0x236
+		(%896 i64) InlineConstant #0x68
+		(%897 i64) StoreMem GPR, R0, R4, %896, i8, SXTX, #0x1
+		(%898 i0) GuestOpcode #0x23b
+		(%901 i64) InlineConstant #0x4
+		%902(r0) i64 = Add R0, %901
+		%903(R1) i32 = LoadMemTSO GPR, r0, %Invalid, i8, SXTX, #0x1
+		(%907 i64) InlineConstant #0xc
+		(%909 i64) InlineConstant #0xc
+		%910(R0) i64 = Add R0, %909
+		(%915 i0) Jump %125
+		(%124 i0) EndBlock %122
+	(%125) CodeBlock %126, %127
+		(%126 i0) BeginBlock %125
+		(%916 i0) GuestOpcode #0x242
+		(%920 i64) InlineConstant #0x78
+		(%921 i32) StoreMem GPR, R1, R4, %920, i8, SXTX, #0x1
+		(%922 i0) GuestOpcode #0x246
+		(%926 i64) InlineConstant #0x70
+		(%927 i64) StoreMem GPR, R0, R4, %926, i8, SXTX, #0x1
+		(%928 i0) GuestOpcode #0x24b
+		%930(R0) i64 = LoadMemTSO GPR, R7, %Invalid, i8, SXTX, #0x1
+		(%934 i64) InlineConstant #0x0
+		(%935 i64) SubNZCV R0, %934
+		(%938 i0) GuestOpcode #0x251
+		(%939 i0) CondJump %Invalid, %Invalid, %104, %128, EQ, Invalid, #0x1
+		(%127 i0) EndBlock %125
+	(%128) CodeBlock %129, %130
+		(%129 i0) BeginBlock %128
+		(%940 i0) GuestOpcode #0x253
+		(%944 i64) InlineConstant #0x48
+		(%945 i64) StoreMem GPR, R0, R4, %944, i8, SXTX, #0x1
+		(%946 i0) GuestOpcode #0x258
+		(%949 i64) InlineConstant #0x4
+		%950(r0) i64 = Add R0, %949
+		%951(R2) i32 = LoadMemTSO GPR, r0, %Invalid, i8, SXTX, #0x1
+		(%955 i64) InlineConstant #0xc
+		(%957 i64) InlineConstant #0xc
+		%958(R16) i64 = AddWithFlags R0, %957
+		(%959 i0) CarryInvert
+		(%960 i64) StoreAF R0
+		(%961 i64) StorePF R16
+		%962(R0) i64 = StoreRegister R16
+		(%963 i0) Jump %131
+		(%130 i0) EndBlock %128
+	(%131) CodeBlock %132, %133
+		(%132 i0) BeginBlock %131
+		(%964 i0) GuestOpcode #0x25f
+		(%967 i64) InlineConstant #0x48
+		%968(R1) i64 = Add R4, %967
+		(%970 i0) GuestOpcode #0x264
+		(%974 i64) InlineConstant #0x10
+		%975(r0) i64 = Add R1, %974
+		(%976 i32) StoreMemTSO GPR, R2, r0, %Invalid, i8, SXTX, #0x1
+		(%977 i0) GuestOpcode #0x267
+		(%981 i64) InlineConstant #0x8
+		%982(r0) i64 = Add R1, %981
+		(%983 i64) StoreMemTSO GPR, R0, r0, %Invalid, i8, SXTX, #0x1
+		(%984 i0) GuestOpcode #0x26b
+		(%987 i64) InlineConstant #0x68
+		%988(R2) i64 = Add R4, %987
+		(%990 i0) GuestOpcode #0x270
+		%991(r0) i64 = EntrypointOffset #0x275
+		%993(R4) i64 = Push i64, r0, R4
+		(%995 i64) InlineEntrypointOffset #0x1e1c990
+		(%996 i64) ExitFunction %995, Call, r0, %134
+		(%133 i0) EndBlock %131
+	(%134) CodeBlock %135, %136
+		(%135 i0) BeginBlock %134
+		%998(R6) i64 = Bfe #0x20, #0x0, R0
+		(%1000 i0) GuestOpcode #0x277
+		(%1003 i64) InlineConstant #0x60
+		%1004(R1) i64 = LoadMem GPR, R4, %1003, i8, SXTX, #0x1
+		(%1008 i64) InlineConstant #0x0
+		(%1009 i64) SubNZCV R1, %1008
+		(%1012 i0) GuestOpcode #0x27f
+		(%1013 i0) CondJump %Invalid, %Invalid, %98, %137, EQ, Invalid, #0x1
+		(%136 i0) EndBlock %134
+	(%137) CodeBlock %138, %139
+		(%138 i0) BeginBlock %137
+		(%1014 i0) GuestOpcode #0x285
+		(%1017 i64) InlineConstant #0x8
+		%1018(r0) i64 = Add R1, %1017
+		%1019(R0) i32 = LoadMemTSO GPR, r0, %Invalid, i8, SXTX, #0x1
+		(%1023 i64) InlineConstant #0x2
+		%1024(r0) i32 = And R0, %1023
+		(%1026 i64) InlineConstant #0x0
+		(%1027 i32) SubNZCV r0, %1026
+		(%1030 i0) GuestOpcode #0x28a
+		(%1031 i0) CondJump %Invalid, %Invalid, %98, %140, NEQ, Invalid, #0x1
+		(%139 i0) EndBlock %137
+	(%140) CodeBlock %141, %142
+		(%141 i0) BeginBlock %140
+		(%1032 i0) GuestOpcode #0x290
+		%1034(R0) i32 = LoadMemTSO GPR, R1, %Invalid, i8, SXTX, #0x1
+		(%1036 i0) Jump %143
+		(%142 i0) EndBlock %140
+	(%143) CodeBlock %144, %145
+		(%144 i0) BeginBlock %143
+		(%1039 i64) InlineConstant #0x1
+		%1040(R16) i32 = SubWithFlags R0, %1039
+		(%1041 i64) StoreAF R0
+		(%1042 i64) StorePF R16
+		(%1043 i0) GuestOpcode #0x295
+		(%1044 i0) CondJump %Invalid, %Invalid, %95, %146, EQ, Invalid, #0x1
+		(%145 i0) EndBlock %143
+	(%146) CodeBlock %147, %148
+		(%147 i0) BeginBlock %146
+		(%1045 i0) GuestOpcode #0x29b
+		(%1048 i64) InlineConstant #0x1
+		%1049(r0) i64 = Sub R0, %1048
+		%1050(R2) i64 = Bfe #0x20, #0x0, r0
+		(%1052 i0) GuestOpcode #0x29e
+		%1054(r0) i32 = Bfe #0x20, #0x0, R2
+		%1056(r1) i64 = Bfe #0x20, #0x0, R0
+		%1059(r0) i32 = CAS R0, r0, R1
+		(%1061 i32) SubNZCV r1, r0
+		%1062(R0) i64 = NZCVSelect EQ, R0, r0
+		(%1066 i0) GuestOpcode #0x2a2
+		(%1067 i0) CondJump %Invalid, %Invalid, %143, %149, NEQ, Invalid, #0x1
+		(%148 i0) EndBlock %146
+	(%149) CodeBlock %150, %151
+		(%150 i0) BeginBlock %149
+		(%1068 i0) GuestOpcode #0x2a4
+		(%1069 i0) Jump %98
+		(%151 i0) EndBlock %149
+

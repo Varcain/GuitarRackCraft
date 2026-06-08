@@ -1,0 +1,30 @@
+diff --git a/dlls/dxgi/output.c b/dlls/dxgi/output.c
+index e828ed0d9d8..c39d4d199e7 100644
+--- a/dlls/dxgi/output.c
++++ b/dlls/dxgi/output.c
+@@ -365,12 +365,22 @@ static HRESULT STDMETHODCALLTYPE dxgi_output_WaitForVBlank(IDXGIOutput6 *iface)
+ {
+     static BOOL once = FALSE;
+ 
++    /* vstpoc: emulate a ~60Hz vertical blank instead of returning E_NOTIMPL.
++     * JUCE 7 (and other GUI toolkits) drive editor repaints off a DXGI vblank
++     * thread that loops on WaitForVBlank; when this returned E_NOTIMPL the
++     * vblank source died, so deferred repaints were never flushed and the
++     * editor froze on its first frame even though input + parameter changes
++     * worked (proven via performEdit). Block ~16.6ms and report success so the
++     * vblank dispatcher ticks and pending repaints present. We have no real
++     * display vblank to sync to here (in-process X server / headless), so a
++     * fixed 60Hz cadence is the right approximation. */
+     if (!once++)
+-        FIXME("iface %p stub!\n", iface);
++        FIXME("iface %p: no real vblank source, emulating 60Hz.\n", iface);
+     else
+-        TRACE("iface %p stub!\n", iface);
++        TRACE("iface %p: emulating 60Hz vblank.\n", iface);
+ 
+-    return E_NOTIMPL;
++    Sleep(16);
++    return S_OK;
+ }
+ 
+ static HRESULT STDMETHODCALLTYPE dxgi_output_TakeOwnership(IDXGIOutput6 *iface, IUnknown *device, BOOL exclusive)

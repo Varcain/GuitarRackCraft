@@ -1,0 +1,764 @@
+002c:err:font:freetype_load_fonts vstpoc: skipping /system/fonts scan by default (set VSTPOC_WANT_SYSTEM_FONTS to re-enable)
+0024:err:font:freetype_load_fonts vstpoc: skipping /system/fonts scan by default (set VSTPOC_WANT_SYSTEM_FONTS to re-enable)
+E 24 VSTPOC_FIRSTCOMPILE rip=0x14002a520
+0044:err:font:freetype_load_fonts vstpoc: skipping /system/fonts scan by default (set VSTPOC_WANT_SYSTEM_FONTS to re-enable)
+00a8:err:font:freetype_load_fonts vstpoc: skipping /system/fonts scan by default (set VSTPOC_WANT_SYSTEM_FONTS to re-enable)
+E A8 VSTPOC_FIRSTCOMPILE rip=0x7fe4a2ea30
+00ec:err:font:freetype_load_fonts vstpoc: skipping /system/fonts scan by default (set VSTPOC_WANT_SYSTEM_FONTS to re-enable)
+E EC VSTPOC_FIRSTCOMPILE rip=0x7fd872ea30
+010c:err:font:freetype_load_fonts vstpoc: skipping /system/fonts scan by default (set VSTPOC_WANT_SYSTEM_FONTS to re-enable)
+E 10C VSTPOC_FIRSTCOMPILE rip=0x7fd872ea30
+0118:err:font:freetype_load_fonts vstpoc: skipping /system/fonts scan by default (set VSTPOC_WANT_SYSTEM_FONTS to re-enable)
+E 118 VSTPOC_FIRSTCOMPILE rip=0x7ff5a2ea30
+0134:err:font:freetype_load_fonts vstpoc: skipping /system/fonts scan by default (set VSTPOC_WANT_SYSTEM_FONTS to re-enable)
+E 134 VSTPOC_FIRSTCOMPILE rip=0x7ed86fea30
+012c:err:font:freetype_load_fonts vstpoc: skipping /system/fonts scan by default (set VSTPOC_WANT_SYSTEM_FONTS to re-enable)
+E 12C VSTPOC_FIRSTCOMPILE rip=0x7ffda2ea30
+E 134 VSTPOC_SIGMATCH rip=0x7edc1708b0 hostbase=0x7ee7b8c3d0 hostsize=2960
+E 134 VSTPOC_IR 0 	(%0) IRHeader %2, #0x7edc1708b0, #50, #176
+E 134 VSTPOC_IR 1 	(%2) CodeBlock %3, %4
+E 134 VSTPOC_IR 2 		(%3 i0) BeginBlock %2
+E 134 VSTPOC_IR 3 		(%152 i0) GuestOpcode #0x0
+E 134 VSTPOC_IR 4 		(%1070 i0) PushTwo i64, R14, R15, R4
+E 134 VSTPOC_IR 5 		(%157 i0) GuestOpcode #0x2
+E 134 VSTPOC_IR 6 		(%162 i0) GuestOpcode #0x4
+E 134 VSTPOC_IR 7 		(%1071 i0) PushTwo i64, R12, R13, R4
+E 134 VSTPOC_IR 8 		(%167 i0) GuestOpcode #0x6
+E 134 VSTPOC_IR 9 		(%172 i0) GuestOpcode #0x8
+E 134 VSTPOC_IR 10 		(%1072 i0) PushTwo i64, R7, R6, R4
+E 134 VSTPOC_IR 11 		(%177 i0) GuestOpcode #0x9
+E 134 VSTPOC_IR 12 		(%182 i0) GuestOpcode #0xa
+E 134 VSTPOC_IR 13 		(%1073 i0) PushTwo i64, R3, R5, R4
+E 134 VSTPOC_IR 14 		(%187 i0) GuestOpcode #0xb
+E 134 VSTPOC_IR 15 		(%195 i64) InlineConstant #0x88
+E 134 VSTPOC_IR 16 		%196(R4) i64 = Sub R4, %195
+E 134 VSTPOC_IR 17 		%201(R7) i64 = StoreRegister R2
+E 134 VSTPOC_IR 18 		%203(R14) i64 = StoreRegister R1
+E 134 VSTPOC_IR 19 		(%204 i0) GuestOpcode #0x19
+E 134 VSTPOC_IR 20 		%205(r0) i64 = EntrypointOffset #0x9405788
+E 134 VSTPOC_IR 21 		%206(R0) i64 = LoadMemTSO GPR, r0, %Invalid, i8, SXTX, #0x1
+E 134 VSTPOC_IR 22 		%210(R0) i64 = Xor R0, R4
+E 134 VSTPOC_IR 23 		(%211 i0) InvalidateFlags #0x10
+E 134 VSTPOC_IR 24 		(%213 i64) InlineConstant #0x0
+E 134 VSTPOC_IR 25 		%214(R16) i64 = SubWithFlags R0, %213
+E 134 VSTPOC_IR 26 		(%215 i64) StorePF R16
+E 134 VSTPOC_IR 27 		(%217 i0) GuestOpcode #0x23
+E 134 VSTPOC_IR 28 		(%221 i64) InlineConstant #0x80
+E 134 VSTPOC_IR 29 		(%222 i64) StoreMem GPR, R0, R4, %221, i8, SXTX, #0x1
+E 134 VSTPOC_IR 30 		(%223 i0) GuestOpcode #0x2b
+E 134 VSTPOC_IR 31 		%224(r0) i64 = EntrypointOffset #0x30
+E 134 VSTPOC_IR 32 		%226(R4) i64 = Push i64, r0, R4
+E 134 VSTPOC_IR 33 		(%228 i64) InlineEntrypointOffset #0xfffffffffe13ff40
+E 134 VSTPOC_IR 34 		(%229 i64) ExitFunction %228, Call, r0, %5
+E 134 VSTPOC_IR 35 		(%4 i0) EndBlock %2
+E 134 VSTPOC_IR 36 	(%5) CodeBlock %6, %7
+E 134 VSTPOC_IR 37 		(%6 i0) BeginBlock %5
+E 134 VSTPOC_IR 38 		%231(R15) i64 = StoreRegister R0
+E 134 VSTPOC_IR 39 		(%232 i0) GuestOpcode #0x33
+E 134 VSTPOC_IR 40 		(%235 i64) InlineConstant #0x38
+E 134 VSTPOC_IR 41 		%236(R6) i64 = Add R4, %235
+E 134 VSTPOC_IR 42 		(%238 i0) GuestOpcode #0x38
+E 134 VSTPOC_IR 43 		%239(r0) i64 = EntrypointOffset #0x7d58970
+E 134 VSTPOC_IR 44 		%240(V0) i128 = LoadMem FPR, r0, %Invalid, i128, SXTX, #0x1
+E 134 VSTPOC_IR 45 		(%242 i0) GuestOpcode #0x3f
+E 134 VSTPOC_IR 46 		(%246 i64) InlineConstant #0xfffffffffffffff8
+E 134 VSTPOC_IR 47 		(%247 i128) StoreMem FPR, V0, R6, %246, i128, SXTX, #0x1
+E 134 VSTPOC_IR 48 		(%248 i0) GuestOpcode #0x43
+E 134 VSTPOC_IR 49 		(%251 i64) InlineConstant #0x30
+E 134 VSTPOC_IR 50 		%252(R12) i64 = Add R4, %251
+E 134 VSTPOC_IR 51 		%255(R1) i64 = StoreRegister R12
+E 134 VSTPOC_IR 52 		(%256 i0) GuestOpcode #0x4b
+E 134 VSTPOC_IR 53 		%257(r0) i64 = EntrypointOffset #0x50
+E 134 VSTPOC_IR 54 		%259(R4) i64 = Push i64, r0, R4
+E 134 VSTPOC_IR 55 		(%261 i64) InlineEntrypointOffset #0x1692360
+E 134 VSTPOC_IR 56 		(%262 i64) ExitFunction %261, Call, r0, %8
+E 134 VSTPOC_IR 57 		(%7 i0) EndBlock %5
+E 134 VSTPOC_IR 58 	(%8) CodeBlock %9, %10
+E 134 VSTPOC_IR 59 		(%9 i0) BeginBlock %8
+E 134 VSTPOC_IR 60 		%264(R1) i64 = StoreRegister R6
+E 134 VSTPOC_IR 61 		(%265 i0) GuestOpcode #0x53
+E 134 VSTPOC_IR 62 		%266(r0) i64 = EntrypointOffset #0x58
+E 134 VSTPOC_IR 63 		%268(R4) i64 = Push i64, r0, R4
+E 134 VSTPOC_IR 64 		(%270 i64) InlineEntrypointOffset #0x1692360
+E 134 VSTPOC_IR 65 		(%271 i64) ExitFunction %270, Call, r0, %11
+E 134 VSTPOC_IR 66 		(%10 i0) EndBlock %8
+E 134 VSTPOC_IR 67 	(%11) CodeBlock %12, %13
+E 134 VSTPOC_IR 68 		(%12 i0) BeginBlock %11
+E 134 VSTPOC_IR 69 		(%272 i0) GuestOpcode #0x58
+E 134 VSTPOC_IR 70 		(%275 i64) InlineConstant #0x68
+E 134 VSTPOC_IR 71 		%276(R13) i64 = Add R4, %275
+E 134 VSTPOC_IR 72 		(%278 i0) Jump %14
+E 134 VSTPOC_IR 73 		(%13 i0) EndBlock %11
+E 134 VSTPOC_IR 74 	(%14) CodeBlock %15, %16
+E 134 VSTPOC_IR 75 		(%15 i0) BeginBlock %14
+E 134 VSTPOC_IR 76 		(%279 i0) GuestOpcode #0x5d
+E 134 VSTPOC_IR 77 		%281(R0) i64 = LoadMemTSO GPR, R15, %Invalid, i8, SXTX, #0x1
+E 134 VSTPOC_IR 78 		(%283 i0) GuestOpcode #0x60
+E 134 VSTPOC_IR 79 		(%286 i64) InlineConstant #0x8
+E 134 VSTPOC_IR 80 		%287(r0) i64 = Add R0, %286
+E 134 VSTPOC_IR 81 		%288(R0) i64 = LoadMemTSO GPR, r0, %Invalid, i8, SXTX, #0x1
+E 134 VSTPOC_IR 82 		%291(R1) i64 = StoreRegister R15
+E 134 VSTPOC_IR 83 		%293(R2) i64 = StoreRegister R12
+E 134 VSTPOC_IR 84 		(%294 i0) GuestOpcode #0x6a
+E 134 VSTPOC_IR 85 		%295(r0) i64 = EntrypointOffset #0x9cae758
+E 134 VSTPOC_IR 86 		%296(r0) i64 = LoadMemTSO GPR, r0, %Invalid, i64, SXTX, #0x1
+E 134 VSTPOC_IR 87 		%297(r1) i64 = EntrypointOffset #0x70
+E 134 VSTPOC_IR 88 		%299(R4) i64 = Push i64, r1, R4
+E 134 VSTPOC_IR 89 		(%301 i64) ExitFunction r0, Call, r1, %17
+E 134 VSTPOC_IR 90 		(%16 i0) EndBlock %14
+E 134 VSTPOC_IR 91 	(%17) CodeBlock %18, %19
+E 134 VSTPOC_IR 92 		(%18 i0) BeginBlock %17
+E 134 VSTPOC_IR 93 		%303(R5) i64 = Bfe #0x20, #0x0, R0
+E 134 VSTPOC_IR 94 		(%306 i8) TestNZ R0, R0
+E 134 VSTPOC_IR 95 		(%307 i0) InvalidateFlags #0x10
+E 134 VSTPOC_IR 96 		(%308 i64) StorePF R0
+E 134 VSTPOC_IR 97 		(%309 i0) GuestOpcode #0x74
+E 134 VSTPOC_IR 98 		(%310 i0) CarryInvert
+E 134 VSTPOC_IR 99 		(%311 i0) CondJump %Invalid, %Invalid, %86, %20, EQ, Invalid, #0x1
+E 134 VSTPOC_IR 100 		(%19 i0) EndBlock %17
+E 134 VSTPOC_IR 101 	(%20) CodeBlock %21, %22
+E 134 VSTPOC_IR 102 		(%21 i0) BeginBlock %20
+E 134 VSTPOC_IR 103 		(%312 i0) GuestOpcode #0x7a
+E 134 VSTPOC_IR 104 		(%315 i64) InlineConstant #0x60
+E 134 VSTPOC_IR 105 		%316(R1) i64 = Add R4, %315
+E 134 VSTPOC_IR 106 		%319(R2) i64 = StoreRegister R12
+E 134 VSTPOC_IR 107 		(%320 i0) GuestOpcode #0x82
+E 134 VSTPOC_IR 108 		%321(r0) i64 = EntrypointOffset #0x87
+E 134 VSTPOC_IR 109 		%323(R4) i64 = Push i64, r0, R4
+E 134 VSTPOC_IR 110 		(%325 i64) InlineEntrypointOffset #0x7fa4b0
+E 134 VSTPOC_IR 111 		(%326 i64) ExitFunction %325, Call, r0, %23
+E 134 VSTPOC_IR 112 		(%22 i0) EndBlock %20
+E 134 VSTPOC_IR 113 	(%23) CodeBlock %24, %25
+E 134 VSTPOC_IR 114 		(%24 i0) BeginBlock %23
+E 134 VSTPOC_IR 115 		(%327 i0) GuestOpcode #0x87
+E 134 VSTPOC_IR 116 		(%330 i64) InlineConstant #0x60
+E 134 VSTPOC_IR 117 		%331(R0) i64 = LoadMem GPR, R4, %330, i8, SXTX, #0x1
+E 134 VSTPOC_IR 118 		(%335 i64) InlineConstant #0x0
+E 134 VSTPOC_IR 119 		(%336 i64) SubNZCV R0, %335
+E 134 VSTPOC_IR 120 		(%339 i0) GuestOpcode #0x8f
+E 134 VSTPOC_IR 121 		(%340 i0) CondJump %Invalid, %Invalid, %92, %26, EQ, Invalid, #0x1
+E 134 VSTPOC_IR 122 		(%25 i0) EndBlock %23
+E 134 VSTPOC_IR 123 	(%26) CodeBlock %27, %28
+E 134 VSTPOC_IR 124 		(%27 i0) BeginBlock %26
+E 134 VSTPOC_IR 125 		(%341 i0) GuestOpcode #0x95
+E 134 VSTPOC_IR 126 		(%345 i64) InlineConstant #0x68
+E 134 VSTPOC_IR 127 		(%346 i64) StoreMem GPR, R0, R4, %345, i8, SXTX, #0x1
+E 134 VSTPOC_IR 128 		(%347 i0) GuestOpcode #0x9a
+E 134 VSTPOC_IR 129 		(%350 i64) InlineConstant #0x4
+E 134 VSTPOC_IR 130 		%351(r0) i64 = Add R0, %350
+E 134 VSTPOC_IR 131 		%352(R1) i32 = LoadMemTSO GPR, r0, %Invalid, i8, SXTX, #0x1
+E 134 VSTPOC_IR 132 		(%354 i0) GuestOpcode #0x9d
+E 134 VSTPOC_IR 133 		(%358 i64) InlineConstant #0x78
+E 134 VSTPOC_IR 134 		(%359 i32) StoreMem GPR, R1, R4, %358, i8, SXTX, #0x1
+E 134 VSTPOC_IR 135 		(%362 i64) InlineConstant #0xc
+E 134 VSTPOC_IR 136 		(%364 i64) InlineConstant #0xc
+E 134 VSTPOC_IR 137 		%365(R0) i64 = Add R0, %364
+E 134 VSTPOC_IR 138 		(%369 i0) GuestOpcode #0xa5
+E 134 VSTPOC_IR 139 		(%373 i64) InlineConstant #0x70
+E 134 VSTPOC_IR 140 		(%374 i64) StoreMem GPR, R0, R4, %373, i8, SXTX, #0x1
+E 134 VSTPOC_IR 141 		(%376 i0) Jump %29
+E 134 VSTPOC_IR 142 		(%28 i0) EndBlock %26
+E 134 VSTPOC_IR 143 	(%29) CodeBlock %30, %31
+E 134 VSTPOC_IR 144 		(%30 i0) BeginBlock %29
+E 134 VSTPOC_IR 145 		(%377 i0) GuestOpcode #0xaa
+E 134 VSTPOC_IR 146 		%379(R0) i64 = LoadMemTSO GPR, R7, %Invalid, i8, SXTX, #0x1
+E 134 VSTPOC_IR 147 		(%383 i64) InlineConstant #0x0
+E 134 VSTPOC_IR 148 		%384(R16) i64 = SubWithFlags R0, %383
+E 134 VSTPOC_IR 149 		(%385 i0) InvalidateFlags #0x10
+E 134 VSTPOC_IR 150 		(%386 i64) StorePF R16
+E 134 VSTPOC_IR 151 		(%387 i0) GuestOpcode #0xb0
+E 134 VSTPOC_IR 152 		(%388 i0) CondJump %Invalid, %Invalid, %89, %32, EQ, Invalid, #0x1
+E 134 VSTPOC_IR 153 		(%31 i0) EndBlock %29
+E 134 VSTPOC_IR 154 	(%32) CodeBlock %33, %34
+E 134 VSTPOC_IR 155 		(%33 i0) BeginBlock %32
+E 134 VSTPOC_IR 156 		(%389 i0) GuestOpcode #0xb6
+E 134 VSTPOC_IR 157 		(%393 i64) InlineConstant #0x48
+E 134 VSTPOC_IR 158 		(%394 i64) StoreMem GPR, R0, R4, %393, i8, SXTX, #0x1
+E 134 VSTPOC_IR 159 		(%395 i0) GuestOpcode #0xbb
+E 134 VSTPOC_IR 160 		(%398 i64) InlineConstant #0x4
+E 134 VSTPOC_IR 161 		%399(r0) i64 = Add R0, %398
+E 134 VSTPOC_IR 162 		%400(R1) i32 = LoadMemTSO GPR, r0, %Invalid, i8, SXTX, #0x1
+E 134 VSTPOC_IR 163 		(%402 i0) GuestOpcode #0xbe
+E 134 VSTPOC_IR 164 		(%406 i64) InlineConstant #0x58
+E 134 VSTPOC_IR 165 		(%407 i32) StoreMem GPR, R1, R4, %406, i8, SXTX, #0x1
+E 134 VSTPOC_IR 166 		(%410 i64) InlineConstant #0xc
+E 134 VSTPOC_IR 167 		(%412 i64) InlineConstant #0xc
+E 134 VSTPOC_IR 168 		%413(R16) i64 = AddWithFlags R0, %412
+E 134 VSTPOC_IR 169 		(%414 i64) StoreAF R0
+E 134 VSTPOC_IR 170 		(%415 i64) StorePF R16
+E 134 VSTPOC_IR 171 		%416(R0) i64 = StoreRegister R16
+E 134 VSTPOC_IR 172 		(%417 i0) GuestOpcode #0xc6
+E 134 VSTPOC_IR 173 		(%421 i64) InlineConstant #0x50
+E 134 VSTPOC_IR 174 		(%422 i64) StoreMem GPR, R0, R4, %421, i8, SXTX, #0x1
+E 134 VSTPOC_IR 175 		(%423 i0) CarryInvert
+E 134 VSTPOC_IR 176 		(%424 i0) Jump %35
+E 134 VSTPOC_IR 177 		(%34 i0) EndBlock %32
+E 134 VSTPOC_IR 178 	(%35) CodeBlock %36, %37
+E 134 VSTPOC_IR 179 		(%36 i0) BeginBlock %35
+E 134 VSTPOC_IR 180 		(%425 i0) GuestOpcode #0xcb
+E 134 VSTPOC_IR 181 		(%428 i64) InlineConstant #0x48
+E 134 VSTPOC_IR 182 		%429(R1) i64 = Add R4, %428
+E 134 VSTPOC_IR 183 		%432(R2) i64 = StoreRegister R13
+E 134 VSTPOC_IR 184 		(%433 i0) GuestOpcode #0xd3
+E 134 VSTPOC_IR 185 		%434(r0) i64 = EntrypointOffset #0xd8
+E 134 VSTPOC_IR 186 		%436(R4) i64 = Push i64, r0, R4
+E 134 VSTPOC_IR 187 		(%438 i64) InlineEntrypointOffset #0x1e1c990
+E 134 VSTPOC_IR 188 		(%439 i64) ExitFunction %438, Call, r0, %38
+E 134 VSTPOC_IR 189 		(%37 i0) EndBlock %35
+E 134 VSTPOC_IR 190 	(%38) CodeBlock %39, %40
+E 134 VSTPOC_IR 191 		(%39 i0) BeginBlock %38
+E 134 VSTPOC_IR 192 		%441(R6) i64 = Bfe #0x20, #0x0, R0
+E 134 VSTPOC_IR 193 		(%443 i0) GuestOpcode #0xda
+E 134 VSTPOC_IR 194 		(%446 i64) InlineConstant #0x60
+E 134 VSTPOC_IR 195 		%447(R1) i64 = LoadMem GPR, R4, %446, i8, SXTX, #0x1
+E 134 VSTPOC_IR 196 		(%451 i64) InlineConstant #0x0
+E 134 VSTPOC_IR 197 		(%452 i64) SubNZCV R1, %451
+E 134 VSTPOC_IR 198 		(%455 i0) GuestOpcode #0xe2
+E 134 VSTPOC_IR 199 		(%456 i0) CondJump %Invalid, %Invalid, %44, %41, EQ, Invalid, #0x1
+E 134 VSTPOC_IR 200 		(%40 i0) EndBlock %38
+E 134 VSTPOC_IR 201 	(%41) CodeBlock %42, %43
+E 134 VSTPOC_IR 202 		(%42 i0) BeginBlock %41
+E 134 VSTPOC_IR 203 		(%457 i0) GuestOpcode #0xe4
+E 134 VSTPOC_IR 204 		(%460 i64) InlineConstant #0x8
+E 134 VSTPOC_IR 205 		%461(r0) i64 = Add R1, %460
+E 134 VSTPOC_IR 206 		%462(R0) i32 = LoadMemTSO GPR, r0, %Invalid, i8, SXTX, #0x1
+E 134 VSTPOC_IR 207 		(%466 i64) InlineConstant #0x2
+E 134 VSTPOC_IR 208 		%467(r0) i32 = And R0, %466
+E 134 VSTPOC_IR 209 		(%469 i64) InlineConstant #0x0
+E 134 VSTPOC_IR 210 		(%470 i32) SubNZCV r0, %469
+E 134 VSTPOC_IR 211 		(%473 i0) GuestOpcode #0xe9
+E 134 VSTPOC_IR 212 		(%474 i0) CondJump %Invalid, %Invalid, %68, %44, EQ, Invalid, #0x1
+E 134 VSTPOC_IR 213 		(%43 i0) EndBlock %41
+E 134 VSTPOC_IR 214 	(%44) CodeBlock %45, %46
+E 134 VSTPOC_IR 215 		(%45 i0) BeginBlock %44
+E 134 VSTPOC_IR 216 		%475(r0) i64 = Constant #0x1, NoPad, #0x0
+E 134 VSTPOC_IR 217 		%477(R3) i64 = Bfi #0x8, #0x0, R3, r0
+E 134 VSTPOC_IR 218 		(%480 i8) TestNZ R6, R6
+E 134 VSTPOC_IR 219 		(%481 i0) InvalidateFlags #0x10
+E 134 VSTPOC_IR 220 		(%482 i64) StorePF R6
+E 134 VSTPOC_IR 221 		(%483 i0) GuestOpcode #0xf0
+E 134 VSTPOC_IR 222 		(%484 i0) CarryInvert
+E 134 VSTPOC_IR 223 		(%485 i0) CondJump %Invalid, %Invalid, %14, %47, EQ, Invalid, #0x1
+E 134 VSTPOC_IR 224 		(%46 i0) EndBlock %44
+E 134 VSTPOC_IR 225 	(%47) CodeBlock %48, %49
+E 134 VSTPOC_IR 226 		(%48 i0) BeginBlock %47
+E 134 VSTPOC_IR 227 		(%488 i64) InlineConstant #0x0
+E 134 VSTPOC_IR 228 		%489(R16) i64 = SubWithFlags R15, %488
+E 134 VSTPOC_IR 229 		(%490 i0) InvalidateFlags #0x10
+E 134 VSTPOC_IR 230 		(%491 i64) StorePF R16
+E 134 VSTPOC_IR 231 		(%492 i0) GuestOpcode #0xf9
+E 134 VSTPOC_IR 232 		(%493 i0) CondJump %Invalid, %Invalid, %53, %50, EQ, Invalid, #0x1
+E 134 VSTPOC_IR 233 		(%49 i0) EndBlock %47
+E 134 VSTPOC_IR 234 	(%50) CodeBlock %51, %52
+E 134 VSTPOC_IR 235 		(%51 i0) BeginBlock %50
+E 134 VSTPOC_IR 236 		(%494 i0) GuestOpcode #0xfb
+E 134 VSTPOC_IR 237 		%496(R0) i64 = LoadMemTSO GPR, R15, %Invalid, i8, SXTX, #0x1
+E 134 VSTPOC_IR 238 		(%498 i0) GuestOpcode #0xfe
+E 134 VSTPOC_IR 239 		%500(R0) i64 = LoadMemTSO GPR, R0, %Invalid, i8, SXTX, #0x1
+E 134 VSTPOC_IR 240 		%503(R1) i64 = StoreRegister R15
+E 134 VSTPOC_IR 241 		%504(R2) i64 = Constant #0x1, NoPad, #0x0
+E 134 VSTPOC_IR 242 		(%506 i0) GuestOpcode #0x109
+E 134 VSTPOC_IR 243 		%507(r0) i64 = EntrypointOffset #0x9cae758
+E 134 VSTPOC_IR 244 		%508(r0) i64 = LoadMemTSO GPR, r0, %Invalid, i64, SXTX, #0x1
+E 134 VSTPOC_IR 245 		%509(r1) i64 = EntrypointOffset #0x10f
+E 134 VSTPOC_IR 246 		%511(R4) i64 = Push i64, r1, R4
+E 134 VSTPOC_IR 247 		(%513 i64) ExitFunction r0, Call, r1, %53
+E 134 VSTPOC_IR 248 		(%52 i0) EndBlock %50
+E 134 VSTPOC_IR 249 	(%53) CodeBlock %54, %55
+E 134 VSTPOC_IR 250 		(%54 i0) BeginBlock %53
+E 134 VSTPOC_IR 251 		(%515 i8) TestNZ R5, R5
+E 134 VSTPOC_IR 252 		(%516 i0) InvalidateFlags #0x10
+E 134 VSTPOC_IR 253 		(%517 i64) StorePF R5
+E 134 VSTPOC_IR 254 		(%518 i0) GuestOpcode #0x112
+E 134 VSTPOC_IR 255 		(%519 i0) CarryInvert
+E 134 VSTPOC_IR 256 		(%520 i0) CondJump %Invalid, %Invalid, %110, %56, EQ, Invalid, #0x1
+E 134 VSTPOC_IR 257 		(%55 i0) EndBlock %53
+E 134 VSTPOC_IR 258 	(%56) CodeBlock %57, %58
+E 134 VSTPOC_IR 259 		(%57 i0) BeginBlock %56
+E 134 VSTPOC_IR 260 		(%521 i0) GuestOpcode #0x118
+E 134 VSTPOC_IR 261 		(%524 i64) InlineConstant #0x38
+E 134 VSTPOC_IR 262 		%525(R1) i64 = Add R4, %524
+E 134 VSTPOC_IR 263 		(%527 i0) GuestOpcode #0x11d
+E 134 VSTPOC_IR 264 		%528(r0) i64 = EntrypointOffset #0x122
+E 134 VSTPOC_IR 265 		%530(R4) i64 = Push i64, r0, R4
+E 134 VSTPOC_IR 266 		(%532 i64) InlineEntrypointOffset #0x1692390
+E 134 VSTPOC_IR 267 		(%533 i64) ExitFunction %532, Call, r0, %59
+E 134 VSTPOC_IR 268 		(%58 i0) EndBlock %56
+E 134 VSTPOC_IR 269 	(%59) CodeBlock %60, %61
+E 134 VSTPOC_IR 270 		(%60 i0) BeginBlock %59
+E 134 VSTPOC_IR 271 		(%534 i0) GuestOpcode #0x122
+E 134 VSTPOC_IR 272 		(%537 i64) InlineConstant #0x30
+E 134 VSTPOC_IR 273 		%538(R1) i64 = Add R4, %537
+E 134 VSTPOC_IR 274 		(%540 i0) GuestOpcode #0x127
+E 134 VSTPOC_IR 275 		%541(r0) i64 = EntrypointOffset #0x12c
+E 134 VSTPOC_IR 276 		%543(R4) i64 = Push i64, r0, R4
+E 134 VSTPOC_IR 277 		(%545 i64) InlineEntrypointOffset #0x1692390
+E 134 VSTPOC_IR 278 		(%546 i64) ExitFunction %545, Call, r0, %62
+E 134 VSTPOC_IR 279 		(%61 i0) EndBlock %59
+E 134 VSTPOC_IR 280 	(%62) CodeBlock %63, %64
+E 134 VSTPOC_IR 281 		(%63 i0) BeginBlock %62
+E 134 VSTPOC_IR 282 		(%547 i0) GuestOpcode #0x12c
+E 134 VSTPOC_IR 283 		(%550 i64) InlineConstant #0x80
+E 134 VSTPOC_IR 284 		%551(R1) i64 = LoadMem GPR, R4, %550, i8, SXTX, #0x1
+E 134 VSTPOC_IR 285 		%555(R1) i64 = Xor R1, R4
+E 134 VSTPOC_IR 286 		(%556 i0) InvalidateFlags #0x10
+E 134 VSTPOC_IR 287 		(%558 i64) InlineConstant #0x0
+E 134 VSTPOC_IR 288 		%559(R16) i64 = SubWithFlags R1, %558
+E 134 VSTPOC_IR 289 		(%560 i64) StorePF R16
+E 134 VSTPOC_IR 290 		(%562 i0) GuestOpcode #0x137
+E 134 VSTPOC_IR 291 		%563(r0) i64 = EntrypointOffset #0x13c
+E 134 VSTPOC_IR 292 		%565(R4) i64 = Push i64, r0, R4
+E 134 VSTPOC_IR 293 		(%567 i64) InlineEntrypointOffset #0x2236720
+E 134 VSTPOC_IR 294 		(%568 i64) ExitFunction %567, Call, r0, %65
+E 134 VSTPOC_IR 295 		(%64 i0) EndBlock %62
+E 134 VSTPOC_IR 296 	(%65) CodeBlock %66, %67
+E 134 VSTPOC_IR 297 		(%66 i0) BeginBlock %65
+E 134 VSTPOC_IR 298 		%570(R0) i64 = Bfe #0x20, #0x0, R3
+E 134 VSTPOC_IR 299 		(%575 i64) InlineConstant #0x88
+E 134 VSTPOC_IR 300 		%576(R16) i64 = AddWithFlags R4, %575
+E 134 VSTPOC_IR 301 		(%577 i64) StoreAF R4
+E 134 VSTPOC_IR 302 		(%578 i64) StorePF R16
+E 134 VSTPOC_IR 303 		%579(R4) i64 = StoreRegister R16
+E 134 VSTPOC_IR 304 		(%580 i0) GuestOpcode #0x145
+E 134 VSTPOC_IR 305 		(%1074 i64) PopTwo i64, R4, R3, R5
+E 134 VSTPOC_IR 306 		(%587 i0) GuestOpcode #0x146
+E 134 VSTPOC_IR 307 		(%594 i0) GuestOpcode #0x147
+E 134 VSTPOC_IR 308 		(%1075 i64) PopTwo i64, R4, R7, R6
+E 134 VSTPOC_IR 309 		(%601 i0) GuestOpcode #0x148
+E 134 VSTPOC_IR 310 		(%608 i0) GuestOpcode #0x149
+E 134 VSTPOC_IR 311 		(%1076 i64) PopTwo i64, R4, R12, R13
+E 134 VSTPOC_IR 312 		(%615 i0) GuestOpcode #0x14b
+E 134 VSTPOC_IR 313 		(%622 i0) GuestOpcode #0x14d
+E 134 VSTPOC_IR 314 		(%1077 i64) PopTwo i64, R4, R14, R15
+E 134 VSTPOC_IR 315 		(%629 i0) GuestOpcode #0x14f
+E 134 VSTPOC_IR 316 		(%636 i0) GuestOpcode #0x151
+E 134 VSTPOC_IR 317 		(%640 i64) Pop i64, R4, r0
+E 134 VSTPOC_IR 318 		(%641 i0) CarryInvert
+E 134 VSTPOC_IR 319 		(%643 i64) ExitFunction r0, Return, %Invalid, %Invalid
+E 134 VSTPOC_IR 320 		(%67 i0) EndBlock %65
+E 134 VSTPOC_IR 321 	(%68) CodeBlock %69, %70
+E 134 VSTPOC_IR 322 		(%69 i0) BeginBlock %68
+E 134 VSTPOC_IR 323 		(%644 i0) GuestOpcode #0x152
+E 134 VSTPOC_IR 324 		%646(R0) i32 = LoadMemTSO GPR, R1, %Invalid, i8, SXTX, #0x1
+E 134 VSTPOC_IR 325 		(%648 i0) Jump %71
+E 134 VSTPOC_IR 326 		(%70 i0) EndBlock %68
+E 134 VSTPOC_IR 327 	(%71) CodeBlock %72, %73
+E 134 VSTPOC_IR 328 		(%72 i0) BeginBlock %71
+E 134 VSTPOC_IR 329 		(%651 i64) InlineConstant #0x1
+E 134 VSTPOC_IR 330 		%652(R16) i32 = SubWithFlags R0, %651
+E 134 VSTPOC_IR 331 		(%653 i64) StoreAF R0
+E 134 VSTPOC_IR 332 		(%654 i64) StorePF R16
+E 134 VSTPOC_IR 333 		(%655 i0) GuestOpcode #0x157
+E 134 VSTPOC_IR 334 		(%656 i0) CondJump %Invalid, %Invalid, %80, %74, NEQ, Invalid, #0x1
+E 134 VSTPOC_IR 335 		(%73 i0) EndBlock %71
+E 134 VSTPOC_IR 336 	(%74) CodeBlock %75, %76
+E 134 VSTPOC_IR 337 		(%75 i0) BeginBlock %74
+E 134 VSTPOC_IR 338 		(%657 i0) GuestOpcode #0x159
+E 134 VSTPOC_IR 339 		%658(r0) i64 = EntrypointOffset #0x15e
+E 134 VSTPOC_IR 340 		%660(R4) i64 = Push i64, r0, R4
+E 134 VSTPOC_IR 341 		(%662 i64) InlineEntrypointOffset #0x1e1a710
+E 134 VSTPOC_IR 342 		(%663 i64) ExitFunction %662, Call, r0, %77
+E 134 VSTPOC_IR 343 		(%76 i0) EndBlock %74
+E 134 VSTPOC_IR 344 	(%77) CodeBlock %78, %79
+E 134 VSTPOC_IR 345 		(%78 i0) BeginBlock %77
+E 134 VSTPOC_IR 346 		(%664 i0) GuestOpcode #0x15e
+E 134 VSTPOC_IR 347 		(%665 i0) Jump %44
+E 134 VSTPOC_IR 348 		(%79 i0) EndBlock %77
+E 134 VSTPOC_IR 349 	(%80) CodeBlock %81, %82
+E 134 VSTPOC_IR 350 		(%81 i0) BeginBlock %80
+E 134 VSTPOC_IR 351 		(%666 i0) GuestOpcode #0x160
+E 134 VSTPOC_IR 352 		(%669 i64) InlineConstant #0x1
+E 134 VSTPOC_IR 353 		%670(r0) i64 = Sub R0, %669
+E 134 VSTPOC_IR 354 		%671(R2) i64 = Bfe #0x20, #0x0, r0
+E 134 VSTPOC_IR 355 		(%673 i0) GuestOpcode #0x163
+E 134 VSTPOC_IR 356 		%675(r0) i32 = Bfe #0x20, #0x0, R2
+E 134 VSTPOC_IR 357 		%677(r1) i64 = Bfe #0x20, #0x0, R0
+E 134 VSTPOC_IR 358 		%680(r0) i32 = CAS R0, r0, R1
+E 134 VSTPOC_IR 359 		(%682 i32) SubNZCV r1, r0
+E 134 VSTPOC_IR 360 		%683(R0) i64 = NZCVSelect EQ, R0, r0
+E 134 VSTPOC_IR 361 		(%687 i0) GuestOpcode #0x167
+E 134 VSTPOC_IR 362 		(%688 i0) CondJump %Invalid, %Invalid, %44, %83, EQ, Invalid, #0x1
+E 134 VSTPOC_IR 363 		(%82 i0) EndBlock %80
+E 134 VSTPOC_IR 364 	(%83) CodeBlock %84, %85
+E 134 VSTPOC_IR 365 		(%84 i0) BeginBlock %83
+E 134 VSTPOC_IR 366 		(%689 i0) GuestOpcode #0x169
+E 134 VSTPOC_IR 367 		(%690 i0) Jump %71
+E 134 VSTPOC_IR 368 		(%85 i0) EndBlock %83
+E 134 VSTPOC_IR 369 	(%86) CodeBlock %87, %88
+E 134 VSTPOC_IR 370 		(%87 i0) BeginBlock %86
+E 134 VSTPOC_IR 371 		%695(R3) i64 = Constant #0x0, NoPad, #0x0
+E 134 VSTPOC_IR 372 		(%697 i0) GuestOpcode #0x16d
+E 134 VSTPOC_IR 373 		(%698 i0) Jump %47
+E 134 VSTPOC_IR 374 		(%88 i0) EndBlock %86
+E 134 VSTPOC_IR 375 	(%89) CodeBlock %90, %91
+E 134 VSTPOC_IR 376 		(%90 i0) BeginBlock %89
+E 134 VSTPOC_IR 377 		(%699 i0) GuestOpcode #0x16f
+E 134 VSTPOC_IR 378 		(%703 i64) InlineConstant #0x0
+E 134 VSTPOC_IR 379 		(%704 i64) InlineConstant #0x58
+E 134 VSTPOC_IR 380 		(%705 i32) StoreMem GPR, %703, R4, %704, i8, SXTX, #0x1
+E 134 VSTPOC_IR 381 		(%706 i0) GuestOpcode #0x177
+E 134 VSTPOC_IR 382 		(%709 i64) InlineConstant #0x0
+E 134 VSTPOC_IR 383 		(%710 i64) InlineConstant #0x50
+E 134 VSTPOC_IR 384 		(%711 i64) StoreMem GPR, %709, R4, %710, i8, SXTX, #0x1
+E 134 VSTPOC_IR 385 		(%712 i0) GuestOpcode #0x180
+E 134 VSTPOC_IR 386 		%713(r0) i64 = EntrypointOffset #0x946e3e0
+E 134 VSTPOC_IR 387 		%714(R0) i64 = LoadMemTSO GPR, r0, %Invalid, i8, SXTX, #0x1
+E 134 VSTPOC_IR 388 		(%716 i0) GuestOpcode #0x187
+E 134 VSTPOC_IR 389 		(%720 i64) InlineConstant #0x48
+E 134 VSTPOC_IR 390 		(%721 i64) StoreMem GPR, R0, R4, %720, i8, SXTX, #0x1
+E 134 VSTPOC_IR 391 		(%722 i0) GuestOpcode #0x18c
+E 134 VSTPOC_IR 392 		(%723 i0) Jump %35
+E 134 VSTPOC_IR 393 		(%91 i0) EndBlock %89
+E 134 VSTPOC_IR 394 	(%92) CodeBlock %93, %94
+E 134 VSTPOC_IR 395 		(%93 i0) BeginBlock %92
+E 134 VSTPOC_IR 396 		(%724 i0) GuestOpcode #0x191
+E 134 VSTPOC_IR 397 		(%728 i64) InlineConstant #0x0
+E 134 VSTPOC_IR 398 		(%729 i64) InlineConstant #0x78
+E 134 VSTPOC_IR 399 		(%730 i32) StoreMem GPR, %728, R4, %729, i8, SXTX, #0x1
+E 134 VSTPOC_IR 400 		(%731 i0) GuestOpcode #0x199
+E 134 VSTPOC_IR 401 		(%734 i64) InlineConstant #0x0
+E 134 VSTPOC_IR 402 		(%735 i64) InlineConstant #0x70
+E 134 VSTPOC_IR 403 		(%736 i64) StoreMem GPR, %734, R4, %735, i8, SXTX, #0x1
+E 134 VSTPOC_IR 404 		(%737 i0) GuestOpcode #0x1a2
+E 134 VSTPOC_IR 405 		%738(r0) i64 = EntrypointOffset #0x946e3e0
+E 134 VSTPOC_IR 406 		%739(R0) i64 = LoadMemTSO GPR, r0, %Invalid, i8, SXTX, #0x1
+E 134 VSTPOC_IR 407 		(%741 i0) GuestOpcode #0x1a9
+E 134 VSTPOC_IR 408 		(%745 i64) InlineConstant #0x68
+E 134 VSTPOC_IR 409 		(%746 i64) StoreMem GPR, R0, R4, %745, i8, SXTX, #0x1
+E 134 VSTPOC_IR 410 		(%747 i0) GuestOpcode #0x1ae
+E 134 VSTPOC_IR 411 		(%748 i0) Jump %29
+E 134 VSTPOC_IR 412 		(%94 i0) EndBlock %92
+E 134 VSTPOC_IR 413 	(%95) CodeBlock %96, %97
+E 134 VSTPOC_IR 414 		(%96 i0) BeginBlock %95
+E 134 VSTPOC_IR 415 		(%749 i0) GuestOpcode #0x1b3
+E 134 VSTPOC_IR 416 		%750(r0) i64 = EntrypointOffset #0x1b8
+E 134 VSTPOC_IR 417 		%752(R4) i64 = Push i64, r0, R4
+E 134 VSTPOC_IR 418 		(%754 i64) InlineEntrypointOffset #0x1e1a710
+E 134 VSTPOC_IR 419 		(%755 i64) ExitFunction %754, Call, r0, %98
+E 134 VSTPOC_IR 420 		(%97 i0) EndBlock %95
+E 134 VSTPOC_IR 421 	(%98) CodeBlock %99, %100
+E 134 VSTPOC_IR 422 		(%99 i0) BeginBlock %98
+E 134 VSTPOC_IR 423 		%757(R0) i32 = Bfe #0x8, #0x0, R3
+E 134 VSTPOC_IR 424 		(%760 i8) TestNZ R6, R6
+E 134 VSTPOC_IR 425 		(%761 i0) InvalidateFlags #0x10
+E 134 VSTPOC_IR 426 		(%762 i64) StorePF R6
+E 134 VSTPOC_IR 427 		%763(R3) i64 = Constant #0x1, NoPad, #0x0
+E 134 VSTPOC_IR 428 		%767(R3) i32 = NZCVSelect EQ, R0, R3
+E 134 VSTPOC_IR 429 		(%769 i0) GuestOpcode #0x1c6
+E 134 VSTPOC_IR 430 		(%772 i64) InlineConstant #0x28
+E 134 VSTPOC_IR 431 		%773(R1) i64 = Add R4, %772
+E 134 VSTPOC_IR 432 		(%775 i0) GuestOpcode #0x1cb
+E 134 VSTPOC_IR 433 		%776(r0) i64 = EntrypointOffset #0x1d0
+E 134 VSTPOC_IR 434 		%778(R4) i64 = Push i64, r0, R4
+E 134 VSTPOC_IR 435 		(%779 i0) CarryInvert
+E 134 VSTPOC_IR 436 		(%781 i64) InlineEntrypointOffset #0x1692390
+E 134 VSTPOC_IR 437 		(%782 i64) ExitFunction %781, Call, r0, %101
+E 134 VSTPOC_IR 438 		(%100 i0) EndBlock %98
+E 134 VSTPOC_IR 439 	(%101) CodeBlock %102, %103
+E 134 VSTPOC_IR 440 		(%102 i0) BeginBlock %101
+E 134 VSTPOC_IR 441 		(%783 i0) GuestOpcode #0x1d0
+E 134 VSTPOC_IR 442 		(%784 i0) Jump %56
+E 134 VSTPOC_IR 443 		(%103 i0) EndBlock %101
+E 134 VSTPOC_IR 444 	(%104) CodeBlock %105, %106
+E 134 VSTPOC_IR 445 		(%105 i0) BeginBlock %104
+E 134 VSTPOC_IR 446 		(%785 i0) GuestOpcode #0x1d5
+E 134 VSTPOC_IR 447 		%786(r0) i64 = EntrypointOffset #0x946e3e0
+E 134 VSTPOC_IR 448 		%787(R0) i64 = LoadMemTSO GPR, r0, %Invalid, i8, SXTX, #0x1
+E 134 VSTPOC_IR 449 		(%789 i0) GuestOpcode #0x1dc
+E 134 VSTPOC_IR 450 		(%793 i64) InlineConstant #0x48
+E 134 VSTPOC_IR 451 		(%794 i64) StoreMem GPR, R0, R4, %793, i8, SXTX, #0x1
+E 134 VSTPOC_IR 452 		%799(R2) i64 = Constant #0x0, NoPad, #0x0
+E 134 VSTPOC_IR 453 		(%802 i0) InvalidateFlags #0x10
+E 134 VSTPOC_IR 454 		%803(R16) i32 = SubWithFlags R0, R0
+E 134 VSTPOC_IR 455 		(%804 i64) StorePF R16
+E 134 VSTPOC_IR 456 		%805(R0) i64 = StoreRegister R2
+E 134 VSTPOC_IR 457 		(%806 i0) GuestOpcode #0x1e5
+E 134 VSTPOC_IR 458 		(%807 i0) Jump %131
+E 134 VSTPOC_IR 459 		(%106 i0) EndBlock %104
+E 134 VSTPOC_IR 460 	(%107) CodeBlock %108, %109
+E 134 VSTPOC_IR 461 		(%108 i0) BeginBlock %107
+E 134 VSTPOC_IR 462 		(%808 i0) GuestOpcode #0x1e7
+E 134 VSTPOC_IR 463 		%809(r0) i64 = EntrypointOffset #0x946e3e0
+E 134 VSTPOC_IR 464 		%810(R0) i64 = LoadMemTSO GPR, r0, %Invalid, i8, SXTX, #0x1
+E 134 VSTPOC_IR 465 		(%812 i0) GuestOpcode #0x1ee
+E 134 VSTPOC_IR 466 		(%816 i64) InlineConstant #0x68
+E 134 VSTPOC_IR 467 		(%817 i64) StoreMem GPR, R0, R4, %816, i8, SXTX, #0x1
+E 134 VSTPOC_IR 468 		%822(R1) i64 = Constant #0x0, NoPad, #0x0
+E 134 VSTPOC_IR 469 		%828(R0) i64 = StoreRegister R1
+E 134 VSTPOC_IR 470 		(%829 i0) GuestOpcode #0x1f7
+E 134 VSTPOC_IR 471 		(%830 i0) Jump %125
+E 134 VSTPOC_IR 472 		(%109 i0) EndBlock %107
+E 134 VSTPOC_IR 473 	(%110) CodeBlock %111, %112
+E 134 VSTPOC_IR 474 		(%111 i0) BeginBlock %110
+E 134 VSTPOC_IR 475 		%831(R0) i64 = Constant #0xaaaaaaaaaaaaaaaa, NoPad, #0x0
+E 134 VSTPOC_IR 476 		(%833 i0) GuestOpcode #0x203
+E 134 VSTPOC_IR 477 		(%836 i64) InlineConstant #0x28
+E 134 VSTPOC_IR 478 		%837(R6) i64 = Add R4, %836
+E 134 VSTPOC_IR 479 		(%839 i0) GuestOpcode #0x208
+E 134 VSTPOC_IR 480 		(%842 i64) StoreMemTSO GPR, R0, R6, %Invalid, i8, SXTX, #0x1
+E 134 VSTPOC_IR 481 		%844(R1) i64 = StoreRegister R6
+E 134 VSTPOC_IR 482 		(%845 i0) GuestOpcode #0x20e
+E 134 VSTPOC_IR 483 		%846(r0) i64 = EntrypointOffset #0x213
+E 134 VSTPOC_IR 484 		%848(R4) i64 = Push i64, r0, R4
+E 134 VSTPOC_IR 485 		(%850 i64) InlineEntrypointOffset #0x1692360
+E 134 VSTPOC_IR 486 		(%851 i64) ExitFunction %850, Call, r0, %113
+E 134 VSTPOC_IR 487 		(%112 i0) EndBlock %110
+E 134 VSTPOC_IR 488 	(%113) CodeBlock %114, %115
+E 134 VSTPOC_IR 489 		(%114 i0) BeginBlock %113
+E 134 VSTPOC_IR 490 		%853(R1) i64 = StoreRegister R14
+E 134 VSTPOC_IR 491 		%855(R2) i64 = StoreRegister R6
+E 134 VSTPOC_IR 492 		(%856 i0) GuestOpcode #0x219
+E 134 VSTPOC_IR 493 		%857(r0) i64 = EntrypointOffset #0x21e
+E 134 VSTPOC_IR 494 		%859(R4) i64 = Push i64, r0, R4
+E 134 VSTPOC_IR 495 		(%861 i64) InlineEntrypointOffset #0xfffffffffe13ff60
+E 134 VSTPOC_IR 496 		(%862 i64) ExitFunction %861, Call, r0, %116
+E 134 VSTPOC_IR 497 		(%115 i0) EndBlock %113
+E 134 VSTPOC_IR 498 	(%116) CodeBlock %117, %118
+E 134 VSTPOC_IR 499 		(%117 i0) BeginBlock %116
+E 134 VSTPOC_IR 500 		(%863 i0) GuestOpcode #0x21e
+E 134 VSTPOC_IR 501 		(%866 i64) InlineConstant #0x60
+E 134 VSTPOC_IR 502 		%867(R14) i64 = Add R4, %866
+E 134 VSTPOC_IR 503 		%870(R1) i64 = StoreRegister R14
+E 134 VSTPOC_IR 504 		%872(R2) i64 = StoreRegister R6
+E 134 VSTPOC_IR 505 		(%873 i0) GuestOpcode #0x229
+E 134 VSTPOC_IR 506 		%874(r0) i64 = EntrypointOffset #0x22e
+E 134 VSTPOC_IR 507 		%876(R4) i64 = Push i64, r0, R4
+E 134 VSTPOC_IR 508 		(%878 i64) InlineEntrypointOffset #0x7fa4b0
+E 134 VSTPOC_IR 509 		(%879 i64) ExitFunction %878, Call, r0, %119
+E 134 VSTPOC_IR 510 		(%118 i0) EndBlock %116
+E 134 VSTPOC_IR 511 	(%119) CodeBlock %120, %121
+E 134 VSTPOC_IR 512 		(%120 i0) BeginBlock %119
+E 134 VSTPOC_IR 513 		(%880 i0) GuestOpcode #0x22e
+E 134 VSTPOC_IR 514 		%882(R0) i64 = LoadMemTSO GPR, R14, %Invalid, i8, SXTX, #0x1
+E 134 VSTPOC_IR 515 		(%886 i64) InlineConstant #0x0
+E 134 VSTPOC_IR 516 		(%887 i64) SubNZCV R0, %886
+E 134 VSTPOC_IR 517 		(%890 i0) GuestOpcode #0x234
+E 134 VSTPOC_IR 518 		(%891 i0) CondJump %Invalid, %Invalid, %107, %122, EQ, Invalid, #0x1
+E 134 VSTPOC_IR 519 		(%121 i0) EndBlock %119
+E 134 VSTPOC_IR 520 	(%122) CodeBlock %123, %124
+E 134 VSTPOC_IR 521 		(%123 i0) BeginBlock %122
+E 134 VSTPOC_IR 522 		(%892 i0) GuestOpcode #0x236
+E 134 VSTPOC_IR 523 		(%896 i64) InlineConstant #0x68
+E 134 VSTPOC_IR 524 		(%897 i64) StoreMem GPR, R0, R4, %896, i8, SXTX, #0x1
+E 134 VSTPOC_IR 525 		(%898 i0) GuestOpcode #0x23b
+E 134 VSTPOC_IR 526 		(%901 i64) InlineConstant #0x4
+E 134 VSTPOC_IR 527 		%902(r0) i64 = Add R0, %901
+E 134 VSTPOC_IR 528 		%903(R1) i32 = LoadMemTSO GPR, r0, %Invalid, i8, SXTX, #0x1
+E 134 VSTPOC_IR 529 		(%907 i64) InlineConstant #0xc
+E 134 VSTPOC_IR 530 		(%909 i64) InlineConstant #0xc
+E 134 VSTPOC_IR 531 		%910(R0) i64 = Add R0, %909
+E 134 VSTPOC_IR 532 		(%915 i0) Jump %125
+E 134 VSTPOC_IR 533 		(%124 i0) EndBlock %122
+E 134 VSTPOC_IR 534 	(%125) CodeBlock %126, %127
+E 134 VSTPOC_IR 535 		(%126 i0) BeginBlock %125
+E 134 VSTPOC_IR 536 		(%916 i0) GuestOpcode #0x242
+E 134 VSTPOC_IR 537 		(%920 i64) InlineConstant #0x78
+E 134 VSTPOC_IR 538 		(%921 i32) StoreMem GPR, R1, R4, %920, i8, SXTX, #0x1
+E 134 VSTPOC_IR 539 		(%922 i0) GuestOpcode #0x246
+E 134 VSTPOC_IR 540 		(%926 i64) InlineConstant #0x70
+E 134 VSTPOC_IR 541 		(%927 i64) StoreMem GPR, R0, R4, %926, i8, SXTX, #0x1
+E 134 VSTPOC_IR 542 		(%928 i0) GuestOpcode #0x24b
+E 134 VSTPOC_IR 543 		%930(R0) i64 = LoadMemTSO GPR, R7, %Invalid, i8, SXTX, #0x1
+E 134 VSTPOC_IR 544 		(%934 i64) InlineConstant #0x0
+E 134 VSTPOC_IR 545 		(%935 i64) SubNZCV R0, %934
+E 134 VSTPOC_IR 546 		(%938 i0) GuestOpcode #0x251
+E 134 VSTPOC_IR 547 		(%939 i0) CondJump %Invalid, %Invalid, %104, %128, EQ, Invalid, #0x1
+E 134 VSTPOC_IR 548 		(%127 i0) EndBlock %125
+E 134 VSTPOC_IR 549 	(%128) CodeBlock %129, %130
+E 134 VSTPOC_IR 550 		(%129 i0) BeginBlock %128
+E 134 VSTPOC_IR 551 		(%940 i0) GuestOpcode #0x253
+E 134 VSTPOC_IR 552 		(%944 i64) InlineConstant #0x48
+E 134 VSTPOC_IR 553 		(%945 i64) StoreMem GPR, R0, R4, %944, i8, SXTX, #0x1
+E 134 VSTPOC_IR 554 		(%946 i0) GuestOpcode #0x258
+E 134 VSTPOC_IR 555 		(%949 i64) InlineConstant #0x4
+E 134 VSTPOC_IR 556 		%950(r0) i64 = Add R0, %949
+E 134 VSTPOC_IR 557 		%951(R2) i32 = LoadMemTSO GPR, r0, %Invalid, i8, SXTX, #0x1
+E 134 VSTPOC_IR 558 		(%955 i64) InlineConstant #0xc
+E 134 VSTPOC_IR 559 		(%957 i64) InlineConstant #0xc
+E 134 VSTPOC_IR 560 		%958(R16) i64 = AddWithFlags R0, %957
+E 134 VSTPOC_IR 561 		(%959 i0) CarryInvert
+E 134 VSTPOC_IR 562 		(%960 i64) StoreAF R0
+E 134 VSTPOC_IR 563 		(%961 i64) StorePF R16
+E 134 VSTPOC_IR 564 		%962(R0) i64 = StoreRegister R16
+E 134 VSTPOC_IR 565 		(%963 i0) Jump %131
+E 134 VSTPOC_IR 566 		(%130 i0) EndBlock %128
+E 134 VSTPOC_IR 567 	(%131) CodeBlock %132, %133
+E 134 VSTPOC_IR 568 		(%132 i0) BeginBlock %131
+E 134 VSTPOC_IR 569 		(%964 i0) GuestOpcode #0x25f
+E 134 VSTPOC_IR 570 		(%967 i64) InlineConstant #0x48
+E 134 VSTPOC_IR 571 		%968(R1) i64 = Add R4, %967
+E 134 VSTPOC_IR 572 		(%970 i0) GuestOpcode #0x264
+E 134 VSTPOC_IR 573 		(%974 i64) InlineConstant #0x10
+E 134 VSTPOC_IR 574 		%975(r0) i64 = Add R1, %974
+E 134 VSTPOC_IR 575 		(%976 i32) StoreMemTSO GPR, R2, r0, %Invalid, i8, SXTX, #0x1
+E 134 VSTPOC_IR 576 		(%977 i0) GuestOpcode #0x267
+E 134 VSTPOC_IR 577 		(%981 i64) InlineConstant #0x8
+E 134 VSTPOC_IR 578 		%982(r0) i64 = Add R1, %981
+E 134 VSTPOC_IR 579 		(%983 i64) StoreMemTSO GPR, R0, r0, %Invalid, i8, SXTX, #0x1
+E 134 VSTPOC_IR 580 		(%984 i0) GuestOpcode #0x26b
+E 134 VSTPOC_IR 581 		(%987 i64) InlineConstant #0x68
+E 134 VSTPOC_IR 582 		%988(R2) i64 = Add R4, %987
+E 134 VSTPOC_IR 583 		(%990 i0) GuestOpcode #0x270
+E 134 VSTPOC_IR 584 		%991(r0) i64 = EntrypointOffset #0x275
+E 134 VSTPOC_IR 585 		%993(R4) i64 = Push i64, r0, R4
+E 134 VSTPOC_IR 586 		(%995 i64) InlineEntrypointOffset #0x1e1c990
+E 134 VSTPOC_IR 587 		(%996 i64) ExitFunction %995, Call, r0, %134
+E 134 VSTPOC_IR 588 		(%133 i0) EndBlock %131
+E 134 VSTPOC_IR 589 	(%134) CodeBlock %135, %136
+E 134 VSTPOC_IR 590 		(%135 i0) BeginBlock %134
+E 134 VSTPOC_IR 591 		%998(R6) i64 = Bfe #0x20, #0x0, R0
+E 134 VSTPOC_IR 592 		(%1000 i0) GuestOpcode #0x277
+E 134 VSTPOC_IR 593 		(%1003 i64) InlineConstant #0x60
+E 134 VSTPOC_IR 594 		%1004(R1) i64 = LoadMem GPR, R4, %1003, i8, SXTX, #0x1
+E 134 VSTPOC_IR 595 		(%1008 i64) InlineConstant #0x0
+E 134 VSTPOC_IR 596 		(%1009 i64) SubNZCV R1, %1008
+E 134 VSTPOC_IR 597 		(%1012 i0) GuestOpcode #0x27f
+E 134 VSTPOC_IR 598 		(%1013 i0) CondJump %Invalid, %Invalid, %98, %137, EQ, Invalid, #0x1
+E 134 VSTPOC_IR 599 		(%136 i0) EndBlock %134
+E 134 VSTPOC_IR 600 	(%137) CodeBlock %138, %139
+E 134 VSTPOC_IR 601 		(%138 i0) BeginBlock %137
+E 134 VSTPOC_IR 602 		(%1014 i0) GuestOpcode #0x285
+E 134 VSTPOC_IR 603 		(%1017 i64) InlineConstant #0x8
+E 134 VSTPOC_IR 604 		%1018(r0) i64 = Add R1, %1017
+E 134 VSTPOC_IR 605 		%1019(R0) i32 = LoadMemTSO GPR, r0, %Invalid, i8, SXTX, #0x1
+E 134 VSTPOC_IR 606 		(%1023 i64) InlineConstant #0x2
+E 134 VSTPOC_IR 607 		%1024(r0) i32 = And R0, %1023
+E 134 VSTPOC_IR 608 		(%1026 i64) InlineConstant #0x0
+E 134 VSTPOC_IR 609 		(%1027 i32) SubNZCV r0, %1026
+E 134 VSTPOC_IR 610 		(%1030 i0) GuestOpcode #0x28a
+E 134 VSTPOC_IR 611 		(%1031 i0) CondJump %Invalid, %Invalid, %98, %140, NEQ, Invalid, #0x1
+E 134 VSTPOC_IR 612 		(%139 i0) EndBlock %137
+E 134 VSTPOC_IR 613 	(%140) CodeBlock %141, %142
+E 134 VSTPOC_IR 614 		(%141 i0) BeginBlock %140
+E 134 VSTPOC_IR 615 		(%1032 i0) GuestOpcode #0x290
+E 134 VSTPOC_IR 616 		%1034(R0) i32 = LoadMemTSO GPR, R1, %Invalid, i8, SXTX, #0x1
+E 134 VSTPOC_IR 617 		(%1036 i0) Jump %143
+E 134 VSTPOC_IR 618 		(%142 i0) EndBlock %140
+E 134 VSTPOC_IR 619 	(%143) CodeBlock %144, %145
+E 134 VSTPOC_IR 620 		(%144 i0) BeginBlock %143
+E 134 VSTPOC_IR 621 		(%1039 i64) InlineConstant #0x1
+E 134 VSTPOC_IR 622 		%1040(R16) i32 = SubWithFlags R0, %1039
+E 134 VSTPOC_IR 623 		(%1041 i64) StoreAF R0
+E 134 VSTPOC_IR 624 		(%1042 i64) StorePF R16
+E 134 VSTPOC_IR 625 		(%1043 i0) GuestOpcode #0x295
+E 134 VSTPOC_IR 626 		(%1044 i0) CondJump %Invalid, %Invalid, %95, %146, EQ, Invalid, #0x1
+E 134 VSTPOC_IR 627 		(%145 i0) EndBlock %143
+E 134 VSTPOC_IR 628 	(%146) CodeBlock %147, %148
+E 134 VSTPOC_IR 629 		(%147 i0) BeginBlock %146
+E 134 VSTPOC_IR 630 		(%1045 i0) GuestOpcode #0x29b
+E 134 VSTPOC_IR 631 		(%1048 i64) InlineConstant #0x1
+E 134 VSTPOC_IR 632 		%1049(r0) i64 = Sub R0, %1048
+E 134 VSTPOC_IR 633 		%1050(R2) i64 = Bfe #0x20, #0x0, r0
+E 134 VSTPOC_IR 634 		(%1052 i0) GuestOpcode #0x29e
+E 134 VSTPOC_IR 635 		%1054(r0) i32 = Bfe #0x20, #0x0, R2
+E 134 VSTPOC_IR 636 		%1056(r1) i64 = Bfe #0x20, #0x0, R0
+E 134 VSTPOC_IR 637 		%1059(r0) i32 = CAS R0, r0, R1
+E 134 VSTPOC_IR 638 		(%1061 i32) SubNZCV r1, r0
+E 134 VSTPOC_IR 639 		%1062(R0) i64 = NZCVSelect EQ, R0, r0
+E 134 VSTPOC_IR 640 		(%1066 i0) GuestOpcode #0x2a2
+E 134 VSTPOC_IR 641 		(%1067 i0) CondJump %Invalid, %Invalid, %143, %149, NEQ, Invalid, #0x1
+E 134 VSTPOC_IR 642 		(%148 i0) EndBlock %146
+E 134 VSTPOC_IR 643 	(%149) CodeBlock %150, %151
+E 134 VSTPOC_IR 644 		(%150 i0) BeginBlock %149
+E 134 VSTPOC_IR 645 		(%1068 i0) GuestOpcode #0x2a4
+E 134 VSTPOC_IR 646 		(%1069 i0) Jump %98
+E 134 VSTPOC_IR 647 		(%151 i0) EndBlock %149
+E 134 VSTPOC_IR 648 
+E 134 VSTPOC_HEX 0 b80a0000eaffff108a0300f98beb45b94b000034c05f39d4f55abfa9f352bfa9
+E 134 VSTPOC_HEX 32 fa66bfa9fb76bfa9f72202d1fa0301aaf50300aa06078cd2e6aabcf2c60fc0f2
+E 134 VSTPOC_HEX 64 1f2003d5c8c0bff81f2003d5080117ca090100f1e84200f9061c81d2e682bbf2
+E 134 VSTPOC_HEX 96 c60fc0f21f2003d5e68e1ff86a000010262abfa9f90100944afcff108a0300f9
+E 134 VSTPOC_HEX 128 8beb45b94b000034c05f39d4f60308aaf9e20091064492d2867dbcf2c60fc0f2
+E 134 VSTPOC_HEX 160 1f2003d5c000c03d20839f3cf3c20091e00313aa062081d2e682bbf2c60fc0f2
+E 134 VSTPOC_HEX 192 1f2003d5e68e1ff86a000010262abfa9ec0100946af9ff108a0300f98beb45b9
+E 134 VSTPOC_HEX 224 4b000034c05f39d4e00319aa062181d2e682bbf2c60fc0f21f2003d5e68e1ff8
+E 134 VSTPOC_HEX 256 6a000010262abfa9e8010094aaf7ff108a0300f98beb45b94b000034c05f39d4
+E 134 VSTPOC_HEX 288 f4a20191c8c2bff81f2003d506210091c8c0bff81f2003d5e00316aae10313aa
+E 134 VSTPOC_HEX 320 06019ed226bcbcf2c60fc0f21f2003d5c6c0bff81f2003d5072481d2e782bbf2
+E 134 VSTPOC_HEX 352 c70fc0f21f2003d5e78e1ff88a2f4aa96b11068a4a010b8b4b2940a94a0106cb
+E 134 VSTPOC_HEX 384 6a0000b48b9b45f9860f00f96a000010272abfa960013fd64af3ff108a0300f9
+E 134 VSTPOC_HEX 416 8beb45b94b000034c05f39d4fd03082aff63082be90308aa1f4000d5801a0054
+E 134 VSTPOC_HEX 448 e0820191e10313aae62681d2e682bbf2c60fc0f21f2003d5e68e1ff86a000010
+E 134 VSTPOC_HEX 480 262abfa9bb010094caf0ff108a0300f98beb45b94b000034c05f39d4e83240f9
+E 134 VSTPOC_HEX 512 1f0100f1801a0054e83600f906110091c0c0bfb81f2003d5e07a00b908310091
+E 134 VSTPOC_HEX 544 e83a00f948c3bff81f2003d5090100f180170054e82600f906110091c0c0bfb8
+E 134 VSTPOC_HEX 576 1f2003d5e05a00b9093100b1f80308aae80309aae82a00f91f4000d5e0220191
+E 134 VSTPOC_HEX 608 e10314aa063181d2e682bbf2c60fc0f21f2003d5e68e1ff86a000010262abfa9
+E 134 VSTPOC_HEX 640 9e010094eaebff108a0300f98beb45b94b000034c05f39d4f903082ae03240f9
+E 134 VSTPOC_HEX 672 1f0000f1e000005406200091c8c0bfb81f2003d506011f12df000071000e0054
+E 134 VSTPOC_HEX 704 26008052db1c40b3ff63192be90319aa1f4000d580f2ff54c90200f140040054
+E 134 VSTPOC_HEX 736 c8c2bff81f2003d508c1bff81f2003d5e00316aa2100805206019ed226bcbcf2
+E 134 VSTPOC_HEX 768 c60fc0f21f2003d5c6c0bff81f2003d5e73781d2e782bbf2c70fc0f21f2003d5
+E 134 VSTPOC_HEX 800 e78e1ff88a2f4aa96b11068a4a010b8b4b2940a94a0106cb6a0000b48b9b45f9
+E 134 VSTPOC_HEX 832 860f00f96a000010272abfa960013fd68ae5ff108a0300f98beb45b94b000034
+E 134 VSTPOC_HEX 864 c05f39d4ff631d2be9031daa1f4000d500180054e0e20091463a81d2e682bbf2
+E 134 VSTPOC_HEX 896 c60fc0f21f2003d5e68e1ff86a000010262abfa9630100944ae3ff108a0300f9
+E 134 VSTPOC_HEX 928 8beb45b94b000034c05f39d4e0c20091863b81d2e682bbf2c60fc0f21f2003d5
+E 134 VSTPOC_HEX 960 e68e1ff86a000010262abfa95f0100948ae1ff108a0300f98beb45b94b000034
+E 134 VSTPOC_HEX 992 c05f39d4e04240f9000017ca090000f1863d81d2e682bbf2c60fc0f21f2003d5
+E 134 VSTPOC_HEX 1024 e68e1ff86a000010262abfa9590100948adfff108a0300f98beb45b94b000034
+E 134 VSTPOC_HEX 1056 c05f39d4e8031b2ae92202b1f80317aaf70309aafb76c1a8fa66c1a8f352c1a8
+E 134 VSTPOC_HEX 1088 f55ac1a8e68640f81f4000d52a2ec1a84a0106cb2a0100b48a2f4aa96b11068a
+E 134 VSTPOC_HEX 1120 4a010b8b4b2940a94a0106cb6a0000b48b9b45f9860f00f960015fd608c0bfb8
+E 134 VSTPOC_HEX 1152 1f2003d509050071f80308aa41020054c64181d2e682bbf2c60fc0f21f2003d5
+E 134 VSTPOC_HEX 1184 e68e1ff86a000010262abfa93b0100948adaff108a0300f98beb45b94b000034
+E 134 VSTPOC_HEX 1216 c05f39d48beb45b94b000034c05f39d47cffff17060500d1e103062ae603012a
+E 134 VSTPOC_HEX 1248 e703082aeb03082a06fceb88e6030b2aff00066b0801869a40eeff548beb45b9
+E 134 VSTPOC_HEX 1280 4b000034c05f39d4dfffff171b0080528beb45b94b000034c05f39d46fffff17
+E 134 VSTPOC_HEX 1312 ff5a00b9ff2a00f906929dd2a6abbcf2c60fc0f21f2003d5c8c0bff81f2003d5
+E 134 VSTPOC_HEX 1344 e82600f98beb45b94b000034c05f39d443ffff17ff7a00b9ff3a00f906929dd2
+E 134 VSTPOC_HEX 1376 a6abbcf2c60fc0f21f2003d5c8c0bff81f2003d5e83600f98beb45b94b000034
+E 134 VSTPOC_HEX 1408 c05f39d428ffff17064d81d2e682bbf2c60fc0f21f2003d5e68e1ff86a000010
+E 134 VSTPOC_HEX 1440 262abfa907010094cad2ff108a0300f98beb45b94b000034c05f39d4681f0053
+E 134 VSTPOC_HEX 1472 ff63192be90319aa3b0080521b019b1ae0a20091065081d2e682bbf2c60fc0f2
+E 134 VSTPOC_HEX 1504 1f2003d5e68e1ff81f4000d56a000010262abfa9fd0000944ad0ff108a0300f9
+E 134 VSTPOC_HEX 1536 8beb45b94b000034c05f39d48beb45b94b000034c05f39d457ffff1706929dd2
+E 134 VSTPOC_HEX 1568 a6abbcf2c60fc0f21f2003d5c8c0bff81f2003d5e82600f9010080520901086b
+E 134 VSTPOC_HEX 1600 e80301aa5300001406929dd2a6abbcf2c60fc0f21f2003d5c8c0bff81f2003d5
+E 134 VSTPOC_HEX 1632 e83600f900008052e80300aa3b000014e8f301b2f9a200911f2003d528ff9fc8
+E 134 VSTPOC_HEX 1664 e00319aa665881d2e682bbf2c60fc0f21f2003d5e68e1ff86a000010262abfa9
+E 134 VSTPOC_HEX 1696 dc000094eacaff108a0300f98beb45b94b000034c05f39d4e00315aae10319aa
+E 134 VSTPOC_HEX 1728 c65981d2e682bbf2c60fc0f21f2003d5e68e1ff86a000010262abfa9d7000094
+E 134 VSTPOC_HEX 1760 0ac9ff108a0300f98beb45b94b000034c05f39d4f5820191e00315aae10319aa
+E 134 VSTPOC_HEX 1792 c65b81d2e682bbf2c60fc0f21f2003d5e68e1ff86a000010262abfa9d1000094
+E 134 VSTPOC_HEX 1824 0ac7ff108a0300f98beb45b94b000034c05f39d4a8c2bff81f2003d51f0100f1
+E 134 VSTPOC_HEX 1856 40f8ff54e83600f906110091c0c0bfb81f2003d508310091e07a00b9e83a00f9
+E 134 VSTPOC_HEX 1888 48c3bff81f2003d51f0100f180f5ff54e82600f906110091c1c0bfb81f2003d5
+E 134 VSTPOC_HEX 1920 093100b11f4000d5f80308aae80309aae0220191064000911f2003d5c1fc9f88
+E 134 VSTPOC_HEX 1952 062000911f2003d5c8fc9fc8e1a20191a66481d2e682bbf2c60fc0f21f2003d5
+E 134 VSTPOC_HEX 1984 e68e1ff86a000010262abfa9af0000948ac1ff108a0300f98beb45b94b000034
+E 134 VSTPOC_HEX 2016 c05f39d4f903082ae03240f91f0000f160eeff5406200091c8c0bfb81f2003d5
+E 134 VSTPOC_HEX 2048 06011f12df000071a1edff5408c0bfb81f2003d509050071f80308aa60ebff54
+E 134 VSTPOC_HEX 2080 060500d1e103062ae603012ae703082aeb03082a06fceb88e6030b2aff00066b
+E 134 VSTPOC_HEX 2112 0801869a81feff548beb45b94b000034c05f39d45affff170200001440011fd6
+E 134 VSTPOC_HEX 2144 8a12005840013fd60000000000000000f0072bda7e0000001cf8ffffffffffff
+E 134 VSTPOC_HEX 2176 0200001440011fd64a11005840013fd60000000000000000102c80dd7e000000
+E 134 VSTPOC_HEX 2208 50f8ffffffffffff0200001440011fd60a10005840013fd60000000000000000
+E 134 VSTPOC_HEX 2240 102c80dd7e00000060f8ffffffffffff0200001440011fd6ca0e005840013fd6
+E 134 VSTPOC_HEX 2272 000000000000000060ad96dc7e00000014f9ffffffffffff0200001440011fd6
+E 134 VSTPOC_HEX 2304 8a0d005840013fd6000000000000000040d2f8dd7e00000088f9ffffffffffff
+E 134 VSTPOC_HEX 2336 0200001440011fd64a0c005840013fd60000000000000000402c80dd7e000000
+E 134 VSTPOC_HEX 2368 74faffffffffffff0200001440011fd60a0b005840013fd60000000000000000
+E 134 VSTPOC_HEX 2400 402c80dd7e00000084faffffffffffff0200001440011fd6ca09005840013fd6
+E 134 VSTPOC_HEX 2432 0000000000000000d06f3ade7e0000009cfaffffffffffff0200001440011fd6
+E 134 VSTPOC_HEX 2464 8a08005840013fd60000000000000000c0aff8dd7e00000014fbffffffffffff
+E 134 VSTPOC_HEX 2496 0200001440011fd64a07005840013fd60000000000000000c0aff8dd7e000000
+E 134 VSTPOC_HEX 2528 e4fbffffffffffff0200001440011fd60a06005840013fd60000000000000000
+E 134 VSTPOC_HEX 2560 402c80dd7e0000000cfcffffffffffff0200001440011fd6ca04005840013fd6
+E 134 VSTPOC_HEX 2592 0000000000000000102c80dd7e00000090fcffffffffffff0200001440011fd6
+E 134 VSTPOC_HEX 2624 8a03005840013fd6000000000000000010082bda7e000000a4fcffffffffffff
+E 134 VSTPOC_HEX 2656 0200001440011fd64a02005840013fd6000000000000000060ad96dc7e000000
+E 134 VSTPOC_HEX 2688 bcfcffffffffffff0200001440011fd60a01005840013fd60000000000000000
+E 134 VSTPOC_HEX 2720 40d2f8dd7e00000044fdffffffffffff0802a8ff7f000000900b000000000000
+E 134 VSTPOC_HEX 2752 b00817dc7e000000a9020000000000008d000000280000000000000000000000
+E 134 VSTPOC_HEX 2784 80018005108200108200008100008e038a087047254064307147254780054021
+E 134 VSTPOC_HEX 2816 8a05861637517147800571504022714052504022734171471571104464890310
+E 134 VSTPOC_HEX 2848 218b048616265140478005404780058b03478909008100008100108200108200
+E 134 VSTPOC_HEX 2880 0d4310478005132136103413708901654043708901654043478e0a4048800543
+E 134 VSTPOC_HEX 2912 658904106589038c02405247564780058b034780055210406330405210406640
+E 134 VSTPOC_HEX 2944 22324047157150445043502136100000
+E 134 VSTPOC_SIGEND rip=0x7edc1708b0
+0278:err:font:freetype_load_fonts vstpoc: skipping /system/fonts scan by default (set VSTPOC_WANT_SYSTEM_FONTS to re-enable)
+E 278 VSTPOC_FIRSTCOMPILE rip=0x7fe4a2ea30
+02cc:err:font:freetype_load_fonts vstpoc: skipping /system/fonts scan by default (set VSTPOC_WANT_SYSTEM_FONTS to re-enable)
+E 2CC VSTPOC_FIRSTCOMPILE rip=0x7fe4a2ea30

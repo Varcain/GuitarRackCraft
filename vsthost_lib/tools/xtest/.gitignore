@@ -1,0 +1,10 @@
+# Built harness/test binaries + artifacts (regenerated via build.sh) — keep sources + patches
+xtest
+egltest
+gltest
+legacy_test
+*.exe
+*.o
+*.vst3
+*.log
+shm

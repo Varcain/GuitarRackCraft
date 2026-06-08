@@ -1,0 +1,84 @@
+diff --git a/dlls/winex11.drv/opengl.c b/dlls/winex11.drv/opengl.c
+index 56c22ab7ee7..8a9f7f3bc9a 100644
+--- a/dlls/winex11.drv/opengl.c
++++ b/dlls/winex11.drv/opengl.c
+@@ -544,6 +544,8 @@ static BOOL x11drv_egl_surface_create( HWND hwnd, int format, struct opengl_draw
+         return FALSE;
+     }
+ 
++    gl->drawable = window;   /* vstpoc: keep the X window for readback present */
++
+     TRACE( "Created drawable %s with client window %lx\n", debugstr_opengl_drawable( &gl->base ), window );
+     XFlush( gdi_display );
+ 
+@@ -1476,13 +1478,61 @@ static void x11drv_egl_surface_destroy( struct opengl_drawable *base )
+     TRACE( "drawable %s\n", debugstr_opengl_drawable( base ) );
+ }
+ 
++/* vstpoc: Mesa's EGL-X11 software present (eglSwapBuffers) is a silent no-op
++ * against our in-process X server, which has no DRI3/Present and over which
++ * DMA-BUF/MIT-SHM aren't usable. Present manually instead: read the rendered
++ * frame back from the GL back buffer and XPutImage it onto the client X window,
++ * exactly like the Android offscreen->readback->XPutImage path. */
++#define VSTPOC_GL_BGRA          0x80E1
++#define VSTPOC_GL_UNSIGNED_BYTE 0x1401
++
++static void vstpoc_egl_readback_present( struct gl_drawable *gl )
++{
++    Window win = (Window)gl->drawable;   /* stored in x11drv_egl_surface_create */
++    XWindowAttributes wa;
++    XImage *img;
++    char *bottom_up, *top_down;
++    int w, h, y;
++    GC gc;
++
++    if (!win || !XGetWindowAttributes( gdi_display, win, &wa )) return;
++    w = wa.width; h = wa.height;
++    if (w <= 0 || h <= 0) return;
++
++    if (!(bottom_up = malloc( (size_t)w * h * 4 ))) return;
++    if (!(top_down = malloc( (size_t)w * h * 4 ))) { free( bottom_up ); return; }
++
++    funcs->p_glFinish();
++    funcs->p_glReadPixels( 0, 0, w, h, VSTPOC_GL_BGRA, VSTPOC_GL_UNSIGNED_BYTE, bottom_up );
++    /* GL's framebuffer origin is bottom-left, X11's is top-left: flip rows. */
++    for (y = 0; y < h; y++)
++        memcpy( top_down + (size_t)y * w * 4, bottom_up + (size_t)(h - 1 - y) * w * 4, (size_t)w * 4 );
++    free( bottom_up );
++
++    if ((img = XCreateImage( gdi_display, default_visual.visual, 32, ZPixmap, 0,
++                             top_down, w, h, 32, 0 )))
++    {
++        if ((gc = XCreateGC( gdi_display, win, 0, NULL )))
++        {
++            XPutImage( gdi_display, win, gc, img, 0, 0, 0, 0, w, h );
++            XFreeGC( gdi_display, gc );
++        }
++        XDestroyImage( img );   /* frees top_down */
++    }
++    else free( top_down );
++}
++
+ static void x11drv_egl_surface_flush( struct opengl_drawable *base, UINT flags )
+ {
++    struct gl_drawable *gl = impl_from_opengl_drawable( base );
++
+     TRACE( "%s\n", debugstr_opengl_drawable( base ) );
+ 
+     if (flags & GL_FLUSH_INTERVAL) funcs->p_eglSwapInterval( egl->display, abs( base->interval ) );
+     if (!(flags & GL_FLUSH_PRESENT)) return;
+ 
++    vstpoc_egl_readback_present( gl );
++
+     if (InterlockedCompareExchange( &base->client->offscreen, 0, 0 ))
+     {
+         if (!(flags & GL_FLUSH_FINISHED)) funcs->p_glFinish();
+@@ -1498,6 +1548,8 @@ static BOOL x11drv_egl_surface_swap( struct opengl_drawable *base )
+ 
+     TRACE( "%s\n", debugstr_opengl_drawable( base ) );
+ 
++    vstpoc_egl_readback_present( gl );
++
+     funcs->p_eglSwapBuffers( egl->display, gl->base.surface );
+ 
+     if (InterlockedCompareExchange( &base->client->offscreen, 0, 0 ))

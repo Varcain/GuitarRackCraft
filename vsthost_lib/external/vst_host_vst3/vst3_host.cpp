@@ -1089,9 +1089,13 @@ private:
 class HostComponentHandler : public IComponentHandler, public IComponentHandler2 {
 public:
     /* --- IComponentHandler --- */
-    tresult PLUGIN_API beginEdit (ParamID) SMTG_OVERRIDE { return kResultOk; }
-    tresult PLUGIN_API performEdit (ParamID, ParamValue) SMTG_OVERRIDE { return kResultOk; }
-    tresult PLUGIN_API endEdit (ParamID) SMTG_OVERRIDE { return kResultOk; }
+    /* Param-edit logging: silent unless VSTPOC_LOG_EDITS is set (kept as debug
+     * infra — proved input works end-to-end on the desktop harness 2026-06-07).
+     * Gated because performEdit is hot and this binary also runs on Android. */
+    static bool logEdits() { static bool on = getenv("VSTPOC_LOG_EDITS") != nullptr; return on; }
+    tresult PLUGIN_API beginEdit (ParamID id) SMTG_OVERRIDE { if (logEdits()) LOG("EDIT beginEdit id=%u\n", (unsigned)id); return kResultOk; }
+    tresult PLUGIN_API performEdit (ParamID id, ParamValue v) SMTG_OVERRIDE { if (logEdits()) LOG("EDIT performEdit id=%u val=%.5f\n", (unsigned)id, (double)v); return kResultOk; }
+    tresult PLUGIN_API endEdit (ParamID id) SMTG_OVERRIDE { if (logEdits()) LOG("EDIT endEdit id=%u\n", (unsigned)id); return kResultOk; }
     tresult PLUGIN_API restartComponent (int32) SMTG_OVERRIDE { return kResultOk; }
 
     /* --- IComponentHandler2 (the interface TH-U needs) ---
@@ -1200,11 +1204,79 @@ static DWORD WINAPI attach_worker_proc(LPVOID p)
  * with TONEX where CreateWindowExA was returning ERROR_INVALID_WINDOW_HANDLE
  * because the window was being destroyed immediately after WM_CREATE.
  */
+/* Collect every CEF window (Chrome_* / Cef*) in the editor subtree and its
+ * owning thread. BIAS FX 2 spreads its browser-frame, Chrome_WidgetWin_0 and
+ * Chrome_RenderWidgetHostHWND across SEVERAL threads. For keyboard focus to flow
+ * host -> Chrome_WidgetWin_0 -> render-widget, the host's input queue must be
+ * AttachThreadInput'd to EACH of those threads — attaching only to the render-
+ * widget thread leaves focus parked on Chrome_WidgetWin_0 (the Android/FEX
+ * symptom). logTree logs the hwnd/class/tid layout for the first few clicks. */
+struct CefThreads {
+    DWORD hostTid;
+    DWORD tids[32];
+    int   count;
+    bool  logTree;
+};
+static BOOL CALLBACK collect_cef_threads_cb(HWND child, LPARAM lp)
+{
+    CefThreads* c = (CefThreads*)lp;
+    char cls[64] = {0};
+    if (GetClassNameA(child, cls, (int)sizeof(cls)) <= 0) return TRUE;
+    if (strncmp(cls, "Chrome_", 7) != 0 && strncmp(cls, "Cef", 3) != 0) return TRUE;
+    DWORD tid = GetWindowThreadProcessId(child, NULL);
+    bool seen = false;
+    for (int i = 0; i < c->count; i++) if (c->tids[i] == tid) { seen = true; break; }
+    if (c->logTree)
+        LOG("cef-tree: hwnd=%p cls='%s' tid=%lu%s%s\n", (void*)child, cls,
+            (unsigned long)tid, tid == c->hostTid ? " [host-thread]" : "",
+            seen ? " [dup]" : "");
+    if (tid && tid != c->hostTid && !seen && c->count < 32) c->tids[c->count++] = tid;
+    return TRUE;
+}
+
 static LRESULT CALLBACK editor_host_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 {
     switch (msg) {
         case WM_NCCREATE: return TRUE;   /* must return TRUE to continue creation */
         case WM_CREATE:   return 0;      /* 0 = success, -1 = abort */
+        case WM_PARENTNOTIFY:
+            /* CEF/Chromium editors (e.g. BIAS FX 2) run their render widget
+             * (Chrome_RenderWidgetHostHWND, several HWND levels below this host
+             * frame) on a SEPARATE thread from this host window. Wine routes
+             * keystrokes to the FOREGROUND thread's focus window; since the
+             * render widget lives on another thread, without sharing the two
+             * threads' input queues the typed characters never reach it (clicks
+             * and the caret work, but typing produces nothing). On the first
+             * click into a CEF child, attach our host thread's input queue to the
+             * render-widget thread — Chromium then owns click-to-focus (caret)
+             * AND keystrokes flow to the focused DOM input. Nothing else is
+             * needed: no SetFocus/WM_SETFOCUS poking (that fights Chromium's own
+             * focus). The Chrome_RenderWidgetHostHWND class guard means only CEF
+             * editors are touched; JUCE/other VST3 plugins have no such child and
+             * fall through unchanged. (Verified on desktop wine: attach-only =>
+             * caret + typing both work.) */
+            if (LOWORD(wp) == WM_LBUTTONDOWN) {
+                /* Re-scan the CEF subtree on each click and attach the host input
+                 * queue to any NOT-yet-attached CEF thread (the tree is built up
+                 * over the first clicks). Attaching to ALL CEF threads (not just
+                 * the render widget) is what lets focus descend past
+                 * Chrome_WidgetWin_0 to the render widget on Android/FEX. */
+                static DWORD done[32]; static int doneN = 0; static int logN = 0;
+                CefThreads c; c.hostTid = GetCurrentThreadId(); c.count = 0;
+                c.logTree = (logN++ < 4);
+                EnumChildWindows(hwnd, collect_cef_threads_cb, (LPARAM)&c);
+                for (int i = 0; i < c.count; i++) {
+                    bool already = false;
+                    for (int j = 0; j < doneN; j++) if (done[j] == c.tids[i]) { already = true; break; }
+                    if (!already && doneN < 32) {
+                        AttachThreadInput(c.hostTid, c.tids[i], TRUE);
+                        LOG("cef-attach: host tid=%lu <- CEF tid=%lu (NEW)\n",
+                            (unsigned long)c.hostTid, (unsigned long)c.tids[i]);
+                        done[doneN++] = c.tids[i];
+                    }
+                }
+            }
+            break;
     }
     return DefWindowProcA(hwnd, msg, wp, lp);
 }
@@ -1758,6 +1830,10 @@ int main(int argc, char** argv)
                         break;
                     }
                 }
+                /* PC-repro override: force the worker+pump attach path (BIAS's
+                 * CEF browser-create blocks on editor-thread messages when run
+                 * standalone under desktop wine, where no DAW pumps for us). */
+                if (getenv("VSTPOC_FORCE_PUMP")) editorCtx.pump_during_attach = true;
                 LOG("editor: pump_during_attach=%d\n", (int)editorCtx.pump_during_attach);
                 editorThread = CreateThread(NULL, 0, editor_thread_proc,
                                             &editorCtx, 0, NULL);

@@ -57,6 +57,7 @@
 #include <cstdio>
 #include <string>
 #include <algorithm>
+#include <climits>
 
 #define LOG_TAG "X11NativeDisplay"
 #define LOGI(...) X11_LOGI(LOG_TAG, __VA_ARGS__)
@@ -371,6 +372,37 @@ struct X11NativeDisplay::Impl {
      * used for diagnosis (keyboard routing currently uses grabWindow,
      * the last-clicked widget). Not load-bearing. */
     std::atomic<uint32_t> focusedWindowId{0};
+    /* DEBUG focus-emulation A/B switch (BIAS FX 2 CEF caret bisection). Bitmask
+     * read from <appCache>/x11_focus_mode.txt, re-read at startServer + on every
+     * touch-down, so focus-emulation variants can be toggled on-device WITHOUT
+     * rebuilding the APK (write the file via `toybox tee`, then tap). 0 = current
+     * behavior. Bits:
+     *   0x1  skip synthetic WM_TAKE_FOCUS in click-to-focus
+     *   0x2  skip synthetic FocusOut/FocusIn in click-to-focus
+     *   0x4  skip FocusOut/FocusIn echo in SetInputFocus (case 42)
+     *   0x8  GetInputFocus returns PointerRoot instead of focusedWindowId
+     *   0x10 click-to-focus never targets the desktop (skip when bestKeyTarget==0)
+     *   0x20 skip click-to-focus entirely (no focus events on click at all)
+     *   0x40 send a hover MotionNotify to the hit window BEFORE the ButtonPress
+     *   0x80 send an EnterNotify to the hit window BEFORE the ButtonPress */
+    std::atomic<uint32_t> focusModeMask_{0};
+    uint32_t readFocusMode() {
+        static std::string fmPath;
+        if (fmPath.empty()) {
+            std::string pkg;
+            if (FILE* c = fopen("/proc/self/cmdline", "r")) {
+                char b[256] = {0}; (void)fread(b, 1, sizeof(b) - 1, c); fclose(c);
+                pkg = b;
+                auto colon = pkg.find(':');
+                if (colon != std::string::npos) pkg.resize(colon);
+            }
+            if (pkg.empty()) pkg = "com.varcain.guitarrackcraft";
+            fmPath = "/data/data/" + pkg + "/cache/x11_focus_mode.txt";
+        }
+        uint32_t v = 0;
+        if (FILE* f = fopen(fmPath.c_str(), "r")) { if (fscanf(f, "%u", &v) != 1) v = 0; fclose(f); }
+        return v;
+    }
     /* Maps each X11 window id to the fd of the client that created it.
      * Touch routing uses this to find the right destination even if the
      * client that did the drawing (and was originally claimed as owner)
@@ -1122,6 +1154,13 @@ struct X11NativeDisplay::Impl {
             lastPointerX.store(t.x, std::memory_order_relaxed);
             lastPointerY.store(t.y, std::memory_order_relaxed);
             if (t.action == 0) {
+                // DEBUG: re-read the focus-emulation A/B mask on every touch-down
+                // so variants can be toggled live (no relaunch). See focusModeMask_.
+                {
+                    uint32_t fm = readFocusMode();
+                    uint32_t prevFm = focusModeMask_.exchange(fm, std::memory_order_relaxed);
+                    if (fm != prevFm) LOGI("X11 focusMode -> 0x%x (was 0x%x)", fm, prevFm);
+                }
                 // Flush any pending drag before ButtonPress
                 if (hasPendingDrag) {
                     sendEventToChild(MotionNotify, pendingDragX, pendingDragY, 0, seq);
@@ -1158,8 +1197,17 @@ struct X11NativeDisplay::Impl {
                         for (uint32_t cw : windowManager_.childWindows()) {
                             if (windowManager_.isUnmapped(cw)) continue;
                             auto p = windowManager_.getPosition(cw);
-                            if (p.parent == 0 || p.parent == kRootWindowId) continue; // skip desktop
                             if (!(windowManager_.getEventMask(cw) & 0x4)) continue;
+                            /* Skip the wine DESKTOP (parent=root, no input mask) but
+                             * NOT a legit top-level content window that carries
+                             * ButtonPress — BIAS FX 2's CEF browser window 0x700001 is
+                             * top-level (parent=root) with mask 0x62c05f and IS the real
+                             * input target sitting under a maskless GPU-compositor
+                             * overlay. The ButtonPress check above already excludes the
+                             * desktop (SubstructureRedirect only), so only skip a
+                             * parent=root window if it ALSO lacks ButtonPress. */
+                            if ((p.parent == 0 || p.parent == kRootWindowId) &&
+                                !(windowManager_.getEventMask(cw) & 0x4)) continue;
                             auto ap = windowManager_.getAbsolutePos(cw);
                             auto sz = windowManager_.getSize(cw);
                             if (t.x < ap.first || t.x >= ap.first + sz.first ||
@@ -1176,28 +1224,6 @@ struct X11NativeDisplay::Impl {
                     }
                 }
                 grabWindow = hit.wid;
-                {
-                    static thread_local int bpDbg = 0;
-                    if (++bpDbg <= 40 || bpDbg % 20 == 0) {
-                        LOGI("X11 touchHit: display=%d (%d,%d) -> wid=0x%x localXY=(%d,%d)%s",
-                             displayNumber_, t.x, t.y, hit.wid, hit.localX, hit.localY,
-                             fellBack ? " [slotWid fallback]" : "");
-                        // First few clicks: also dump every tracked window so
-                        // we can see what hit-test had to choose from.
-                        if (bpDbg <= 3) {
-                            std::lock_guard<std::mutex> mapLock(windowMapMutex);
-                            const auto& cws = windowManager_.childWindows();
-                            for (uint32_t cw : cws) {
-                                auto pos = windowManager_.getAbsolutePos(cw);
-                                auto sz  = windowManager_.getSize(cw);
-                                bool unmapped = windowManager_.isUnmapped(cw);
-                                LOGI("  win wid=0x%x pos=(%d,%d) size=%dx%d%s",
-                                     cw, pos.first, pos.second, sz.first, sz.second,
-                                     unmapped ? " [unmapped]" : "");
-                            }
-                        }
-                    }
-                }
                 // Click-to-focus. Real X11 setups rely on a window manager
                 // to call XSetInputFocus when the user clicks a window, which
                 // then emits FocusIn. We have no WM, so wine sees clicks but
@@ -1213,6 +1239,7 @@ struct X11NativeDisplay::Impl {
                 {
                     uint32_t topLevel = hit.wid;
                     uint32_t bestKeyTarget = 0;  // highest NON-DESKTOP ancestor w/ KeyPressMask
+                    uint32_t vdeskWindow = 0;    // wine virtual-desktop window (top-level child of our real root)
                     for (int depth = 0; depth < 32; ++depth) {
                         std::lock_guard<std::mutex> mapLock(windowMapMutex);
                         auto pos = windowManager_.getPosition(topLevel);
@@ -1228,12 +1255,34 @@ struct X11NativeDisplay::Impl {
                          * editor: the highest KeyPressMask window that is NOT the
                          * desktop. */
                         if ((mask & 0x1 /*KeyPressMask*/) && !isDesktop) bestKeyTarget = topLevel;
-                        if (isDesktop) break;
+                        if (isDesktop) { vdeskWindow = topLevel; break; }
                         topLevel = pos.parent;
                     }
+                    /* TODO(BIAS CEF text input — resume here next session): root
+                     * cause PROVEN (Xvfb A/B) — in virtual-desktop mode wine
+                     * activates its foreground (→ CEF WebContents → caret/typing)
+                     * only when its activatable explorer.exe FRAME top-level gets
+                     * FocusIn; wine ignores FocusIn to the #32769 desktop
+                     * (X11DRV_FocusIn event.c:927). Tried: (1) focus the desktop
+                     * 0x200007 → ignored; (2) `explorer.exe /desktop=` launch →
+                     * frame created but as a separate top-level NOT in the editor's
+                     * parent chain + a stray console; (3) focus the largest
+                     * non-desktop root-child = approach A → did not land. See
+                     * memory feedback_bias_text_input_lag.md cont.8–11 for the full
+                     * map + remaining ideas (re-parent editor under frame; suppress
+                     * console via FreeConsole/DETACHED_PROCESS; identify the frame
+                     * by WM_CLASS=explorer.exe). For now: safe editor focus. */
+                    (void)vdeskWindow;
                     if (bestKeyTarget) topLevel = bestKeyTarget;
-                    uint32_t prev = focusedWindowId.exchange(topLevel, std::memory_order_acq_rel);
-                    if (prev != topLevel) {
+                    uint32_t fm = focusModeMask_.load(std::memory_order_relaxed);
+                    /* 0x20 = suppress click-to-focus entirely; 0x10 = never target
+                     * the desktop (bestKeyTarget==0 => the walk fell through to the
+                     * desktop/vdesk window). In either skip case leave focusedWindowId
+                     * untouched and emit no focus events. */
+                    bool fmSkipAll = (fm & 0x20u) || ((fm & 0x10u) && bestKeyTarget == 0);
+                    uint32_t prev = fmSkipAll ? topLevel
+                                  : focusedWindowId.exchange(topLevel, std::memory_order_acq_rel);
+                    if (!fmSkipAll && prev != topLevel) {
                         auto sendFocus = [&](uint8_t type, uint32_t w) {
                             if (!w) return;
                             int fd = fdForWindow(w);
@@ -1252,8 +1301,10 @@ struct X11NativeDisplay::Impl {
                             evt[8] = 0;  /* mode = NotifyNormal */
                             sendAllLocked(fd, evt, 32);
                         };
-                        if (prev) sendFocus(10 /*FocusOut*/, prev);
-                        sendFocus(9 /*FocusIn*/, topLevel);
+                        if (!(fm & 0x2u)) {   /* 0x2 = suppress synthetic FocusOut/FocusIn */
+                            if (prev) sendFocus(10 /*FocusOut*/, prev);
+                            sendFocus(9 /*FocusIn*/, topLevel);
+                        }
                         /* Wine's X11DRV_FocusIn early-returns when
                          * use_take_focus=TRUE (the default), expecting a
                          * window manager to send a WM_TAKE_FOCUS
@@ -1266,7 +1317,7 @@ struct X11NativeDisplay::Impl {
                          * plugin dialogs never see typed characters.
                          * Wine handles WM_TAKE_FOCUS unconditionally:
                          * see X11DRV_ClientMessage handler in event.c. */
-                        if (topLevel) {
+                        if (topLevel && !(fm & 0x1u)) {   /* 0x1 = suppress synthetic WM_TAKE_FOCUS */
                             uint32_t protocolsAtom = atoms_.intern("WM_PROTOCOLS", false);
                             uint32_t takeFocusAtom = atoms_.intern("WM_TAKE_FOCUS", false);
                             int fd = fdForWindow(topLevel);
@@ -1289,8 +1340,8 @@ struct X11NativeDisplay::Impl {
                         }
                         static thread_local int dbgF = 0;
                         if (++dbgF <= 20) {
-                            LOGI("X11 click-to-focus: top=0x%x prev=0x%x (hit=0x%x)",
-                                 topLevel, prev, hit.wid);
+                            LOGI("X11 click-to-focus: top=0x%x prev=0x%x (hit=0x%x) fm=0x%x",
+                                 topLevel, prev, hit.wid, fm);
                         }
                     }
                 }
@@ -1301,6 +1352,38 @@ struct X11NativeDisplay::Impl {
                 // with it and dispatched before ButtonPress — knob widgets then run
                 // adj_set_motion_state with uninitialized pos_y/start_value and snap
                 // the value to minimum.
+                /* 0x40 = send a hover MotionNotify (and 0x80 an EnterNotify)
+                 * BEFORE the press. Real X always precedes a click with pointer
+                 * motion INTO the target window; our touch path jumps straight to
+                 * ButtonPress. Chromium's render widget (BIAS CEF) may require that
+                 * prior WM_MOUSEMOVE / mouse-enter to treat the click as an in-widget
+                 * click that focuses the DOM element (no caret without it). Gated
+                 * because motion-before-press otherwise breaks xputty knob widgets. */
+                {
+                    uint32_t fm = focusModeMask_.load(std::memory_order_relaxed);
+                    if (fm & 0x80u) {
+                        uint8_t en[32];
+                        memset(en, 0, 32);
+                        en[0] = 7;                 /* EnterNotify */
+                        en[1] = 0;                 /* detail = NotifyAncestor */
+                        write16(en, 2, seq);
+                        write32(en, 4, x11Timestamp());  /* time */
+                        write32(en, 8, kRootWindowId);   /* root */
+                        write32(en, 12, hit.wid);        /* event window */
+                        write32(en, 16, 0);              /* child = None */
+                        write16(en, 20, (uint16_t)hit.localX); /* root-x (approx) */
+                        write16(en, 22, (uint16_t)hit.localY); /* root-y */
+                        write16(en, 24, (uint16_t)hit.localX); /* event-x */
+                        write16(en, 26, (uint16_t)hit.localY); /* event-y */
+                        write16(en, 28, 0);        /* state */
+                        en[30] = 0;                /* mode = NotifyNormal */
+                        en[31] = 1;                /* same-screen, focus */
+                        int fd = fdForWindow(hit.wid);
+                        sendAllLocked(fd, en, 32);
+                    }
+                    if (fm & 0x40u)
+                        sendEvent(MotionNotify, hit.wid, hit.localX, hit.localY, 0, seq, 0);
+                }
                 pointerButton1Down.store(true, std::memory_order_relaxed);
                 sendEvent(ButtonPress, hit.wid, hit.localX, hit.localY, 1, seq);
                 // Synthetic MotionNotify (state=0, no buttons) so combobox popups set
@@ -1340,10 +1423,15 @@ struct X11NativeDisplay::Impl {
                 pointerButton3Down.store(false, std::memory_order_relaxed);
                 sendEvent(ButtonRelease, hit.wid, hit.localX, hit.localY, 3, seq);
             } else {
-                // Drag move: just buffer the latest position
-                hasPendingDrag = true;
-                pendingDragX = t.x;
-                pendingDragY = t.y;
+                // Drag move: send MotionNotify immediately to the grabbed window so
+                // drag-based controls (faders/knobs) track the pointer. The prior
+                // 30fps-buffered flush could drop motion entirely for some plugins
+                // (DeeGain's fader received 0 MotionNotify across 174 moves). injectTouch
+                // already coalesces consecutive moves, so this is ~1 event per drain.
+                static thread_local int dragDbg = 0;
+                if (++dragDbg <= 20)
+                    LOGI("X11 DRAG move (%d,%d) grab=0x%x -> MotionNotify", t.x, t.y, grabWindow);
+                sendEventToChild(MotionNotify, t.x, t.y, 0, seq);
             }
         }
 
@@ -3336,6 +3424,13 @@ struct X11NativeDisplay::Impl {
                         uint32_t gpWid = (length >= 6) ? read32(buf, 4) : 0;
                         uint32_t gpAtom = (length >= 6) ? read32(buf, 8) : 0;
                         std::string gpName = atoms_.getName(gpAtom);
+                        if (gpName.rfind("_NET_", 0) == 0) {
+                            uint64_t dpk = ((uint64_t)gpWid << 32) | gpAtom;
+                            std::lock_guard<std::mutex> lk(propStoreMutex);
+                            bool have = propStore_.count(dpk) > 0;
+                            LOGI("X11 GetProperty %s wid=0x%x reqType=%u haveStored=%d",
+                                 gpName.c_str(), gpWid, read32(buf, 12), (int)have);
+                        }
                         bool isWmState = (gpName == "WM_STATE");
                         uint32_t wmStateValue = 0;
                         if (isWmState) {
@@ -3443,14 +3538,29 @@ struct X11NativeDisplay::Impl {
                         sendReply(reply, 32, seq);
                         break;
                     }
-                    case 43: { /* GetInputFocus — Java byte 1 = 0 (None),
-                                  focus = 1 (PointerRoot). Match exactly. */
+                    case 43: { /* GetInputFocus.
+                                * MUST return the ACTUAL focused window, not a
+                                * constant PointerRoot. Wine's
+                                * is_current_process_focused() (winex11 event.c)
+                                * does XGetInputFocus + XFindContext(focus) to
+                                * decide whether THIS process holds the X input
+                                * focus; if we always return PointerRoot (which
+                                * has no HWND context) it returns FALSE forever,
+                                * and X11DRV_FocusOut then drops our foreground to
+                                * the desktop (the !_NET_ACTIVE_WINDOW path) — so
+                                * embedded CEF (BIAS FX 2) can never stay active
+                                * and clicked <input>s never focus (no caret).
+                                * Return focusedWindowId so XFindContext resolves
+                                * the HWND and the process reads as focused. */
+                        uint32_t f = focusedWindowId.load(std::memory_order_acquire);
+                        /* 0x8 = revert GetInputFocus to PointerRoot (pre-cont.7) */
+                        if (focusModeMask_.load(std::memory_order_relaxed) & 0x8u) f = 0;
                         uint8_t reply[32];
                         memset(reply, 0, 32);
                         reply[0] = 1;
-                        reply[1] = 0;            /* revert_to = None — Java */
+                        reply[1] = 1;            /* revert_to = PointerRoot */
                         write16(reply, 2, seq);
-                        write32(reply, 8, 1);    /* focus = PointerRoot — Java */
+                        write32(reply, 8, f ? f : 1);  /* focus = focused window, else PointerRoot */
                         sendReply(reply, 32, seq);
                         break;
                     }
@@ -3715,15 +3825,58 @@ struct X11NativeDisplay::Impl {
                         break;
                     case SendEvent: {
                         /* SendEvent: opcode(1), propagate(1), length(2), destination(4), event_mask(4), event(32)
-                         * Body already read: buf[4..7]=destination, buf[8..11]=event_mask, buf[12..43]=event
-                         * The 32-byte event at buf[12] should be forwarded to the client. */
+                         * Body already read: buf[4..7]=destination, buf[8..11]=event_mask, buf[12..43]=event */
+                        uint32_t seDest   = read32(buf, 4);
+                        uint8_t  seEvType = buf[12] & 0x7f;
+                        /* EWMH window-manager role: wine activates a window by
+                         * XSendEvent-ing a _NET_ACTIVE_WINDOW ClientMessage to the
+                         * root (set_net_active_window, winex11 window.c). As the
+                         * "WM" we consume it and reflect the active window back via
+                         * the root's _NET_ACTIVE_WINDOW property + a PropertyNotify
+                         * so wine reconciles its pending-activate state. Advertising
+                         * + honoring this puts wine on its EWMH activation path
+                         * (vs the no-WM fallback), which is what properly activates
+                         * embedded CEF editor WebContents (BIAS FX 2) so a clicked
+                         * <input> focuses. The X input focus itself still flows
+                         * through wine's own XSetInputFocus (SetInputFocus handler). */
+                        if (seEvType == 33 /*ClientMessage*/ && seDest == kRootWindowId) {
+                            uint32_t seMsgType = read32(buf, 20);   /* event message_type (atom) */
+                            static int cmDbg = 0;
+                            if (cmDbg++ < 50)
+                                LOGI("X11 ClientMessage->root type=%u(%s) win=0x%x",
+                                     seMsgType, atoms_.getName(seMsgType).c_str(), read32(buf, 16));
+                            uint32_t netActiveWindow = atoms_.intern("_NET_ACTIVE_WINDOW", true);
+                            if (netActiveWindow && seMsgType == netActiveWindow) {
+                                uint32_t target = read32(buf, 16);  /* event window = window to activate */
+                                {
+                                    std::lock_guard<std::mutex> lk(propStoreMutex);
+                                    auto& pv = propStore_[((uint64_t)kRootWindowId << 32) | netActiveWindow];
+                                    pv.type = 33 /*XA_WINDOW*/; pv.format = 32;
+                                    pv.data.assign(4, 0);
+                                    pv.data[0] = (uint8_t)(target & 0xff);
+                                    pv.data[1] = (uint8_t)((target >> 8) & 0xff);
+                                    pv.data[2] = (uint8_t)((target >> 16) & 0xff);
+                                    pv.data[3] = (uint8_t)((target >> 24) & 0xff);
+                                }
+                                uint8_t pn[32];
+                                memset(pn, 0, 32);
+                                pn[0] = 28; /* PropertyNotify */
+                                write16(pn, 2, lastReplySeq_);
+                                write32(pn, 4, kRootWindowId);
+                                write32(pn, 8, netActiveWindow);
+                                write32(pn, 12, x11Timestamp());
+                                pn[16] = 0; /* state = NewValue */
+                                sendAllLocked(clientFd, pn, 32);
+                                LOGI("X11 _NET_ACTIVE_WINDOW: activate target=0x%x", target);
+                                break;  /* consumed by the WM — do not echo back */
+                            }
+                        }
+                        /* Default: forward the event back to the client (set bit 7
+                         * = "sent via SendEvent"; rewrite seq to match XCB). */
                         if (reqLogCount <= 30) LOGI("X11 handle SendEvent (forwarding 32-byte event to client)");
-                        /* The event is at buf[12..43]. Set bit 7 of byte 0 to mark as "sent via SendEvent". */
-                        /* Rewrite event seq to lastReplySeq_ to match XCB expectations */
                         write16(buf + 12, 2, lastReplySeq_);
                         buf[12] |= 0x80;
                         sendAllLocked(clientFd, buf + 12, 32);
-                        // SendEvent forwarded
                         break;
                     }
                     case 10: { /* UnmapWindow (opcode 10) */
@@ -4197,197 +4350,181 @@ struct X11NativeDisplay::Impl {
                         break;
                     }
                     case kGLXMajorOpcode: {
-                        /* GLX extension requests.
-                         * Mesa's xlib GLX with swrast does most rendering client-side.
-                         * The server only needs to handle a few GLX queries.
-                         * GLX sub-opcode is in buf[1] (the "data" byte of the request header). */
-                        uint8_t glxMinor = buf[1];
-                        /* GLX sub-opcodes:
-                         *   1  = glXRender (void, no reply)
-                         *   2  = glXRenderLarge (void, no reply)
-                         *   3  = glXCreateContext (void, no reply)
-                         *   4  = glXDestroyContext (void, no reply)
-                         *   5  = glXMakeCurrent (reply)
-                         *   6  = glXIsDirect (reply)
-                         *   7  = glXQueryVersion (reply)
-                         *   8  = glXWaitGL (void)
-                         *   9  = glXWaitX (void)
-                         *  10  = glXCopyContext (void)
-                         *  11  = glXSwapBuffers (void)
-                         *  14  = glXGetVisualConfigs (reply)
-                         *  17  = glXQueryServerString (reply)
-                         *  18  = glXClientInfo (void)
-                         *  19  = glXGetFBConfigs (reply)
-                         *  20  = glXCreatePixmap (void)
-                         *  21  = glXDestroyPixmap (void)
-                         *  22  = glXCreateNewContext (void)
-                         *  24  = glXMakeContextCurrent (reply)
-                         *  26  = glXQueryContext (reply)
+                        /* GLX extension. Mesa's software loader (drisw + llvmpipe) does ALL
+                         * GL rendering client-side and presents via core XPutImage, so the
+                         * server only needs correct GLX config/string/context bookkeeping —
+                         * no server-side GL. (Hardware DRI3/DRI2 + Present is a separate path.)
+                         * Sub-opcode is in buf[1]; the (small) request body is at buf+4.
+                         *
+                         * Authoritative GLX sub-opcodes (glxproto.h) — rep = expects a reply:
+                         *   1 Render            2 RenderLarge       3 CreateContext
+                         *   4 DestroyContext    5 MakeCurrent(rep)  6 IsDirect(rep)
+                         *   7 QueryVersion(rep) 8 WaitGL  9 WaitX   10 CopyContext
+                         *   11 SwapBuffers      12 UseXFont         13 CreateGLXPixmap
+                         *   14 GetVisualConfigs(rep)  15 DestroyGLXPixmap  16 VendorPrivate
+                         *   17 VendorPrivateWithReply(rep)  18 QueryExtensionsString(rep)
+                         *   19 QueryServerString(rep)  20 ClientInfo  21 GetFBConfigs(rep)
+                         *   22 CreatePixmap  23 DestroyPixmap  24 CreateNewContext
+                         *   25 QueryContext(rep)  26 MakeContextCurrent(rep)
+                         *   27 CreatePbuffer 28 DestroyPbuffer  29 GetDrawableAttributes(rep)
+                         *   30 ChangeDrawableAttributes 31 CreateWindow 32 DestroyWindow
+                         *   33 SetClientInfoARB 34 CreateContextAttribsARB 35 SetClientInfo2ARB
                          */
+                        uint8_t glxMinor = buf[1];
                         LOGI("X11 handle GLX sub-opcode=%u length=%u", (unsigned)glxMinor, (unsigned)length);
+
+                        /* String reply (QueryServerString / QueryExtensionsString): byte
+                         * length incl null at offset 12, length=pad(n)/4, string at 32. */
+                        auto sendGlxString = [&](const char* s) {
+                            uint32_t n = (uint32_t)strlen(s) + 1;
+                            size_t padded = ((size_t)n + 3) & ~size_t(3);
+                            std::vector<uint8_t> reply(32 + padded, 0);
+                            reply[0] = 1;
+                            write16(reply.data(), 2, seq);
+                            write32(reply.data(), 4, (uint32_t)(padded / 4));
+                            write32(reply.data(), 12, n);
+                            memcpy(reply.data() + 32, s, n);
+                            sendReply(reply.data(), reply.size(), seq);
+                        };
+                        /* (tag,value)-pair reply (QueryContext / GetDrawableAttributes):
+                         * pair count at offset 8, then count CARD32 (tag,value) pairs. */
+                        auto sendGlxPairs = [&](const std::vector<std::pair<uint32_t,uint32_t>>& a) {
+                            size_t dataBytes = a.size() * 2 * 4;
+                            std::vector<uint8_t> reply(32 + dataBytes, 0);
+                            reply[0] = 1;
+                            write16(reply.data(), 2, seq);
+                            write32(reply.data(), 4, (uint32_t)(dataBytes / 4));
+                            write32(reply.data(), 8, (uint32_t)a.size());
+                            size_t off = 32;
+                            for (auto& kv : a) { write32(reply.data(), off, kv.first); off += 4;
+                                                 write32(reply.data(), off, kv.second); off += 4; }
+                            sendReply(reply.data(), reply.size(), seq);
+                        };
+                        static const char* kGlxExt =
+                            "GLX_ARB_create_context GLX_ARB_create_context_profile "
+                            "GLX_EXT_create_context_es2_profile GLX_ARB_get_proc_address "
+                            "GLX_EXT_visual_info GLX_EXT_visual_rating GLX_ARB_multisample";
+
                         switch (glxMinor) {
-                            case 7: { /* glXQueryVersion */
-                                uint8_t reply[32];
-                                memset(reply, 0, 32);
-                                reply[0] = 1;  /* reply */
-                                write16(reply, 2, seq);
-                                write32(reply, 8, 1);   /* major version = 1 */
-                                write32(reply, 12, 4);  /* minor version = 4 */
+                            case 7: { /* glXQueryVersion -> 1.4 */
+                                uint8_t reply[32]; memset(reply, 0, 32);
+                                reply[0] = 1; write16(reply, 2, seq);
+                                write32(reply, 8, 1); write32(reply, 12, 4);
                                 sendReply(reply, 32, seq);
                                 break;
                             }
-                            case 5: { /* glXMakeCurrent */
-                                /* Reply: context tag (32-bit) */
-                                uint8_t reply[32];
-                                memset(reply, 0, 32);
-                                reply[0] = 1;
-                                write16(reply, 2, seq);
-                                write32(reply, 8, 1);  /* context_tag = 1 (non-zero = success) */
-                                sendReply(reply, 32, seq);
+                            case 14: { /* glXGetVisualConfigs: 18 positional + tagged pairs */
+                                std::vector<uint32_t> p;
+                                const uint32_t pos[18] = {
+                                    kDefaultVisualId, 4 /*TrueColor*/, 1 /*rgba*/,
+                                    8,8,8,8, 0,0,0,0, 1 /*dbl*/, 0 /*stereo*/,
+                                    32 /*bufsize*/, 24 /*depth*/, 8 /*stencil*/, 0 /*aux*/, 0 /*level*/ };
+                                for (uint32_t v : pos) p.push_back(v);
+                                auto tg = [&](uint32_t k, uint32_t v){ p.push_back(k); p.push_back(v); };
+                                tg(0x20, 0x8000);   /* CAVEAT = NONE */
+                                tg(0x22, 0x8002);   /* X_VISUAL_TYPE = TRUE_COLOR */
+                                tg(0x8011, 0x1);    /* RENDER_TYPE = RGBA_BIT */
+                                tg(0x8010, 0x7);    /* DRAWABLE_TYPE = win|pix|pbuf */
+                                tg(0x8012, 1);      /* X_RENDERABLE */
+                                tg(0x8013, 1);      /* FBCONFIG_ID */
+                                size_t dataBytes = p.size() * 4;
+                                std::vector<uint8_t> reply(32 + dataBytes, 0);
+                                reply[0] = 1; write16(reply.data(), 2, seq);
+                                write32(reply.data(), 4, (uint32_t)(dataBytes / 4));
+                                write32(reply.data(), 8, 1);                    /* numVisuals */
+                                write32(reply.data(), 12, (uint32_t)p.size());  /* props per visual */
+                                for (size_t i = 0; i < p.size(); i++) write32(reply.data(), 32 + i*4, p[i]);
+                                sendReply(reply.data(), reply.size(), seq);
                                 break;
                             }
-                            case 24: { /* glXMakeContextCurrent */
-                                uint8_t reply[32];
-                                memset(reply, 0, 32);
-                                reply[0] = 1;
-                                write16(reply, 2, seq);
-                                write32(reply, 8, 1);  /* context_tag */
-                                sendReply(reply, 32, seq);
-                                break;
-                            }
-                            case 6: { /* glXIsDirect */
-                                uint8_t reply[32];
-                                memset(reply, 0, 32);
-                                reply[0] = 1;
-                                write16(reply, 2, seq);
-                                reply[8] = 0;  /* is_direct = false (indirect rendering) */
-                                sendReply(reply, 32, seq);
-                                break;
-                            }
-                            case 14: { /* glXGetVisualConfigs */
-                                /* Return a single visual config matching our 32-bit ARGB visual.
-                                 * Each config is 28 uint32_t property pairs (GLX_VISUAL_ID, ...).
-                                 * Mesa's xlib GLX often bypasses server configs and uses client-side
-                                 * visual matching, but we provide one config for completeness. */
-                                const uint32_t numConfigs = 1;
-                                const uint32_t numProps = 28;
-                                size_t dataBytes = numConfigs * numProps * 4;
-                                size_t padded = (dataBytes + 3) & ~3u;
-                                size_t replySize = 32 + padded;
-                                std::vector<uint8_t> reply(replySize, 0);
-                                reply[0] = 1;
-                                write16(reply.data(), 2, seq);
-                                write32(reply.data(), 4, (uint32_t)(padded / 4));
-                                write32(reply.data(), 8, numConfigs);
-                                write32(reply.data(), 12, numProps);
-                                /* Fill config properties: visual_id(0), class(TrueColor=4),
-                                 * rgba bits, buffer size, depth, stencil, accum, etc. */
-                                uint32_t* props = reinterpret_cast<uint32_t*>(reply.data() + 32);
-                                props[0]  = kDefaultVisualId;  /* visual ID */
-                                props[1]  = 4;     /* class: TrueColor */
-                                props[2]  = 1;     /* RGBA: true */
-                                props[3]  = 8;     /* red bits */
-                                props[4]  = 8;     /* green bits */
-                                props[5]  = 8;     /* blue bits */
-                                props[6]  = 8;     /* alpha bits */
-                                props[7]  = 0;     /* accum red */
-                                props[8]  = 0;     /* accum green */
-                                props[9]  = 0;     /* accum blue */
-                                props[10] = 0;     /* accum alpha */
-                                props[11] = 1;     /* double buffer */
-                                props[12] = 0;     /* stereo */
-                                props[13] = 32;    /* buffer size */
-                                props[14] = 24;    /* depth size */
-                                props[15] = 8;     /* stencil size */
-                                props[16] = 0;     /* aux buffers */
-                                props[17] = 0;     /* level */
-                                /* remaining props stay 0 */
-                                sendReply(reply.data(), replySize, seq);
-                                break;
-                            }
-                            case 19: { /* glXGetFBConfigs */
-                                /* Similar to GetVisualConfigs but for fbconfigs.
-                                 * Return a single fbconfig with reasonable defaults. */
-                                const uint32_t numConfigs = 1;
-                                const uint32_t numAttribs = 28;
-                                size_t dataBytes = numConfigs * numAttribs * 2 * 4; /* key-value pairs */
-                                size_t padded = (dataBytes + 3) & ~3u;
-                                size_t replySize = 32 + padded;
-                                std::vector<uint8_t> reply(replySize, 0);
-                                reply[0] = 1;
-                                write16(reply.data(), 2, seq);
-                                write32(reply.data(), 4, (uint32_t)(padded / 4));
-                                write32(reply.data(), 8, numConfigs);
-                                write32(reply.data(), 12, numAttribs);
-                                /* FBConfig attribs as key-value pairs: GLX_FBCONFIG_ID, value, ... */
-                                uint32_t* kv = reinterpret_cast<uint32_t*>(reply.data() + 32);
-                                int idx = 0;
-                                auto addAttr = [&](uint32_t key, uint32_t val) {
-                                    kv[idx++] = key; kv[idx++] = val;
+                            case 21: { /* glXGetFBConfigs: all (tag,value) pairs */
+                                const std::vector<std::pair<uint32_t,uint32_t>> a = {
+                                    {0x8013, 1},                 /* FBCONFIG_ID */
+                                    {0x800B, kDefaultVisualId},  /* VISUAL_ID (maps config -> X visual) */
+                                    {0x22, 0x8002},              /* X_VISUAL_TYPE = TRUE_COLOR */
+                                    {0x8011, 0x1},               /* RENDER_TYPE = RGBA_BIT */
+                                    {0x8010, 0x7},               /* DRAWABLE_TYPE = win|pix|pbuf */
+                                    {0x8012, 1},                 /* X_RENDERABLE */
+                                    {0x20, 0x8000},              /* CONFIG_CAVEAT = NONE */
+                                    {0x2, 32},                   /* BUFFER_SIZE */
+                                    {0x3, 0},                    /* LEVEL */
+                                    {0x5, 1},                    /* DOUBLEBUFFER */
+                                    {0x6, 0},                    /* STEREO */
+                                    {0x7, 0},                    /* AUX_BUFFERS */
+                                    {0x8, 8}, {0x9, 8}, {0xA, 8}, {0xB, 8},   /* R G B A */
+                                    {0xC, 24},                   /* DEPTH */
+                                    {0xD, 8},                    /* STENCIL */
+                                    {0xE, 0}, {0xF, 0}, {0x10, 0}, {0x11, 0}, /* accum R G B A */
+                                    {0x23, 0x8000},              /* TRANSPARENT_TYPE = NONE */
+                                    {0x186A0, 0},                /* SAMPLE_BUFFERS */
+                                    {0x186A1, 0},                /* SAMPLES */
                                 };
-                                addAttr(0x8013, 1);    /* GLX_FBCONFIG_ID = 1 */
-                                addAttr(0x8010, 32);   /* GLX_BUFFER_SIZE = 32 */
-                                addAttr(0x8011, 0);    /* GLX_LEVEL = 0 */
-                                addAttr(0x8012, 1);    /* GLX_DOUBLEBUFFER = 1 */
-                                addAttr(0x8014, 4);    /* GLX_VISUAL_TYPE = GLX_TRUE_COLOR */
-                                addAttr(0x8015, 8);    /* GLX_RED_SIZE = 8 */
-                                addAttr(0x8016, 8);    /* GLX_GREEN_SIZE = 8 */
-                                addAttr(0x8017, 8);    /* GLX_BLUE_SIZE = 8 */
-                                addAttr(0x8018, 8);    /* GLX_ALPHA_SIZE = 8 */
-                                addAttr(0x8019, 24);   /* GLX_DEPTH_SIZE = 24 */
-                                addAttr(0x801A, 8);    /* GLX_STENCIL_SIZE = 8 */
-                                addAttr(0x8020, 0x8002); /* GLX_RENDER_TYPE = GLX_RGBA_BIT */
-                                addAttr(0x8021, 0x8001); /* GLX_DRAWABLE_TYPE = GLX_WINDOW_BIT */
-                                addAttr(0x8022, 0);    /* GLX_X_RENDERABLE = 0 */
-                                addAttr(0x8023, 0);    /* GLX_X_VISUAL_TYPE = 0 */
-                                addAttr(0x20,   0);    /* GLX_NONE (terminator for remaining) */
-                                /* Fill remaining with zeros */
-                                sendReply(reply.data(), replySize, seq);
+                                size_t dataBytes = a.size() * 2 * 4;
+                                std::vector<uint8_t> reply(32 + dataBytes, 0);
+                                reply[0] = 1; write16(reply.data(), 2, seq);
+                                write32(reply.data(), 4, (uint32_t)(dataBytes / 4));
+                                write32(reply.data(), 8, 1);                    /* numFBConfigs */
+                                write32(reply.data(), 12, (uint32_t)a.size());  /* attribute pairs per config */
+                                size_t off = 32;
+                                for (auto& kv : a) { write32(reply.data(), off, kv.first); off += 4;
+                                                     write32(reply.data(), off, kv.second); off += 4; }
+                                sendReply(reply.data(), reply.size(), seq);
                                 break;
                             }
-                            case 17: { /* glXQueryServerString */
-                                /* Return an empty string. The reply is:
-                                 * 32-byte header + string length (4 bytes) + string data (padded) */
-                                uint8_t reply[36];
-                                memset(reply, 0, 36);
-                                reply[0] = 1;
-                                write16(reply, 2, seq);
-                                write32(reply, 4, 1);  /* reply length = 1 (4 bytes of data) */
-                                write32(reply, 8, 0);  /* string length = 0 */
-                                sendReply(reply, 36, seq);
+                            case 18:   /* glXQueryExtensionsString */
+                                sendGlxString(kGlxExt);
+                                break;
+                            case 19: { /* glXQueryServerString: body = screen@4, name@8 */
+                                uint32_t name = read32(buf, 8);
+                                const char* s = (name == 1) ? "GuitarRackCraft"
+                                              : (name == 2) ? "1.4"
+                                              : (name == 3) ? kGlxExt : "";
+                                sendGlxString(s);
                                 break;
                             }
-                            case 26: { /* glXQueryContext */
-                                /* Return empty context attribs */
-                                uint8_t reply[32];
-                                memset(reply, 0, 32);
-                                reply[0] = 1;
-                                write16(reply, 2, seq);
+                            case 5:    /* glXMakeCurrent -> context tag */
+                            case 26: { /* glXMakeContextCurrent -> context tag */
+                                uint8_t reply[32]; memset(reply, 0, 32);
+                                reply[0] = 1; write16(reply, 2, seq);
+                                write32(reply, 8, 1);  /* non-zero context tag = success */
                                 sendReply(reply, 32, seq);
                                 break;
                             }
-                            /* Void GLX requests (no reply expected) */
-                            case 1:  /* glXRender */
-                            case 2:  /* glXRenderLarge */
-                            case 3:  /* glXCreateContext */
-                            case 4:  /* glXDestroyContext */
-                            case 8:  /* glXWaitGL */
-                            case 9:  /* glXWaitX */
-                            case 10: /* glXCopyContext */
-                            case 11: /* glXSwapBuffers */
-                            case 18: /* glXClientInfo */
-                            case 20: /* glXCreatePixmap */
-                            case 21: /* glXDestroyPixmap */
-                            case 22: /* glXCreateNewContext */
+                            case 6: {  /* glXIsDirect */
+                                uint8_t reply[32]; memset(reply, 0, 32);
+                                reply[0] = 1; write16(reply, 2, seq);
+                                reply[8] = 0;  /* server sees the context as indirect */
+                                sendReply(reply, 32, seq);
+                                break;
+                            }
+                            case 25:   /* glXQueryContext */
+                                sendGlxPairs({ {0x8013, 1}, {0x8011, 0x8014 /*GLX_RGBA_TYPE*/}, {0x800C, 0} });
+                                break;
+                            case 29: { /* glXGetDrawableAttributes -> size + config id */
+                                int w = pluginWidth  > 0 ? pluginWidth  : (width  > 0 ? width  : 1280);
+                                int h = pluginHeight > 0 ? pluginHeight : (height > 0 ? height : 720);
+                                sendGlxPairs({ {0x801D, (uint32_t)w} /*WIDTH*/, {0x801E, (uint32_t)h} /*HEIGHT*/,
+                                               {0x8013, 1} /*FBCONFIG_ID*/, {0x801B, 1} /*PRESERVED_CONTENTS*/ });
+                                break;
+                            }
+                            case 17: { /* glXVendorPrivateWithReply -> generic empty reply */
+                                uint8_t reply[32]; memset(reply, 0, 32);
+                                reply[0] = 1; write16(reply, 2, seq);
+                                sendReply(reply, 32, seq);
+                                break;
+                            }
+                            /* Void GLX requests (no reply). */
+                            case 1: case 2: case 3: case 4: case 8: case 9: case 10:
+                            case 11: case 12: case 13: case 15: case 16: case 20:
+                            case 22: case 23: case 24: case 27: case 28: case 30:
+                            case 31: case 32: case 33: case 34: case 35:
                                 break;
                             default: {
-                                /* Unknown GLX sub-opcode — send generic empty reply to avoid desync.
-                                 * GLX requests with reply bit set will block if we don't reply. */
-                                LOGI("X11 GLX unhandled sub-opcode=%u (sending generic reply)", (unsigned)glxMinor);
-                                uint8_t reply[32];
-                                memset(reply, 0, 32);
-                                reply[0] = 1;
-                                write16(reply, 2, seq);
+                                /* Unknown sub-opcode: send a generic reply (matches prior
+                                 * behavior; reply-bearing requests would otherwise hang). */
+                                LOGI("X11 GLX unhandled sub-opcode=%u (generic reply)", (unsigned)glxMinor);
+                                uint8_t reply[32]; memset(reply, 0, 32);
+                                reply[0] = 1; write16(reply, 2, seq);
                                 sendReply(reply, 32, seq);
                                 break;
                             }
@@ -4535,8 +4672,12 @@ struct X11NativeDisplay::Impl {
                             evt[8] = 0;  /* mode = NotifyNormal */
                             sendAllLocked(fd, evt, 32);
                         };
-                        if (prevWid && prevWid != focusWid) sendFocusEvent(10 /*FocusOut*/, prevWid);
-                        if (focusWid && focusWid != prevWid) sendFocusEvent(9 /*FocusIn*/, focusWid);
+                        /* 0x4 = suppress the FocusOut/FocusIn echo for wine's own
+                         * XSetInputFocus (let wine's focus stand without our echo). */
+                        if (!(focusModeMask_.load(std::memory_order_relaxed) & 0x4u)) {
+                            if (prevWid && prevWid != focusWid) sendFocusEvent(10 /*FocusOut*/, prevWid);
+                            if (focusWid && focusWid != prevWid) sendFocusEvent(9 /*FocusIn*/, focusWid);
+                        }
                         break;
                     }
                     case DeleteProperty:
@@ -4988,6 +5129,37 @@ bool X11NativeDisplay::startServer(int placeholderW, int placeholderH) {
     if (impl_->running) {
         LOGI("X11 display %d: startServer skipped (already running)", displayNumber_);
         return true;
+    }
+    /* DEBUG: load the focus-emulation A/B mask once at startup (so variants that
+     * affect load-time focus apply when the flag is written before launch). It
+     * is also re-read on every touch-down for live toggling. */
+    {
+        uint32_t fm = impl_->readFocusMode();
+        impl_->focusModeMask_.store(fm, std::memory_order_relaxed);
+        if (fm) LOGI("X11 display %d focusMode=0x%x (from cache/x11_focus_mode.txt)", displayNumber_, fm);
+    }
+    /* Seed minimal EWMH window-manager state on the root BEFORE accepting a
+     * client. Wine reads the root's _NET_SUPPORTED at X11 init
+     * (net_supported_init) to decide is_net_supported(_NET_ACTIVE_WINDOW); if
+     * TRUE it uses its EWMH activation path, otherwise a no-WM fallback that
+     * fails to activate embedded CEF (Chromium) editor WebContents — so e.g.
+     * BIAS FX 2's text fields never focus (no caret). Advertise _NET_ACTIVE_
+     * WINDOW; the activation ClientMessages wine then sends are handled in the
+     * SendEvent path. Atom IDs persist for the display's lifetime and match the
+     * IDs wine gets from InternAtom (same store), so the property keys line up. */
+    {
+        uint32_t netSupported    = impl_->atoms_.intern("_NET_SUPPORTED", false);
+        uint32_t netActiveWindow = impl_->atoms_.intern("_NET_ACTIVE_WINDOW", false);
+        std::lock_guard<std::mutex> lk(impl_->propStoreMutex);
+        auto& sup = impl_->propStore_[((uint64_t)kRootWindowId << 32) | netSupported];
+        sup.type = 4 /*XA_ATOM*/; sup.format = 32;
+        sup.data = { (uint8_t)(netActiveWindow & 0xff),  (uint8_t)((netActiveWindow >> 8) & 0xff),
+                     (uint8_t)((netActiveWindow >> 16) & 0xff), (uint8_t)((netActiveWindow >> 24) & 0xff) };
+        auto& act = impl_->propStore_[((uint64_t)kRootWindowId << 32) | netActiveWindow];
+        act.type = 33 /*XA_WINDOW*/; act.format = 32;
+        act.data = { 0, 0, 0, 0 };
+        LOGI("X11 display %d EWMH seeded: _NET_SUPPORTED=%u _NET_ACTIVE_WINDOW=%u root=0x%x",
+             displayNumber_, netSupported, netActiveWindow, kRootWindowId);
     }
     impl_->width  = placeholderW > 0 ? placeholderW : 1;
     impl_->height = placeholderH > 0 ? placeholderH : 1;
@@ -5568,6 +5740,30 @@ void X11NativeDisplay::getRenderedExtent(int& w, int& h) {
     h = impl_->renderedMaxY_;
 }
 
+/* Read-only snapshot of the rendered framebuffer for the desktop harness.
+ * The framebuffer width is always pluginWidth (or the placeholder width
+ * before a plugin is known); the height is the remainder of the vector so
+ * the slot-stacked case (height = pluginHeight * slotCount) reports the full
+ * stack and out.size() always equals w*h regardless of the resize path that
+ * last touched the vector. */
+bool X11NativeDisplay::snapshotFramebuffer(std::vector<uint32_t>& out, int& w, int& h) {
+    std::lock_guard<std::mutex> lock(impl_->bufferMutex);
+    if (impl_->framebuffer.empty()) {
+        w = 0;
+        h = 0;
+        return false;
+    }
+    int fw = impl_->pluginWidth > 0 ? impl_->pluginWidth : impl_->width;
+    if (fw <= 0) return false;
+    int fh = (int)(impl_->framebuffer.size() / (size_t)fw);
+    if (fh <= 0) return false;
+    out.assign(impl_->framebuffer.begin(),
+               impl_->framebuffer.begin() + (size_t)fw * fh);
+    w = fw;
+    h = fh;
+    return true;
+}
+
 /* Forcibly set the plugin's native dimensions. Used when Android already
  * knows the editor size (from vst_host) and Wine's CreateWindow trail
  * didn't hit our auto-detect heuristic (JUCE creates the editor as a
@@ -5730,6 +5926,16 @@ bool withDisplayGetRenderedExtent(int displayNumber, int& w, int& h) {
         it->second->getRenderedExtent(w, h);
         return true;
     }
+    w = 0; h = 0;
+    return false;
+}
+
+bool withDisplaySnapshotFramebuffer(int displayNumber, std::vector<uint32_t>& out,
+                                    int& w, int& h) {
+    std::lock_guard<std::mutex> lock(g_displayMutex);
+    auto it = g_displays.find(displayNumber);
+    if (it != g_displays.end())
+        return it->second->snapshotFramebuffer(out, w, h);
     w = 0; h = 0;
     return false;
 }
