@@ -27,6 +27,19 @@ set(_nam_lv2_id  "http://github.com/mikeoliphant/neural-amp-modeler-lv2")
 # ─── Phase 1: Process TTL templates ──────────────────────────────────────────
 file(MAKE_DIRECTORY "${_nam_assets}")
 
+# Parse the upstream version from the submodule's project() declaration so the
+# TTL never goes stale on a version bump (e.g. v0.1.9 -> v0.2.0). LV2 maps the
+# project minor/patch to lv2:minorVersion/lv2:microVersion.
+set(_nam_ver_minor 0)
+set(_nam_ver_patch 0)
+file(STRINGS "${_nam_src}/CMakeLists.txt" _nam_proj_line REGEX "project\\(.*VERSION[ \t]+[0-9]+\\.[0-9]+\\.[0-9]+")
+if(_nam_proj_line MATCHES "VERSION[ \t]+([0-9]+)\\.([0-9]+)\\.([0-9]+)")
+    set(_nam_ver_minor "${CMAKE_MATCH_2}")
+    set(_nam_ver_patch "${CMAKE_MATCH_3}")
+else()
+    message(FATAL_ERROR "nam.cmake: could not parse version from ${_nam_src}/CMakeLists.txt")
+endif()
+
 # manifest.ttl
 if(EXISTS "${_nam_src}/resources/manifest.ttl.in")
     file(READ "${_nam_src}/resources/manifest.ttl.in" _manifest)
@@ -39,8 +52,8 @@ endif()
 if(EXISTS "${_nam_src}/resources/neural_amp_modeler.ttl.in")
     file(READ "${_nam_src}/resources/neural_amp_modeler.ttl.in" _nam_ttl)
     string(REPLACE "@NAM_LV2_ID@" "${_nam_lv2_id}" _nam_ttl "${_nam_ttl}")
-    string(REPLACE "@PROJECT_VERSION_MINOR@" "1" _nam_ttl "${_nam_ttl}")
-    string(REPLACE "@PROJECT_VERSION_PATCH@" "9" _nam_ttl "${_nam_ttl}")
+    string(REPLACE "@PROJECT_VERSION_MINOR@" "${_nam_ver_minor}" _nam_ttl "${_nam_ttl}")
+    string(REPLACE "@PROJECT_VERSION_PATCH@" "${_nam_ver_patch}" _nam_ttl "${_nam_ttl}")
     file(WRITE "${_nam_assets}/neural_amp_modeler.ttl" "${_nam_ttl}")
 endif()
 

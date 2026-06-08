@@ -103,6 +103,7 @@ import androidx.compose.ui.unit.sp
 import android.app.Activity
 import android.content.Intent
 import android.content.pm.ActivityInfo
+import android.provider.OpenableColumns
 import android.util.Log
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.shape.CircleShape
@@ -1327,8 +1328,13 @@ fun PluginCard(
                     val req = x11FileRequestPending ?: return@rememberLauncherForActivityResult
                     if (uri != null) {
                         scope.launch(Dispatchers.IO) {
-                            val fileName = uri.lastPathSegment?.substringAfterLast('/') ?: "model"
                             val pickerConfig = getX11FilePickerConfig(req.second)
+                            val fileName = resolvePickedFileName(
+                                context,
+                                uri,
+                                "model",
+                                pickerConfig.extensions + "zip"
+                            )
                             val storageDir = pickerConfig.storageDirs.first()
                             val destDir = java.io.File(context.filesDir, storageDir)
                             destDir.mkdirs()
@@ -2222,6 +2228,42 @@ private fun extractModelsFromZip(
     return extractedFiles.sortedBy { it.name.lowercase() }
 }
 
+private fun resolvePickedFileName(
+    context: android.content.Context,
+    uri: android.net.Uri,
+    fallbackName: String,
+    allowedExtensions: Set<String>
+): String {
+    val displayName = context.contentResolver.query(
+        uri,
+        arrayOf(OpenableColumns.DISPLAY_NAME),
+        null,
+        null,
+        null
+    )?.use { cursor ->
+        val nameIndex = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+        if (nameIndex >= 0 && cursor.moveToFirst()) cursor.getString(nameIndex) else null
+    }
+
+    val rawName = displayName
+        ?: uri.lastPathSegment?.substringAfterLast('/')
+        ?: fallbackName
+
+    val sanitized = rawName
+        .substringAfterLast('/')
+        .replace(Regex("[\\\\/:*?\"<>|]"), "_")
+        .trim()
+        .ifEmpty { fallbackName }
+
+    val extension = sanitized.substringAfterLast('.', "").lowercase()
+    if (extension.isNotEmpty() || allowedExtensions.isEmpty()) {
+        return sanitized
+    }
+
+    val fallbackExtension = allowedExtensions.firstOrNull { it != "zip" } ?: return sanitized
+    return "$sanitized.$fallbackExtension"
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun ModelPicker(
@@ -2256,7 +2298,12 @@ private fun ModelPicker(
     ) { uri ->
         if (uri == null) return@rememberLauncherForActivityResult
 
-        val fileName = uri.lastPathSegment?.substringAfterLast('/') ?: "model"
+        val fileName = resolvePickedFileName(
+            context,
+            uri,
+            "model",
+            config.extensions + "zip"
+        )
 
         if (fileName.lowercase().endsWith(".zip")) {
             isExtracting = true
