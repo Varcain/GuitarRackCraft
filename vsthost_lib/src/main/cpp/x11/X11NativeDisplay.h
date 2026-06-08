@@ -30,6 +30,7 @@
 #include <queue>
 #include <string>
 #include <thread>
+#include <vector>
 
 namespace guitarrackcraft {
 
@@ -120,6 +121,14 @@ public:
      *  attach as children of small parents). */
     void setPluginSize(int w, int h);
 
+    /** Read-only snapshot of the plugin's rendered framebuffer. Copies the
+     *  current pixels (32-bit, X11 wire order — treat as ARGB8888) into out
+     *  and sets w/h to the framebuffer dimensions. Thread-safe (locks the
+     *  bufferMutex). Returns false if the framebuffer is empty. Used by the
+     *  desktop test harness to mirror the plugin UI into an SDL window
+     *  without going through the EGL/GLES render path. */
+    bool snapshotFramebuffer(std::vector<uint32_t>& out, int& w, int& h);
+
     /** Lock/unlock the framebuffer size against auto slot-promotion.
      *  When frozen, CreateWindow/PutImage that would otherwise shrink
      *  the framebuffer to the new slot's bounds just record the slot
@@ -181,6 +190,10 @@ bool withDisplayGetPluginSize(int displayNumber, int& w, int& h);
 /** Returns true and fills w/h with the actually-rendered extent (0 each if no
  *  PutImage has landed yet). See X11NativeDisplay::getRenderedExtent. */
 bool withDisplayGetRenderedExtent(int displayNumber, int& w, int& h);
+/** Snapshot the display's framebuffer while holding the display map lock
+ *  (avoids TOCTOU use-after-free). See X11NativeDisplay::snapshotFramebuffer. */
+bool withDisplaySnapshotFramebuffer(int displayNumber, std::vector<uint32_t>& out,
+                                    int& w, int& h);
 /** Returns the UI scale factor for the given display (1.0 = no scaling). */
 float withDisplayGetUIScale(int displayNumber);
 /** Hit-test: returns true if (x, y) hits an X11 widget rather than plugin background. */

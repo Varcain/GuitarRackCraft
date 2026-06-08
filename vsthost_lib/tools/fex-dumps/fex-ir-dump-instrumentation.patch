@@ -1,0 +1,90 @@
+diff --git a/FEXCore/Source/Interface/Core/Core.cpp b/FEXCore/Source/Interface/Core/Core.cpp
+index 1840f1c77..4c0ae621b 100644
+--- a/FEXCore/Source/Interface/Core/Core.cpp
++++ b/FEXCore/Source/Interface/Core/Core.cpp
+@@ -814,6 +814,85 @@ ContextImpl::CompileCodeResult ContextImpl::CompileCode(FEXCore::Core::InternalT
+ 
+   auto CompiledCode = Thread->CPUBackend->CompileCode(GuestRIP, Length, TotalInstructions == 1, &*IRView, DebugData.get(), TFSet);
+ 
++  // ---- vstpoc diagnostic: dump optimized IR + generated host ARM64 for one
++  // signature-matched guest block. Env-gated by VSTPOC_SIGDUMP=1 (set via
++  // cache/wine_env.txt). The signature is blink::SelectionController::
++  // HandleMousePressEvent's prologue inside manually-mapped libcef.dll — the
++  // inlined click->selection chain that silently skips FrameSelection::SetSelection
++  // under FEX. Lets us inspect FEX's codegen for exactly that block.
++  {
++    // Re-entry guard: the File/IR ops below re-enter the JIT (wine compiles guest
++    // code along the file-API path), which recurses back into this same diagnostic
++    // → stack overflow → crash. Skip the diagnostic if we're already inside it.
++    static thread_local bool VstpocBusy = false;
++    if (!VstpocBusy) {
++      VstpocBusy = true;
++    static bool VstpocWrote = false;
++    if (!VstpocWrote) {
++      VstpocWrote = true;
++      // LogMan writes to the already-open stderr fd (host log) — no JIT re-entry,
++      // unlike File I/O (which compiles guest code along the file-API path).
++      LogMan::Msg::EFmt("VSTPOC_FIRSTCOMPILE rip=0x{:x}", GuestRIP);
++    }
++    static constexpr uint8_t Sig[24] = {
++      0x41, 0x57, 0x41, 0x56, 0x41, 0x55, 0x41, 0x54, 0x56, 0x57, 0x55, 0x53,
++      0x48, 0x81, 0xec, 0x88, 0x00, 0x00, 0x00, 0x48, 0x89, 0xd7, 0x49, 0x89,
++    };
++    // Guard: only read 24 bytes when the block's guest length covers them, so we
++    // never read past the decoded block into a possibly-unmapped next page
++    // (faulting inside the compiler crashes the whole process).
++    // Read 24 bytes only if they all lie within GuestRIP's 4K page (mapped — the
++    // decoder just read GuestRIP). Avoids faulting across into an unmapped next
++    // page (faulting inside the compiler crashes the process). Safe for 4K & 16K
++    // pages: a 4K-bounded read is within any >=4K mapped page.
++    const auto* GuestBytes = reinterpret_cast<const uint8_t*>(GuestRIP);
++    const uintptr_t Addr = reinterpret_cast<uintptr_t>(GuestBytes);
++    const bool InPage = ((Addr & 0xFFF) + 24) <= 0x1000;
++    bool Match = GuestBytes != nullptr && InPage;
++    for (int k = 0; Match && k < 24; ++k) {
++      if (GuestBytes[k] != Sig[k]) {
++        Match = false;
++      }
++    }
++    static bool VstpocDumped = false;
++    if (Match && !VstpocDumped) {
++      VstpocDumped = true;
++      uint8_t* HostBegin = CompiledCode.BlockBegin;
++      size_t HostSize = CompiledCode.Size;
++      LogMan::Msg::EFmt("VSTPOC_SIGMATCH rip=0x{:x} hostbase=0x{:x} hostsize={}", GuestRIP,
++                        reinterpret_cast<uint64_t>(HostBegin), HostSize);
++      // optimized IR, one log line per IR line
++      fextl::stringstream IROut;
++      FEXCore::IR::Dump(&IROut, &*IRView);
++      fextl::string IRStr = IROut.str();
++      int LineNo = 0;
++      size_t LineStart = 0;
++      for (size_t i = 0; i <= IRStr.size(); ++i) {
++        if (i == IRStr.size() || IRStr[i] == '\n') {
++          fextl::string Line = IRStr.substr(LineStart, i - LineStart);
++          LogMan::Msg::EFmt("VSTPOC_IR {} {}", LineNo++, Line.c_str());
++          LineStart = i + 1;
++        }
++      }
++      // generated host ARM64, raw hex, 32 bytes per log line
++      static const char HexCh[] = "0123456789abcdef";
++      for (size_t off = 0; off < HostSize; off += 32) {
++        char Buf[80];
++        int p = 0;
++        for (size_t j = off; j < off + 32 && j < HostSize; ++j) {
++          Buf[p++] = HexCh[HostBegin[j] >> 4];
++          Buf[p++] = HexCh[HostBegin[j] & 0xf];
++        }
++        Buf[p] = '\0';
++        LogMan::Msg::EFmt("VSTPOC_HEX {} {}", off, Buf);
++      }
++      LogMan::Msg::EFmt("VSTPOC_SIGEND rip=0x{:x}", GuestRIP);
++    }
++      VstpocBusy = false;
++    }
++  }
++  // ---- end vstpoc diagnostic ----
++
+   // Release the IR
+   Thread->OpDispatcher->DelayedDisownBuffer();
+ 
