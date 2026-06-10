@@ -209,10 +209,14 @@ class EditorSurfaceView(
                         NativeBridge.nativeInjectX11Touch(displayNumber, 1, e.x.toInt(), e.y.toInt())
                     } else if (e.actionMasked == MotionEvent.ACTION_UP) {
                         // Short tap — never sent the DOWN yet. Send press+release
-                        // back-to-back at the press location so JUCE sees a
-                        // single click (not a hover).
+                        // at the press location. Post the release one UI-loop
+                        // tick later so the X11 server can drain ButtonPress
+                        // separately; X50II's activation dialog stops producing
+                        // UI requests when DOWN+UP arrive in the same drain.
                         NativeBridge.nativeInjectX11Touch(displayNumber, 0, downX, downY)
-                        NativeBridge.nativeInjectX11Touch(displayNumber, 1, downX, downY)
+                        handler.post {
+                            NativeBridge.nativeInjectX11Touch(displayNumber, 1, downX, downY)
+                        }
                     }
                     leftButtonDownSent = false
                     rightClickConsumed = false

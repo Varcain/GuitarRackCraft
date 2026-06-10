@@ -1,0 +1,107 @@
+From: Kamil Lulko <limakzagan@gmail.com>
+Subject: win32u/server: honor explicit x11 mouse target for mapped popups
+
+X11 can deliver ButtonPress/ButtonRelease directly to a mapped override-redirect
+popup even when the corresponding Win32 window has not yet acquired WS_VISIBLE.
+JUCE activation/error popups in X50 hit that state: x11drv receives the click on
+the popup X window, but wineserver rejects the explicit hwnd as not visible and
+falls back to a desktop hit-test that still resolves to the main editor. The
+popup then never receives WM_LBUTTONDOWN/WM_LBUTTONUP.
+
+When x11drv supplies an explicit mouse target hwnd, keep that hwnd as the
+hardware message target unless it is transparent. In win32u, if normal hit-test
+rejects that explicit target, fall back to it when it belongs to the current
+thread and the physical point is inside its window rect. The behavior is enabled
+by default and can be disabled with WINE_VSTPOC_EXPLICIT_MOUSE_TARGET=0.
+
+diff --git a/dlls/win32u/message.c b/dlls/win32u/message.c
+index a0eb097896b..ae5d019b3c5 100644
+--- a/dlls/win32u/message.c
++++ b/dlls/win32u/message.c
+@@ -25,6 +25,7 @@
+ #endif
+ 
+ #include <assert.h>
++#include <stdlib.h>
+ #include "ntstatus.h"
+ #include "winternl.h"
+ #include "ddk/wdm.h"
+@@ -2581,6 +2582,34 @@ static WORD pointer_buttons_from_mouse_buttons( WORD mouse_flags )
+     return pointer_flags;
+ }
+ 
++static BOOL vstpoc_explicit_mouse_target(void)
++{
++    static BOOL checked, enabled;
++
++    if (!checked)
++    {
++        const char *env = getenv( "WINE_VSTPOC_EXPLICIT_MOUSE_TARGET" );
++        enabled = !env || !*env || atoi( env );
++        checked = TRUE;
++    }
++    return enabled;
++}
++
++static BOOL vstpoc_use_explicit_mouse_target( HWND hwnd, POINT pt, INT *hittest )
++{
++    RECT rect;
++
++    if (!vstpoc_explicit_mouse_target()) return FALSE;
++    if (!hwnd || !is_current_thread_window( hwnd )) return FALSE;
++    if (!get_window_rect( hwnd, &rect, get_thread_dpi() )) return FALSE;
++    if (pt.x < rect.left || pt.x >= rect.right || pt.y < rect.top || pt.y >= rect.bottom) return FALSE;
++
++    *hittest = HTCLIENT;
++    TRACE( "vstpoc explicit mouse target hwnd %p pt %s rect %s\n",
++           hwnd, wine_dbgstr_point( &pt ), wine_dbgstr_rect( &rect ) );
++    return TRUE;
++}
++
+ /***********************************************************************
+  *          process_mouse_message
+  *
+@@ -2614,6 +2643,9 @@ static BOOL process_mouse_message( MSG *msg, UINT hw_id, ULONG_PTR extra_info, H
+         HWND orig = msg->hwnd;
+ 
+         msg->hwnd = window_from_point( msg->hwnd, msg->pt, &hittest, TRUE );
++        if ((!msg->hwnd || !is_current_thread_window( msg->hwnd )) &&
++            vstpoc_use_explicit_mouse_target( orig, msg->pt, &hittest ))
++            msg->hwnd = orig;
+         if (!msg->hwnd) /* As a heuristic, try the next window if it's the owner of orig */
+         {
+             HWND next = get_window_relative( orig, GW_HWNDNEXT );
+diff --git a/server/queue.c b/server/queue.c
+index 389f4816969..d7f79ce3c30 100644
+--- a/server/queue.c
++++ b/server/queue.c
+@@ -1240,6 +1240,19 @@ static int vstpoc_input_before_user(void)
+     return enabled;
+ }
+ 
++static int vstpoc_explicit_mouse_target(void)
++{
++    static int checked, enabled;
++
++    if (!checked)
++    {
++        const char *env = getenv( "WINE_VSTPOC_EXPLICIT_MOUSE_TARGET" );
++        enabled = !env || !*env || atoi( env );
++        checked = 1;
++    }
++    return enabled;
++}
++
+ static user_handle_t find_hardware_message_window( struct desktop *desktop, struct thread_input *input,
+                                                    struct message *msg, unsigned int *msg_code,
+                                                    struct thread **thread );
+@@ -1945,7 +1958,8 @@ static user_handle_t find_hardware_message_window( struct desktop *desktop, stru
+     case QS_MOUSEBUTTON:
+         if (!input || !(win = input_shm->capture))
+         {
+-            if (is_window_visible( msg->win ) && !is_window_transparent( msg->win )) win = msg->win;
++            if (msg->win && vstpoc_explicit_mouse_target() && !is_window_transparent( msg->win )) win = msg->win;
++            else if (is_window_visible( msg->win ) && !is_window_transparent( msg->win )) win = msg->win;
+             else win = shallow_window_from_point( desktop, msg->x, msg->y );
+             *thread = window_thread_from_point( win, msg->x, msg->y );
+         }

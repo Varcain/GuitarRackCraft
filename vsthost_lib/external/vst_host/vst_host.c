@@ -252,6 +252,34 @@ static volatile LONG g_editor_open_done = 0;
  * have its own long-running message loop afterwards. */
 static volatile LONG g_editor_open_index = 0;
 
+/* vstpoc option-2 prototype (X50II WM_USER storm): VSTPOC_LOAD_ON_EDITOR_THREAD=1
+ * makes each per-plugin editor thread ALSO LoadLibrary + VSTPluginMain its
+ * plugin, instead of main() loading them all up front. JUCE binds its
+ * MessageManager to the thread that initialises it (inside VSTPluginMain) —
+ * with main-thread loading, every editor interaction (menus, shadows, async
+ * callbacks) becomes a cross-thread send between the editor thread (mouse,
+ * ShowWindow) and main (MessageManager, window ownership), which is the
+ * substrate of the X50II menu self-feed storm. Loading on the editor thread
+ * puts the MessageManager, the window ownership AND the message pump on ONE
+ * thread, like a normal single-threaded VST2 host. Audio processReplacing
+ * from main stays cross-thread — that's the standard host arrangement.
+ * Loads are still serialized (one thread at a time) because the
+ * VSTPluginMain crash-recovery jmp_buf is a single global.
+ * See memory feedback_x50_stomp_popup_grab_dismiss. */
+static int g_load_on_editor_thread = 0;
+static const char* g_paths[VSTHOST_MAX_PLUGINS];
+static volatile LONG g_load_result[VSTHOST_MAX_PLUGINS]; /* 0=pending 1=ok 2=failed */
+static volatile LONG g_editor_go = 0;  /* main: "editors may open now" */
+static char g_failure_msg[256];
+static int  g_failure_set = 0;
+#define RECORD_FAILURE(fmt, ...) do { \
+    if (!g_failure_set) { \
+        snprintf(g_failure_msg, sizeof(g_failure_msg), fmt, ##__VA_ARGS__); \
+        g_failure_set = 1; \
+    } \
+} while (0)
+static int load_one_plugin(int slot, const char* dll_path);
+
 /* Host-frame window procedure. Used ONLY when VSTPOC_HOST_FRAME=1 (the
  * PC launcher sets this; Android leaves it unset). In that mode each
  * plugin editor is reparented under a top-level frame window so wine's
@@ -333,7 +361,25 @@ static void ensure_host_frame_class_registered(void) {
 static DWORD WINAPI per_plugin_editor_thread(LPVOID arg) {
     int p = (int)(intptr_t)arg;
     if (p < 0 || p >= g_pluginCount) return 0;
+    if (g_load_on_editor_thread) {
+        /* Option-2 mode: load HERE so JUCE binds its MessageManager to THIS
+         * thread — the one that opens the editor and pumps its messages.
+         * main() waits on g_load_result before spawning the next loader
+         * (single global jmp_buf for VSTPluginMain crash recovery), then
+         * releases all editors at once via g_editor_go. */
+        int ok = load_one_plugin(p, g_paths[p]);
+        InterlockedExchange(&g_load_result[p], ok ? 1 : 2);
+        if (!ok || !g_plugins[p].eff) {
+            /* Bump the open-turn counter so later editors don't wait 60s
+             * for a plugin that never loaded. */
+            InterlockedExchange(&g_editor_open_index, p + 1);
+            return 0;
+        }
+        while (!g_editor_go && !(g_shm && g_shm->stop_flag)) Sleep(5);
+        if (g_shm && g_shm->stop_flag) return 0;
+    }
     AEffect* eff = g_plugins[p].eff;
+    if (!eff) return 0;
 
     if (!(eff->flags & effFlagsHasEditor)) {
         LOG("editor[%d]: plugin has no editor\n", p);
@@ -376,28 +422,50 @@ static DWORD WINAPI per_plugin_editor_thread(LPVOID arg) {
     HWND desktop = GetDesktopWindow();
     LOG("editor[%d]: post-GetDesktopWindow hwnd=%p\n", p, desktop);
 
-    /* Optionally wrap the editor in a top-level host frame so wine's X11
-     * driver gives it real window decorations (title bar + close/min/max).
-     * Off by default; the PC launcher (vstpoc_pc) sets VSTPOC_HOST_FRAME=1.
-     * Android keeps the desktop-parent behaviour so the editor renders
-     * straight into the embedded SurfaceView. */
+    /* Optionally wrap the editor in a top-level host frame so it becomes a
+     * WS_CHILD of a real top-level window instead of WS_CHILD-of-desktop.
+     *   VSTPOC_HOST_FRAME=1      -> PC: decorated frame (title bar + borders).
+     *   VSTPOC_HOST_FRAME=popup  -> Android: chromeless WS_POPUP frame, client
+     *     area == editor size (no non-client inflation), at (0,0). The editor
+     *     then activates natively (it is no longer a top-level WS_CHILD of the
+     *     desktop), so wine patches 0037-0040 become unnecessary, and the 1:1
+     *     surface/touch mapping in X11NativeDisplay is unchanged because the
+     *     frame is exactly the editor size.
+     * Off by default; the PC launcher (vstpoc_pc) sets =1. */
     HWND parent_hwnd = desktop;
     HWND frame_hwnd  = NULL;
     {
         const char* env = getenv("VSTPOC_HOST_FRAME");
         int use_frame   = (env && *env && *env != '0');
+        int popup_mode  = (env && strcmp(env, "popup") == 0);
         if (use_frame) {
             ensure_host_frame_class_registered();
-            /* AdjustWindowRect inflates a desired client rect (the plugin's
-             * effEditGetRect size) by the non-client area (borders + title
-             * bar) so the plugin's editor lands at (0,0) inside the
-             * client and isn't clipped or letterboxed. */
-            RECT cr = { 0, 0, w, h };
-            DWORD style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU
-                        | WS_MINIMIZEBOX | WS_MAXIMIZEBOX;
-            AdjustWindowRect(&cr, style, FALSE);
-            int frame_w = cr.right - cr.left;
-            int frame_h = cr.bottom - cr.top;
+            DWORD style;
+            int frame_w, frame_h, x, y;
+            if (popup_mode) {
+                /* Chromeless top-level window; client area == editor size. */
+                style   = WS_POPUP;
+                frame_w = w;
+                frame_h = h;
+                x = 0;
+                y = 0;
+            } else {
+                /* AdjustWindowRect inflates a desired client rect (the plugin's
+                 * effEditGetRect size) by the non-client area (borders + title
+                 * bar) so the editor lands at (0,0) inside the client and isn't
+                 * clipped or letterboxed. */
+                RECT cr = { 0, 0, w, h };
+                style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU
+                      | WS_MINIMIZEBOX | WS_MAXIMIZEBOX;
+                AdjustWindowRect(&cr, style, FALSE);
+                frame_w = cr.right - cr.left;
+                frame_h = cr.bottom - cr.top;
+                /* Cascade frames so multi-plugin chains don't stack at the same
+                 * point. CW_USEDEFAULT works on the first window; for subsequent
+                 * ones we offset by ~30 px per plugin. */
+                x = (p == 0) ? CW_USEDEFAULT : 60 + p * 30;
+                y = (p == 0) ? CW_USEDEFAULT : 60 + p * 30;
+            }
 
             char title[160];
             char eff_name[64] = {0};
@@ -408,12 +476,6 @@ static DWORD WINAPI per_plugin_editor_thread(LPVOID arg) {
                 snprintf(title, sizeof(title), "VST plugin %d — vst_host", p);
             }
 
-            /* Cascade frames so multi-plugin chains don't stack at the
-             * same point. CW_USEDEFAULT works on the first window; for
-             * subsequent ones we offset by ~30 px per plugin. */
-            int x = (p == 0) ? CW_USEDEFAULT : 60 + p * 30;
-            int y = (p == 0) ? CW_USEDEFAULT : 60 + p * 30;
-
             frame_hwnd = CreateWindowExA(
                 0, VSTPOC_HOST_FRAME_CLASS, title, style,
                 x, y, frame_w, frame_h,
@@ -422,8 +484,9 @@ static DWORD WINAPI per_plugin_editor_thread(LPVOID arg) {
                 ShowWindow(frame_hwnd, SW_SHOW);
                 UpdateWindow(frame_hwnd);
                 parent_hwnd = frame_hwnd;
-                LOG("editor[%d]: host frame hwnd=%p (%dx%d)\n",
-                    p, frame_hwnd, frame_w, frame_h);
+                LOG("editor[%d]: host frame hwnd=%p (%dx%d) %s\n",
+                    p, frame_hwnd, frame_w, frame_h,
+                    popup_mode ? "popup" : "decorated");
             } else {
                 LOG("editor[%d]: CreateWindowExA(host_frame) failed: %lu — "
                     "falling back to desktop parent\n",
@@ -564,6 +627,91 @@ static void publish_params(VstpocShared* shm, AEffect* eff) {
     __sync_synchronize();
 }
 
+/* Load one VST2 plugin DLL into g_plugins[slot]. Extracted from main()'s
+ * load loop so VSTPOC_LOAD_ON_EDITOR_THREAD can run it on the editor thread
+ * (JUCE MessageManager binding — see the option-2 comment at the globals).
+ * Returns 1 on success. Crash recovery relies on the single global
+ * g_pluginmain_jmp, so callers must not run two loads concurrently. */
+static int load_one_plugin(int slot, const char* dll_path) {
+    const int kSampleRate = 48000;
+    const int kBlockSize  = 512;
+
+    LOG("loading plugin[%d]: %s\n", slot, dll_path);
+
+    LOG("  pre-LoadLibraryA\n");
+    HMODULE plugin = LoadLibraryA(dll_path);
+    LOG("  post-LoadLibraryA plugin=%p\n", (void*)plugin);
+    if (!plugin) {
+        unsigned long e = (unsigned long)GetLastError();
+        LOG("  LoadLibraryA(%s) failed: %lu\n", dll_path, e);
+        switch (e) {
+            case 193:  /* ERROR_BAD_EXE_FORMAT */
+                RECORD_FAILURE("32-bit plugin — this build only supports 64-bit VSTs");
+                break;
+            case 126:  /* ERROR_MOD_NOT_FOUND */
+                RECORD_FAILURE("LoadLibrary failed — a dependency DLL is missing (see wine log)");
+                break;
+            default:
+                RECORD_FAILURE("LoadLibrary failed (err=%lu) — DLL or a dependency missing", e);
+                break;
+        }
+        return 0;
+    }
+
+    VstPluginMainFn entry = (VstPluginMainFn)GetProcAddress(plugin, "VSTPluginMain");
+    if (!entry) {
+        entry = (VstPluginMainFn)GetProcAddress(plugin, "main");
+    }
+    if (!entry) {
+        LOG("  VSTPluginMain not found in %s\n", dll_path);
+        RECORD_FAILURE("VSTPluginMain not found — file is not a VST2 plugin");
+        FreeLibrary(plugin);
+        return 0;
+    }
+
+    /* Wrap VSTPluginMain in SEH so a plugin-side access violation
+     * doesn't take down the whole vst_host process — see pluginmain_veh. */
+    LOG("  pre-VSTPluginMain entry=%p\n", (void*)entry);
+    AEffect* eff = NULL;
+    g_pluginmain_fault_code = 0;
+    g_pluginmain_fault_addr = 0;
+    if (setjmp(g_pluginmain_jmp) == 0) {
+        g_pluginmain_jmp_armed = 1;
+        eff = entry(host_callback);
+        g_pluginmain_jmp_armed = 0;
+    } else {
+        /* Returned via longjmp from pluginmain_veh — plugin crashed. */
+        LOG("  VSTPluginMain raised exception code=0x%08lx at %p (plugin init failed)\n",
+            g_pluginmain_fault_code, (void*)g_pluginmain_fault_addr);
+        RECORD_FAILURE("Plugin VSTPluginMain crashed (code 0x%08lx at %p) — missing dependency or unsupported Win32 API",
+                       g_pluginmain_fault_code, (void*)g_pluginmain_fault_addr);
+        /* Leak the module — half-initialised plugin state can make
+         * FreeLibrary crash. */
+        return 0;
+    }
+    LOG("  post-VSTPluginMain eff=%p magic=%08x\n",
+        (void*)eff, eff ? (unsigned)eff->magic : 0);
+    if (!eff || eff->magic != kEffectMagic) {
+        LOG("  VSTPluginMain returned invalid AEffect (magic=%08x)\n",
+            eff ? (unsigned)eff->magic : 0);
+        RECORD_FAILURE("Plugin init failed — VSTPluginMain returned null/invalid AEffect (check wine log for missing assemblies)");
+        FreeLibrary(plugin);
+        return 0;
+    }
+    LOG("  plugin[%d] loaded: numParams=%d numInputs=%d numOutputs=%d uniqueID=%08x\n",
+        slot, eff->numParams, eff->numInputs, eff->numOutputs, (unsigned)eff->uniqueID);
+
+    /* Standard VST2 init dance. */
+    eff->dispatcher(eff, /*effOpen=*/0, 0, 0, NULL, 0.0f);
+    eff->dispatcher(eff, /*effSetSampleRate=*/10, 0, 0, NULL, (float)kSampleRate);
+    eff->dispatcher(eff, /*effSetBlockSize=*/11, 0, kBlockSize, NULL, 0.0f);
+
+    g_plugins[slot].module = plugin;
+    g_plugins[slot].eff    = eff;
+    g_plugins[slot].path   = dll_path;
+    return 1;
+}
+
 int main(int argc, char** argv) {
     /* Declare the process as Per-Monitor V2 DPI-aware BEFORE creating any
      * window or loading any plugin. Otherwise wine's GDI virtualizes the
@@ -650,119 +798,66 @@ int main(int argc, char** argv) {
     write_status(shm, 0, NULL);
 
     /* Standard VST2 init params shared across all plugins. */
-    const int kSampleRate = 48000;
     const int kBlockSize  = 512;
 
-    /* Collect first-failure reason so we can surface it to the UI on the
-     * "no plugins loaded" path. Each plugin gets one slot. */
-    char failure_msg[256] = {0};
-    int  failure_set = 0;
-    #define RECORD_FAILURE(fmt, ...) do { \
-        if (!failure_set) { \
-            snprintf(failure_msg, sizeof(failure_msg), fmt, ##__VA_ARGS__); \
-            failure_set = 1; \
-        } \
-    } while (0)
+    {
+        const char* lt = getenv("VSTPOC_LOAD_ON_EDITOR_THREAD");
+        g_load_on_editor_thread = (lt && *lt && *lt != '0');
+    }
+    g_shm = shm;  /* editor threads poll stop_flag during option-2 load */
 
-    /* Load each plugin from argv. Skip plugins that fail to load — the
-     * chain just drops that one rather than aborting the whole host. */
-    for (int i = 0; i < numPlugins; i++) {
-        const char* dll_path = argv[2 + i];
-        LOG("loading plugin[%d]: %s\n", i, dll_path);
-
-        LOG("  pre-LoadLibraryA\n");
-        HMODULE plugin = LoadLibraryA(dll_path);
-        LOG("  post-LoadLibraryA plugin=%p\n", (void*)plugin);
-        if (!plugin) {
-            unsigned long e = (unsigned long)GetLastError();
-            LOG("  LoadLibraryA(%s) failed: %lu\n", dll_path, e);
-            switch (e) {
-                case 193:  /* ERROR_BAD_EXE_FORMAT */
-                    RECORD_FAILURE("32-bit plugin — this build only supports 64-bit VSTs");
-                    break;
-                case 126:  /* ERROR_MOD_NOT_FOUND */
-                    RECORD_FAILURE("LoadLibrary failed — a dependency DLL is missing (see wine log)");
-                    break;
-                default:
-                    RECORD_FAILURE("LoadLibrary failed (err=%lu) — DLL or a dependency missing", e);
-                    break;
+    if (!g_load_on_editor_thread) {
+        /* Default: load each plugin from argv on the main thread, compacting
+         * successes into g_plugins[0..count). Skip plugins that fail — the
+         * chain just drops that one rather than aborting the whole host. */
+        for (int i = 0; i < numPlugins; i++) {
+            if (load_one_plugin(g_pluginCount, argv[2 + i])) g_pluginCount++;
+        }
+    } else {
+        /* Option-2 mode: fixed argv slots; each editor thread loads its own
+         * plugin (JUCE MessageManager binding — see globals comment). Loads
+         * are serialized: spawn, wait for the result, then spawn the next
+         * (the VSTPluginMain crash-recovery jmp_buf is a single global).
+         * Failed slots keep eff==NULL; every consumer below skips them. */
+        LOG("VSTPOC_LOAD_ON_EDITOR_THREAD=1: loading plugins on editor threads\n");
+        g_pluginCount = numPlugins;
+        for (int i = 0; i < numPlugins; i++) {
+            g_paths[i] = argv[2 + i];
+            HANDLE th = CreateThread(NULL, 8 * 1024 * 1024,
+                                     per_plugin_editor_thread,
+                                     (LPVOID)(intptr_t)i,
+                                     STACK_SIZE_PARAM_IS_A_RESERVATION, NULL);
+            if (!th) {
+                LOG("editor[%d] CreateThread failed: %lu\n",
+                    i, (unsigned long)GetLastError());
+                InterlockedExchange(&g_load_result[i], 2);
+                continue;
             }
-            continue;
+            CloseHandle(th);
+            LOG("editor[%d] loader thread spawned\n", i);
+            while (g_load_result[i] == 0) Sleep(5);
         }
-
-        VstPluginMainFn entry = (VstPluginMainFn)GetProcAddress(plugin, "VSTPluginMain");
-        if (!entry) {
-            entry = (VstPluginMainFn)GetProcAddress(plugin, "main");
-        }
-        if (!entry) {
-            LOG("  VSTPluginMain not found in %s\n", dll_path);
-            RECORD_FAILURE("VSTPluginMain not found — file is not a VST2 plugin");
-            FreeLibrary(plugin);
-            continue;
-        }
-
-        /* Wrap VSTPluginMain in SEH so a plugin-side access violation
-         * doesn't take down the whole vst_host process. Without this,
-         * a faulty plugin (observed with "5150 (64).dll") NULL-derefs
-         * mid-init and vst_host turns into a zombie before printing
-         * anything diagnostic — the host then can't tell the user
-         * "this plugin crashed", it just looks like vst_host hung.
-         * On exception we record the fault address + code and skip
-         * the plugin. */
-        LOG("  pre-VSTPluginMain entry=%p\n", (void*)entry);
-        AEffect* eff = NULL;
-        g_pluginmain_fault_code = 0;
-        g_pluginmain_fault_addr = 0;
-        if (setjmp(g_pluginmain_jmp) == 0) {
-            g_pluginmain_jmp_armed = 1;
-            eff = entry(host_callback);
-            g_pluginmain_jmp_armed = 0;
-        } else {
-            /* Returned via longjmp from pluginmain_veh — plugin crashed. */
-            LOG("  VSTPluginMain raised exception code=0x%08lx at %p (plugin init failed)\n",
-                g_pluginmain_fault_code, (void*)g_pluginmain_fault_addr);
-            RECORD_FAILURE("Plugin VSTPluginMain crashed (code 0x%08lx at %p) — missing dependency or unsupported Win32 API",
-                           g_pluginmain_fault_code, (void*)g_pluginmain_fault_addr);
-            /* Leak the module — half-initialised plugin state can make
-             * FreeLibrary crash. */
-            continue;
-        }
-        LOG("  post-VSTPluginMain eff=%p magic=%08x\n",
-            (void*)eff, eff ? (unsigned)eff->magic : 0);
-        if (!eff || eff->magic != kEffectMagic) {
-            LOG("  VSTPluginMain returned invalid AEffect (magic=%08x)\n",
-                eff ? (unsigned)eff->magic : 0);
-            RECORD_FAILURE("Plugin init failed — VSTPluginMain returned null/invalid AEffect (check wine log for missing assemblies)");
-            FreeLibrary(plugin);
-            continue;
-        }
-        LOG("  plugin[%d] loaded: numParams=%d numInputs=%d numOutputs=%d uniqueID=%08x\n",
-            i, eff->numParams, eff->numInputs, eff->numOutputs, (unsigned)eff->uniqueID);
-
-        /* Standard VST2 init dance. */
-        eff->dispatcher(eff, /*effOpen=*/0, 0, 0, NULL, 0.0f);
-        eff->dispatcher(eff, /*effSetSampleRate=*/10, 0, 0, NULL, (float)kSampleRate);
-        eff->dispatcher(eff, /*effSetBlockSize=*/11, 0, kBlockSize, NULL, 0.0f);
-
-        g_plugins[g_pluginCount].module = plugin;
-        g_plugins[g_pluginCount].eff    = eff;
-        g_plugins[g_pluginCount].path   = dll_path;
-        g_pluginCount++;
     }
 
-    if (g_pluginCount == 0) {
+    int loadedCount = 0;
+    for (int i = 0; i < g_pluginCount; i++) if (g_plugins[i].eff) loadedCount++;
+    if (loadedCount == 0) {
         LOG("no plugins loaded; aborting\n");
         write_status(shm, 2,
-            failure_set ? failure_msg
-                        : "No plugins loaded (no specific error captured)");
+            g_failure_set ? g_failure_msg
+                          : "No plugins loaded (no specific error captured)");
         return 7;
     }
-    LOG("loaded %d/%d plugins; chaining DSP in argv order\n", g_pluginCount, numPlugins);
+    LOG("loaded %d/%d plugins; chaining DSP in argv order\n", loadedCount, numPlugins);
 
     /* The "front" plugin is the one whose editor + params we expose to
      * Android in this commit. Later commits will extend the param ring
-     * to address all plugins. */
-    AEffect* eff = g_plugins[0].eff;
+     * to address all plugins. (First LOADED slot — option-2 mode can leave
+     * NULL holes for failed plugins.) */
+    AEffect* eff = NULL;
+    for (int i = 0; i < g_pluginCount; i++) {
+        if (g_plugins[i].eff) { eff = g_plugins[i].eff; break; }
+    }
 
     /* Probe: does this plugin advertise an editor? Don't call effEditGetRect
      * here — JUCE-based plugins bind their MessageManager to the FIRST
@@ -778,6 +873,7 @@ int main(int argc, char** argv) {
     /* effMainsChanged(1) + effStartProcess for ALL plugins in the chain. */
     for (int i = 0; i < g_pluginCount; i++) {
         AEffect* e = g_plugins[i].eff;
+        if (!e) continue;
         e->dispatcher(e, /*effMainsChanged=*/12, 0, 1, NULL, 0.0f);
         e->dispatcher(e, /*effStartProcess=*/71, 0, 0, NULL, 0.0f);
     }
@@ -807,23 +903,29 @@ int main(int argc, char** argv) {
      * stall the others. */
     g_shm = shm;
     g_eff = eff;
-    for (int p = 0; p < g_pluginCount; p++) {
-        /* JUCE-based plugins (BOD, etc) blow past the default ~1MB stack
-         * during effEditOpen — observed 1856-byte overflow inside the
-         * editor thread. Reserve 8 MB to be comfortably above the 2-4 MB
-         * a typical JUCE editor uses. */
-        HANDLE th = CreateThread(NULL, 8 * 1024 * 1024,
-                                 per_plugin_editor_thread,
-                                 (LPVOID)(intptr_t)p,
-                                 STACK_SIZE_PARAM_IS_A_RESERVATION, NULL);
-        if (th) {
-            CloseHandle(th);
-            LOG("editor[%d] thread spawned\n", p);
-        } else {
-            LOG("editor[%d] CreateThread failed: %lu\n",
-                p, (unsigned long)GetLastError());
+    if (!g_load_on_editor_thread) {
+        for (int p = 0; p < g_pluginCount; p++) {
+            if (!g_plugins[p].eff) continue;
+            /* JUCE-based plugins (BOD, etc) blow past the default ~1MB stack
+             * during effEditOpen — observed 1856-byte overflow inside the
+             * editor thread. Reserve 8 MB to be comfortably above the 2-4 MB
+             * a typical JUCE editor uses. */
+            HANDLE th = CreateThread(NULL, 8 * 1024 * 1024,
+                                     per_plugin_editor_thread,
+                                     (LPVOID)(intptr_t)p,
+                                     STACK_SIZE_PARAM_IS_A_RESERVATION, NULL);
+            if (th) {
+                CloseHandle(th);
+                LOG("editor[%d] thread spawned\n", p);
+            } else {
+                LOG("editor[%d] CreateThread failed: %lu\n",
+                    p, (unsigned long)GetLastError());
+            }
         }
     }
+    /* Option-2 mode: the loader/editor threads are already running and parked
+     * on this flag; release them now that params/status are published. */
+    InterlockedExchange(&g_editor_go, 1);
 
     /* Audio buffers. Plugin gets de-interleaved float**; ring is interleaved
      * stereo. Use kBlockSize-sized chunks. */
@@ -892,6 +994,7 @@ int main(int argc, char** argv) {
             float* cur_out[2] = { w_out[0], w_out[1] };
             for (int p = 0; p < g_pluginCount; p++) {
                 AEffect* pe = g_plugins[p].eff;
+                if (!pe) continue;
                 pe->processReplacing(pe, cur_in, cur_out, kBlockSize);
                 float* tmp;
                 tmp = cur_in[0]; cur_in[0] = cur_out[0]; cur_out[0] = tmp;
@@ -975,6 +1078,7 @@ int main(int argc, char** argv) {
             float* cur_out[2] = { out_l, out_r };
             for (int p = 0; p < g_pluginCount; p++) {
                 AEffect* pe = g_plugins[p].eff;
+                if (!pe) continue;
                 pe->processReplacing(pe, cur_in, cur_out, kBlockSize);
                 /* Swap: this plugin's output becomes next plugin's input. */
                 float* tmp;
@@ -1015,6 +1119,7 @@ teardown:
     /* Tear down each plugin in reverse order. */
     for (int i = g_pluginCount - 1; i >= 0; i--) {
         AEffect* e = g_plugins[i].eff;
+        if (!e) continue;
         e->dispatcher(e, /*effStopProcess=*/72, 0, 0, NULL, 0.0f);
         e->dispatcher(e, /*effMainsChanged=*/12, 0, 0, NULL, 0.0f);
         e->dispatcher(e, /*effClose=*/1, 0, 0, NULL, 0.0f);

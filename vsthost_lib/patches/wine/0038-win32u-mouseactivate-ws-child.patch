@@ -1,13 +1,27 @@
 From: Kamil Lulko <limakzagan@gmail.com>
-Subject: win32u: WM_MOUSEACTIVATE handshake for top-level WS_CHILD
+Subject: win32u: WM_MOUSEACTIVATE for top-level WS_CHILD, no synthesized WM_SETFOCUS
 
-Re-port of vstpoc patch 014. Fire WM_MOUSEACTIVATE on every click for a top-level WS_CHILD editor and send WM_SETFOCUS directly (skip set_foreground_window, which would WM_KILLFOCUS the editor) so JUCE finishes its deferred-focus handshake and the TextEditor caret shows.
+Fire WM_MOUSEACTIVATE on every click for a top-level WS_CHILD editor so JUCE
+finishes its deferred-focus handshake. Folds in the re-port of held patch 021:
+do NOT synthesize WM_SETFOCUS for top_level_child windows. The original 014
+port synthesized it, but on a cross-thread JUCE 7 popup (X50II activation form,
+TH-U rig dialog) that re-entered handleFocusGain -> bringModalComponentsToFront
+-> cross-thread SetWindowPos and HARD-DEADLOCKED the plugin (audio included).
+Real Windows does not send WM_SETFOCUS for child-window clicks unless focus
+changes; JUCE manages popup focus internally and the click still delivers.
+Reconciled with the popup host-frame migration: the main VST2 editor is now
+WS_CHILD of a WS_POPUP frame (not the desktop), so it is NOT top_level_child.
+For that shape, compare the root frame with the active root frame before
+activating. X50's activation form paints inside child controls of the popup
+host frame; repeatedly re-activating the already-active frame on child clicks
+starts a JUCE async-message storm and prevents the matching button-up from
+being dispatched.
 
 diff --git a/dlls/win32u/message.c b/dlls/win32u/message.c
-index a0eb097896b..e2d72e98df2 100644
+index a0eb097896b..db2d844a582 100644
 --- a/dlls/win32u/message.c
 +++ b/dlls/win32u/message.c
-@@ -2806,11 +2806,25 @@ static BOOL process_mouse_message( MSG *msg, UINT hw_id, ULONG_PTR extra_info, H
+@@ -2806,11 +2806,28 @@ static BOOL process_mouse_message( MSG *msg, UINT hw_id, ULONG_PTR extra_info, H
  
          /* Activate the window if needed */
  
@@ -18,37 +32,52 @@ index a0eb097896b..e2d72e98df2 100644
 -            if ((get_window_long( hwndTop, GWL_STYLE ) & (WS_POPUP|WS_CHILD)) != WS_CHILD)
 +            DWORD top_style = get_window_long( hwndTop, GWL_STYLE );
 +            BOOL top_level_child = FALSE;
++            BOOL active_root = (hwndTop == info.hwndActive);
 +            if ((top_style & (WS_POPUP|WS_CHILD)) == WS_CHILD)
 +            {
 +                HWND root_parent = NtUserGetAncestor( hwndTop, GA_PARENT );
 +                if (!root_parent || root_parent == get_desktop_window())
 +                    top_level_child = TRUE;
 +            }
-+            /* vstpoc patch 014-win32u-mouseactivate-ws-child (11.9 port):
++            if (!active_root && info.hwndActive)
++                active_root = (hwndTop == NtUserGetAncestor( info.hwndActive, GA_ROOT ));
++            /* vstpoc patch 0038 (014-win32u-mouseactivate-ws-child, 11.9 port):
 +             * allow WM_MOUSEACTIVATE for top-level WS_CHILD (VST plugin editors
-+             * with desktop as parent), AND fire it on EVERY click even when the
-+             * editor is already active. JUCE's WM_SETFOCUS handler defers
-+             * handleSetFocus until WM_MOUSEACTIVATE arrives — without re-sending
-+             * it on every mouseDown JUCE never finishes its focus handshake and
-+             * the TextEditor caret never shows. */
-+            if ((msg->hwnd != info.hwndActive || top_level_child) &&
++             * with desktop as parent), AND keep firing it for that legacy
++             * editor shape even when already active. For popup-framed editors,
++             * compare the root frame instead of the child hit target; otherwise
++             * a child click re-activates an already-active frame and can start a
++             * JUCE async-message storm before the matching button-up is drained. */
++            if ((!active_root || top_level_child) &&
 +                ((top_style & (WS_POPUP|WS_CHILD)) != WS_CHILD || top_level_child))
              {
                  UINT ret = send_message( msg->hwnd, WM_MOUSEACTIVATE, (WPARAM)hwndTop,
                                           MAKELONG( hittest, msg->message ) );
-@@ -2826,7 +2840,15 @@ static BOOL process_mouse_message( MSG *msg, UINT hw_id, ULONG_PTR extra_info, H
+@@ -2826,7 +2843,27 @@ static BOOL process_mouse_message( MSG *msg, UINT hw_id, ULONG_PTR extra_info, H
                      /* fall through */
                  case MA_ACTIVATE:
                  case 0:
 -                    if (!set_foreground_window( hwndTop, TRUE, FALSE )) eat_msg = TRUE;
-+                    /* For top-level WS_CHILD windows, skip set_foreground_window
-+                     * — it sends WM_KILLFOCUS to the editor which clears JUCE's
-+                     * mouseActivateFlags (the gotMouseActivate bit just set).
-+                     * Instead directly send WM_SETFOCUS to satisfy JUCE's
-+                     * deferred-focus check on the upcoming WM_LBUTTONDOWN. */
-+                    if (top_level_child)
-+                        send_message( hwndTop, WM_SETFOCUS, 0, 0 );
-+                    else if (!set_foreground_window( hwndTop, TRUE, FALSE ))
++                    /* vstpoc patch 0038 + re-port of held patch 021
++                     * (no-WM_SETFOCUS-for-popups): for a top-level WS_CHILD we
++                     * do NOTHING here — neither set_foreground_window (it would
++                     * WM_KILLFOCUS the editor) NOR a synthesized WM_SETFOCUS.
++                     * The original 014 port synthesized WM_SETFOCUS to drive
++                     * JUCE's deferred-focus handshake, but on a cross-thread
++                     * JUCE 7 popup (X50II activation form, TH-U rig dialog) that
++                     * re-entered handleFocusGain → bringModalComponentsToFront →
++                     * cross-thread SetWindowPos and HARD DEADLOCKED the plugin
++                     * (audio included). Real Windows does not send WM_SETFOCUS
++                     * for child-window clicks unless focus actually changes;
++                     * JUCE manages popup focus internally
++                     * (Component::currentlyFocusedComponent). The click
++                     * (WM_LBUTTONDOWN) still delivers, so the popup responds.
++                     * Reconciled with the popup host-frame migration: the main
++                     * VST2 editor is now WS_CHILD of a WS_POPUP frame (not the
++                     * desktop), so it is NOT top_level_child and takes the
++                     * normal set_foreground_window path below — its caret no
++                     * longer depends on the synthesized message. */
++                    if (!top_level_child && !set_foreground_window( hwndTop, TRUE, FALSE ))
 +                        eat_msg = TRUE;
                      break;
                  default:

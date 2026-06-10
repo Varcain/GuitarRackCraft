@@ -51,13 +51,19 @@ fi
 echo "[+] applying ${#patches[@]} patch(es) to wine"
 for p in "${patches[@]}"; do
     name="$(basename "$p")"
-    if ! git -C "$WINE_DIR" apply --check "$p" 2>/dev/null; then
-        echo "  ! $name — does not apply cleanly to current wine HEAD"
+    if git -C "$WINE_DIR" apply --check "$p" 2>/dev/null; then
+        git -C "$WINE_DIR" apply "$p"
+        echo "  ✓ $name"
+    else
+        # Strict, exact-context apply. If a patch is rejected, it is stale
+        # (diffed against a different base) — DON'T fuzz it in silently; that
+        # hides drift and ships subtly-wrong hunks. Re-export it against the
+        # current tree (apply the prior patches, hand-resolve, `git diff`) so a
+        # future git apply is exact. See feedback_wine_patch_repack_traps.
+        echo "  ! $name — does not apply cleanly (stale base — re-export it)"
         echo "    inspect with: git -C $WINE_DIR apply --3way $p"
         exit 1
     fi
-    git -C "$WINE_DIR" apply "$p"
-    echo "  ✓ $name"
 done
 
 echo "[=] all patches applied to wine"

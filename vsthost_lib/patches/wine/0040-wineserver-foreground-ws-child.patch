@@ -1,27 +1,29 @@
 From: Kamil Lulko <limakzagan@gmail.com>
 Subject: wineserver: allow top-level WS_CHILD window to become foreground
 
-Re-port of vstpoc patch 012. make_window_foreground rejects ALL WS_CHILD outright, so the editor's foreground is never set and INPUT_KEYBOARD is dropped. Allow when the parent is the desktop top_window. THE decisive gate — verified fg/focus/active flip to the editor after this.
+make_window_foreground rejects ALL WS_CHILD outright, so the editor's
+foreground is never set and INPUT_KEYBOARD is dropped. Allow when the parent
+is the desktop top_window; a real child is still refused. THE decisive gate —
+fg/focus/active flip to the editor after this.
 
 diff --git a/server/window.c b/server/window.c
-index f222b5c2a59..9c64acf3c6e 100644
+index f222b5c2a59..5c5e9dbbca3 100644
 --- a/server/window.c
 +++ b/server/window.c
-@@ -798,7 +798,19 @@ struct thread *make_window_foreground( struct desktop *desktop, user_handle_t wi
+@@ -798,7 +798,18 @@ struct thread *make_window_foreground( struct desktop *desktop, user_handle_t wi
      struct window *win = get_user_object( window, NTUSER_OBJ_WINDOW );
  
      if (!win || !win->thread || win->desktop != desktop) return NULL;
 -    if ((win->style & (WS_POPUP | WS_CHILD)) == WS_CHILD) return NULL;
 +    if ((win->style & (WS_POPUP | WS_CHILD)) == WS_CHILD)
 +    {
-+        /* vstpoc patch 012-wineserver-foreground-ws-child (11.9 port): allow a
++        /* vstpoc patch 0040 (012-wineserver-foreground-ws-child): allow a
 +         * TOP-LEVEL WS_CHILD window (VST plugin editor — vst_host effEditOpen
 +         * passes the desktop as the parent HWND, the plugin then makes its
-+         * editor WS_CHILD) to become the foreground window. Upstream rejects
-+         * ALL WS_CHILD here, so the editor's foreground is never set, wine
-+         * drops INPUT_KEYBOARD, and typed characters never reach the editor
-+         * (X50II activation form, etc.). A real child (parent is another
-+         * window, not the desktop) is still refused. */
++         * editor WS_CHILD) to become the foreground window. Upstream rejects ALL
++         * WS_CHILD here, so the editor's foreground is never set, wine drops
++         * INPUT_KEYBOARD, and typed characters never reach the editor. A real
++         * child (parent is another window, not the desktop) is still refused. */
 +        if (win->parent && win->parent != win->desktop->top_window)
 +            return NULL;
 +    }

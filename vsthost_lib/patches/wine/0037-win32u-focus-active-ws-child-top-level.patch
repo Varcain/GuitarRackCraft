@@ -1,10 +1,17 @@
 From: Kamil Lulko <limakzagan@gmail.com>
 Subject: win32u: allow top-level WS_CHILD editor to take focus + become active
 
-VST plugin editors are WS_CHILD windows parented to the desktop (vst_host effEditOpen passes GetDesktopWindow()). Upstream NtUserSetFocus + NtUserSetActiveWindow refuse all WS_CHILD, so the plugin's SetFocus/grabKeyboardFocus gets 0/active-unchanged, foreground stays NULL, INPUT_KEYBOARD is dropped and typed chars never reach the editor (X50II activation form). Allow when the parent is the desktop. Re-port of vstpoc patches 013 + (active half).
+VST plugin editors are WS_CHILD windows parented to the desktop (vst_host
+effEditOpen passes GetDesktopWindow()). Upstream NtUserSetActiveWindow +
+NtUserSetFocus refuse ALL WS_CHILD, so a desktop-parented editor never becomes
+active/focused, foreground stays NULL, INPUT_KEYBOARD is dropped and typed
+chars are lost (X50II activation form). Allow it when the parent is the
+desktop; a real child (parent is another window) is still refused. The
+cross-thread NtUserSetFocus input-attach (old patch 015) now lives in patch
+0017, so this patch carries ONLY the two WS_CHILD gating relaxations.
 
 diff --git a/dlls/win32u/input.c b/dlls/win32u/input.c
-index a8055a9bb5d..f6b40050fb6 100644
+index c328a37d395..5ffcb370d69 100644
 --- a/dlls/win32u/input.c
 +++ b/dlls/win32u/input.c
 @@ -2124,7 +2124,17 @@ HWND WINAPI NtUserSetActiveWindow( HWND hwnd )
@@ -13,12 +20,12 @@ index a8055a9bb5d..f6b40050fb6 100644
          if ((style & (WS_POPUP|WS_CHILD)) == WS_CHILD)
 -            return get_active_window();  /* Windows doesn't seem to return an error here */
 +        {
-+            /* vstpoc patch (mirror of 013): allow a TOP-LEVEL WS_CHILD window
-+             * (VST plugin editor with the desktop as parent) to become the
-+             * active window. Upstream returns early for ALL WS_CHILD, so the
-+             * editor never becomes active → wine's foreground stays NULL →
-+             * INPUT_KEYBOARD is dropped and typed characters are lost. A real
-+             * child (parent is another window) is still refused. */
++            /* vstpoc patch 0037 (mirror of 013): allow a TOP-LEVEL WS_CHILD
++             * window (VST plugin editor with the desktop as parent) to become
++             * the active window. Upstream returns early for ALL WS_CHILD, so a
++             * desktop-parented editor never becomes active → wine's foreground
++             * stays NULL → INPUT_KEYBOARD is dropped and typed characters are
++             * lost. A real child (parent is another window) is still refused. */
 +            HWND parent = NtUserGetAncestor( hwnd, GA_PARENT );
 +            if (parent && parent != get_desktop_window())
 +                return get_active_window();  /* Windows doesn't seem to return an error here */
@@ -26,47 +33,18 @@ index a8055a9bb5d..f6b40050fb6 100644
      }
  
      if (!set_active_window( hwnd, &prev, FALSE, TRUE, 0 )) return 0;
-@@ -2138,9 +2148,27 @@ HWND WINAPI NtUserSetFocus( HWND hwnd )
- {
-     HWND hwndTop = hwnd, active;
-     HWND previous = get_focus();
-+    DWORD win_tid = 0, win_pid = 0, my_tid;
- 
-     TRACE( "%p prev %p\n", hwnd, previous );
- 
-+    /* vstpoc patch (015-win32u-cross-thread-attach), ported to 11.9:
-+     * JUCE plugins route SetFocus to the MessageManager thread, but the
-+     * target window may be owned by a different thread in the same process
-+     * (e.g. a JUCE activation popup on a worker thread). Wine's
-+     * check_queue_input_window rejects the wineserver set_active_window
-+     * with ACCESS_DENIED in that case, NtUserSetFocus returns 0, and the
-+     * editor's caret/focus never appears. Real Windows handles this via
-+     * attached thread inputs — replicate: if the target window's owning
-+     * thread != current thread but same process, attach their inputs. */
-+    if (hwnd)
-+    {
-+        win_tid = get_window_thread( hwnd, &win_pid );
-+        my_tid  = GetCurrentThreadId();
-+        if (win_tid && win_pid == GetCurrentProcessId() && win_tid != my_tid)
-+            NtUserAttachThreadInput( my_tid, win_tid, TRUE );
-+    }
-+
-     if (hwnd)
-     {
-         /* Check if we can set the focus to this window */
-@@ -2160,7 +2188,14 @@ HWND WINAPI NtUserSetFocus( HWND hwnd )
+@@ -2178,7 +2188,13 @@ HWND WINAPI NtUserSetFocus( HWND hwnd )
              parent = NtUserGetAncestor( hwndTop, GA_PARENT );
              if (!parent || parent == get_desktop_window())
              {
 -                if ((style & (WS_POPUP|WS_CHILD)) == WS_CHILD) return 0;
-+                /* vstpoc patch 013-win32u-focus-ws-child-top-level (ported
-+                 * to 11.9): upstream returns 0 here, refusing to focus a
-+                 * top-level WS_CHILD window whose parent is the desktop. VST
-+                 * plugin editors hit this (vst_host effEditOpen with
-+                 * GetDesktopWindow() as parent → plugin makes its editor
-+                 * WS_CHILD). The plugin's SetFocus / grabKeyboardFocus gets 0
-+                 * back and never commits internal focus → typed WM_CHAR is
-+                 * dropped. Allow it: break out and let set_focus_window run. */
++                /* vstpoc patch 0037 (013-focus-ws-child-top-level): upstream
++                 * returns 0 here, refusing to focus a top-level WS_CHILD window
++                 * whose parent is the desktop. VST plugin editors hit this
++                 * (vst_host effEditOpen with GetDesktopWindow() as parent → the
++                 * plugin makes its editor WS_CHILD). The plugin's SetFocus /
++                 * grabKeyboardFocus gets 0 back and never commits internal focus
++                 * → typed WM_CHAR is dropped. Allow it: fall through to break. */
                  break;
              }
              if (parent == get_hwnd_message_parent()) return 0;

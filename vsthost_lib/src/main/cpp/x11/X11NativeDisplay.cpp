@@ -227,6 +227,27 @@ struct X11NativeDisplay::Impl {
         std::vector<uint32_t> pixels;  // BGRA, packed w * h
     };
     std::unordered_map<uint32_t, PopupOverlay> popupOverlays;
+
+    /* A JUCE menu / combo dropdown is rendered by wine as a real body window
+     * (both dimensions comfortably > 32px) PLUS up to four thin drop-shadow
+     * decoration strips around it (one dimension ~12-15px, the other the full
+     * body length — e.g. 12x332 sides, 304x12 top/bottom). Wine PutImages the
+     * shadow gradient into those strips so hasContent is true, but compositing
+     * them paints a black/white band around the real menu (the "white area
+     * around popups" symptom). A genuine popup body is never this thin in
+     * EITHER dimension, so treat any overlay with a sub-32px dimension as a
+     * shadow strip and skip it for BOTH rendering and hit-testing (the two must
+     * agree or clicks land on an invisible strip). This restores the proven
+     * pre-2026-06-09 filter; see feedback_popup_overlay_has_content and
+     * feedback_x50_stomp_popup_grab_dismiss. A real popup must also have been
+     * PutImage'd (hasContent) — an unpainted overlay is invisible, so a click
+     * on it is meaningless and would otherwise route to wine's internal
+     * never-displayed helper windows (e.g. the 166x45 IME helper at 0,0). */
+    static constexpr int kMinPopupDim = 32;
+    static bool isRenderablePopup(const PopupOverlay& p) {
+        return p.mapped && p.hasContent &&
+               p.w >= kMinPopupDim && p.h >= kMinPopupDim;
+    }
     // Mirror used by renderLoop while it holds bufferMutex (we snapshot
     // mapped popups into this list under the lock, then composite outside).
     struct PopupSnapshot {
@@ -381,7 +402,7 @@ struct X11NativeDisplay::Impl {
      *   0x2  skip synthetic FocusOut/FocusIn in click-to-focus
      *   0x4  skip FocusOut/FocusIn echo in SetInputFocus (case 42)
      *   0x8  GetInputFocus returns PointerRoot instead of focusedWindowId
-     *   0x10 click-to-focus never targets the desktop (skip when bestKeyTarget==0)
+     *   0x10 legacy only: click-to-focus skips bestKeyTarget==0 by default now
      *   0x20 skip click-to-focus entirely (no focus events on click at all)
      *   0x40 send a hover MotionNotify to the hit window BEFORE the ButtonPress
      *   0x80 send an EnterNotify to the hit window BEFORE the ButtonPress */
@@ -594,16 +615,9 @@ struct X11NativeDisplay::Impl {
                  * order (oldest first); we iterate it and pick up only
                  * popup-tagged wids that are currently mapped.
                  *
-                 * Filter out "menu shadow" decoration windows: wine x11drv
-                 * creates 5 wids per popup — 1 body (e.g. 137×270) plus 4
-                 * thin shadow strips (12×294 sides, 137×12 top/bottom).
-                 * Wine only PutImages corner icons into the shadows, so they
-                 * compose as black rectangles around the actual menu — the
-                 * "black box around the selection box" symptom. Real popup
-                 * bodies have both dimensions ≥ 32; anything thinner is a
-                 * shadow strip. Skip those entirely so only the body
-                 * composites. */
-                constexpr int kMinPopupDim = 32;
+                 * isRenderablePopup() filters wine's thin drop-shadow strips
+                 * (the "white area around popups" band) and unpainted internal
+                 * helper windows; real menu/combo/dialog bodies pass. */
                 {
                     std::lock_guard<std::mutex> mapLock(windowMapMutex);
                     for (uint32_t wid : windowManager_.childWindows()) {
@@ -611,17 +625,8 @@ struct X11NativeDisplay::Impl {
                         auto it = popupOverlays.find(wid);
                         if (it == popupOverlays.end()) continue;
                         const auto& p = it->second;
-                        if (!p.mapped) continue;
-                        if (p.w < kMinPopupDim || p.h < kMinPopupDim) continue;
+                        if (!isRenderablePopup(p)) continue;
                         if (p.pixels.size() != (size_t)p.w * p.h) continue;
-                        /* Skip popups wine never PutImage'd into — they're
-                         * wine-internal helpers (IME indicator, tooltips wine
-                         * creates but never displays). Without this filter,
-                         * the implicit-MapWindow heuristic on ConfigureWindow
-                         * picks them up and we composite their unpainted
-                         * 0xFF000000 init fill as a black rectangle over the
-                         * editor's top-left. */
-                        if (!p.hasContent) continue;
                         if (useCrop) {
                             popupSnapshots.push_back({wid,
                                                       p.x - cropOffX,
@@ -1079,6 +1084,22 @@ struct X11NativeDisplay::Impl {
     bool hasPendingDrag = false;
     int pendingDragX = 0, pendingDragY = 0;
     uint32_t grabWindow = 0;  // Window that captured the pointer on ButtonPress
+
+    /* Active X11 pointer grab (XGrabPointer / case 26), distinct from
+     * grabWindow (our per-drag button grab). Wine's winex11.drv grabs with
+     * owner_events=FALSE for menu mode (X11DRV_SetCapture, GUI_INMENUMODE):
+     *   XGrabPointer(menu_whole_window, False, Button|Motion, ...)
+     * Per X semantics, owner_events=False means EVERY pointer event goes to
+     * the grab window regardless of geometry. JUCE menus rely on this: they
+     * receive the outside-click (at out-of-bounds local coords, real root
+     * coords) and dismiss; wine then XUngrabPointers. Our old stub acked the
+     * grab but routed by geometry, so outside-clicks hit the main editor and
+     * the menu could never close ("UI freeze"). Set/cleared on the connection
+     * thread (case 26/27), read on the touch-drain thread → atomic.
+     * See feedback_x50_stomp_popup_grab_dismiss. */
+    std::atomic<uint32_t> xPointerGrabWindow_{0};
+    std::atomic<bool>     xPointerGrabOwnerEvents_{false};
+
     std::chrono::steady_clock::time_point lastExposeFlush = std::chrono::steady_clock::now();
     static constexpr double FLUSH_INTERVAL_SEC = kTouchFlushIntervalSec;
 
@@ -1141,12 +1162,9 @@ struct X11NativeDisplay::Impl {
         if (slot >= 0 && slot < (int)pluginSlotWindows.size()) {
             slotWid = pluginSlotWindows[slot];
         }
-        {
-            static thread_local int dbgN = 0;
-            if (++dbgN <= 8 || dbgN % 30 == 0) {
-                LOGI("X11 drainTouchQueue display=%d slot=%d slotWid=0x%x slotsAvail=%zu pendingTouches=%zu",
-                     displayNumber_, slot, slotWid, pluginSlotWindows.size(), pending.size());
-            }
+        if (!pending.empty()) {
+            LOGI("X11 drainTouchQueue display=%d slot=%d slotWid=0x%x slotsAvail=%zu pendingTouches=%zu",
+                 displayNumber_, slot, slotWid, pluginSlotWindows.size(), pending.size());
         }
 
         // Process button press/release immediately; buffer drag moves
@@ -1172,8 +1190,43 @@ struct X11NativeDisplay::Impl {
                 // (slotWid) drops events on the floor. Use slotWid only
                 // as a fallback when hit-test finds nothing better than
                 // the root.
-                HitResult hit = hitTestChildWindow(t.x, t.y);
+                HitResult hit;
                 bool fellBack = false;
+                /* Honor wine's owner_events=False pointer grab — but ONLY when
+                 * the grab window is a real visible popup we composite (a JUCE
+                 * menu / combo dropdown). Wine grabs owner_events=False in TWO
+                 * cases: menu mode (grab = the menu's whole_window, which IS a
+                 * renderable popup) and cursor clipping for infinite knob-drag
+                 * (grab = wine's internal clip_window, NOT a popup). Scoping to
+                 * renderable-popup grabs steals events for menu dismissal while
+                 * leaving knob-drag cursor-clip grabs on the normal geometry
+                 * path. */
+                bool xgrabSteals = false;
+                int  xgrabAbsX = 0, xgrabAbsY = 0;
+                uint32_t xgrab = xPointerGrabWindow_.load(std::memory_order_acquire);
+                if (xgrab != 0 && !xPointerGrabOwnerEvents_.load(std::memory_order_acquire)) {
+                    std::lock_guard<std::mutex> fbLock(bufferMutex);
+                    auto pit = popupOverlays.find(xgrab);
+                    if (pit != popupOverlays.end() && isRenderablePopup(pit->second)) {
+                        xgrabSteals = true;
+                        xgrabAbsX = pit->second.x;
+                        xgrabAbsY = pit->second.y;
+                    }
+                }
+                if (xgrabSteals) {
+                    /* Deliver the press to the menu even when the touch is
+                     * OUTSIDE its bounds, so JUCE gets the outside-click it
+                     * needs to dismiss. Local coords are relative to the grab
+                     * window (may be negative / out of bounds); sendEvent fills
+                     * the real root coords from t.x/t.y, which is what JUCE uses
+                     * to hit-test across its menu/submenu windows. Bypasses the
+                     * slot fallback + dead-overlay redirect — under the menu
+                     * grab the menu wins unconditionally. */
+                    hit.wid = xgrab;
+                    hit.localX = t.x - xgrabAbsX;
+                    hit.localY = t.y - xgrabAbsY;
+                } else {
+                hit = hitTestChildWindow(t.x, t.y);
                 if (slotWid && (hit.wid == 0 || hit.wid == kRootWindowId)) {
                     hit.wid = slotWid;
                     hit.localX = t.x;
@@ -1223,7 +1276,16 @@ struct X11NativeDisplay::Impl {
                         }
                     }
                 }
+                }  /* end !xgrabSteals */
                 grabWindow = hit.wid;
+                uint32_t hitMask = 0;
+                {
+                    std::lock_guard<std::mutex> mapLock(windowMapMutex);
+                    hitMask = windowManager_.getEventMask(hit.wid);
+                }
+                LOGI("X11 touch DOWN route display=%d fb=(%d,%d) hit=0x%x local=(%d,%d) slotWid=0x%x fallback=%d mask=0x%x",
+                     displayNumber_, t.x, t.y, hit.wid, hit.localX, hit.localY,
+                     slotWid, fellBack ? 1 : 0, hitMask);
                 // Click-to-focus. Real X11 setups rely on a window manager
                 // to call XSetInputFocus when the user clicks a window, which
                 // then emits FocusIn. We have no WM, so wine sees clicks but
@@ -1275,11 +1337,16 @@ struct X11NativeDisplay::Impl {
                     (void)vdeskWindow;
                     if (bestKeyTarget) topLevel = bestKeyTarget;
                     uint32_t fm = focusModeMask_.load(std::memory_order_relaxed);
-                    /* 0x20 = suppress click-to-focus entirely; 0x10 = never target
-                     * the desktop (bestKeyTarget==0 => the walk fell through to the
-                     * desktop/vdesk window). In either skip case leave focusedWindowId
-                     * untouched and emit no focus events. */
-                    bool fmSkipAll = (fm & 0x20u) || ((fm & 0x10u) && bestKeyTarget == 0);
+                    /* Suppress click-to-focus when the walk cannot find a
+                     * non-desktop key target. That case is usually a
+                     * desktop-parented JUCE popup/dialog: sending synthetic
+                     * FocusIn + WM_TAKE_FOCUS there re-enters wine's activation
+                     * path before the ButtonPress and can wedge every guest
+                     * thread in pipe_read (X50II popup freeze). The main editor
+                     * host-frame path still finds a child key target and keeps
+                     * normal focus behavior. 0x20 remains the hard kill switch
+                     * for all click-to-focus. */
+                    bool fmSkipAll = (fm & 0x20u) || (bestKeyTarget == 0);
                     uint32_t prev = fmSkipAll ? topLevel
                                   : focusedWindowId.exchange(topLevel, std::memory_order_acq_rel);
                     if (!fmSkipAll && prev != topLevel) {
@@ -1398,6 +1465,8 @@ struct X11NativeDisplay::Impl {
                     hasPendingDrag = false;
                 }
                 pointerButton1Down.store(false, std::memory_order_relaxed);
+                LOGI("X11 touch UP route display=%d fb=(%d,%d) grab=0x%x",
+                     displayNumber_, t.x, t.y, grabWindow);
                 sendEventToChild(ButtonRelease, t.x, t.y, 1, seq);
                 grabWindow = 0;  // Release grab
             } else if (t.action == 3) {
@@ -1554,9 +1623,11 @@ struct X11NativeDisplay::Impl {
         std::unique_lock<std::mutex> mapLock(windowMapMutex, std::defer_lock);
         if (lockMap) mapLock.lock();
         /* Popup overlay sweep — iterate in REVERSE stacking order
-         * (topmost first) so nested popups are preferred over their
-         * parents. Skip decoration strips via the same 32px minimum
-         * dimension used by the compositor. */
+         * (topmost first) so nested popups are preferred over their parents.
+         * Use isRenderablePopup() so hit-testing matches what the compositor
+         * actually draws: only real menu/combo/dialog bodies are hittable, not
+         * the thin shadow strips (a click on an invisible strip is wrong) nor
+         * wine's unpainted internal helper windows. */
         {
             std::lock_guard<std::mutex> fbLock(bufferMutex);
             const auto& cws = windowManager_.childWindows();
@@ -1564,13 +1635,19 @@ struct X11NativeDisplay::Impl {
                 auto pit = popupOverlays.find(*it);
                 if (pit == popupOverlays.end()) continue;
                 const auto& p = pit->second;
-                if (!p.mapped) continue;
-                if (p.w < 32 || p.h < 32) continue;
+                if (!isRenderablePopup(p)) continue;
                 if (x >= p.x && x < p.x + p.w && y >= p.y && y < p.y + p.h) {
                     HitResult r;
                     r.wid = *it;
                     r.localX = x - p.x;
                     r.localY = y - p.y;
+                    static std::atomic<uint32_t> popupHitLog{0};
+                    uint32_t n = ++popupHitLog;
+                    if (n <= 120 || n % 50 == 0) {
+                        LOGI("X11 popup HIT #%u wid=0x%x fb=(%d,%d) display=(%d,%d) req=(%d,%d) size=%dx%d local=(%d,%d) content=%d",
+                             n, *it, x, y, p.x, p.y, p.reqX, p.reqY, p.w, p.h,
+                             r.localX, r.localY, p.hasContent ? 1 : 0);
+                    }
                     return r;
                 }
             }
@@ -1668,6 +1745,16 @@ struct X11NativeDisplay::Impl {
             LOGI("X11 vstpoc-send: #%u type=%s wid=0x%x targetFd=%d local=(%d,%d) root=(%d,%d) button=%d ok=%d",
                  n, type == ButtonPress ? "ButtonPress" : "ButtonRelease",
                  windowId, targetFd, x, y, rootX, rootY, button, ok ? 1 : 0);
+            {
+                std::lock_guard<std::mutex> fbLock(bufferMutex);
+                auto pit = popupOverlays.find(windowId);
+                if (pit != popupOverlays.end()) {
+                    const auto& p = pit->second;
+                    LOGI("X11 vstpoc-send popup wid=0x%x display=(%d,%d) req=(%d,%d) size=%dx%d mapped=%d content=%d",
+                         windowId, p.x, p.y, p.reqX, p.reqY, p.w, p.h,
+                         p.mapped ? 1 : 0, p.hasContent ? 1 : 0);
+                }
+            }
         }
     }
 
@@ -3583,8 +3670,39 @@ struct X11NativeDisplay::Impl {
                         sendReply(reply, 32, seq);
                         break;
                     }
+                    case 26: { /* GrabPointer — store grab + reply Success(0).
+                                * Wine grabs with owner_events=FALSE for menu
+                                * mode; tracking the grab window lets us deliver
+                                * outside-clicks to a JUCE menu so it dismisses
+                                * (see drainTouchQueue + the xPointerGrab fields).
+                                * Request: opcode(1), owner-events(1)=buf[1],
+                                * length(2), grab-window(4)=buf[4..7]. */
+                        bool ownerEvents = (buf[1] != 0);
+                        uint32_t grabWin = read32(buf, 4);
+                        xPointerGrabWindow_.store(grabWin, std::memory_order_release);
+                        xPointerGrabOwnerEvents_.store(ownerEvents, std::memory_order_release);
+                        if (reqLogCount <= 500) {
+                            LOGI("X11 GrabPointer: grab-window=0x%x owner-events=%d "
+                                 "(outside-click->grab routing %s)",
+                                 grabWin, ownerEvents ? 1 : 0, ownerEvents ? "OFF" : "ON");
+                        }
+                        uint8_t reply[32];
+                        memset(reply, 0, 32);
+                        reply[0] = 1;   /* reply */
+                        reply[1] = 0;   /* status = Success */
+                        write16(reply, 2, seq);
+                        sendReply(reply, 32, seq);
+                        break;
+                    }
+                    case 27: { /* UngrabPointer — clear grab (no reply). */
+                        uint32_t prevGrab = xPointerGrabWindow_.exchange(0, std::memory_order_acq_rel);
+                        xPointerGrabOwnerEvents_.store(false, std::memory_order_release);
+                        if (prevGrab && reqLogCount <= 500) {
+                            LOGI("X11 UngrabPointer: cleared grab-window=0x%x", prevGrab);
+                        }
+                        break;
+                    }
                     case 21:  /* ListProperties — empty */
-                    case 26:  /* GrabPointer — Success(0) */
                     case 31:  /* GrabKeyboard — Success(0) */
                     case 39:  /* GetMotionEvents — empty */
                     case 47:  /* QueryFont — empty (no font loaded) */
@@ -3707,8 +3825,7 @@ struct X11NativeDisplay::Impl {
                                 auto pit = popupOverlays.find(*it);
                                 if (pit == popupOverlays.end()) continue;
                                 const auto& p = pit->second;
-                                if (!p.mapped) continue;
-                                if (p.w < 32 || p.h < 32) continue;
+                                if (!isRenderablePopup(p)) continue;
                                 if (qpFbX >= p.x && qpFbX < p.x + p.w &&
                                     qpFbY >= p.y && qpFbY < p.y + p.h) {
                                     qpWineX = p.reqX + (qpFbX - p.x);
@@ -3731,6 +3848,14 @@ struct X11NativeDisplay::Impl {
                         if (pointerButton1Down.load(std::memory_order_relaxed)) mask |= (1 << 8); /* Button1Mask */
                         if (pointerButton3Down.load(std::memory_order_relaxed)) mask |= (1 << 10); /* Button3Mask */
                         write16(reply, 24, mask);
+                        if (mask || qpWineX != qpFbX || qpWineY != qpFbY) {
+                            static std::atomic<uint32_t> qpDbg{0};
+                            uint32_t n = ++qpDbg;
+                            if (n <= 120 || n % 50 == 0) {
+                                LOGI("X11 QueryPointer reply #%u fb=(%d,%d) wine=(%d,%d) mask=0x%x",
+                                     n, qpFbX, qpFbY, qpWineX, qpWineY, mask);
+                            }
+                        }
                         sendReply(reply, 32, seq);
                         break;
                     }
@@ -3819,6 +3944,14 @@ struct X11NativeDisplay::Impl {
                                     dirty = true;
                                     dirtyCv.notify_one();
                                 }
+                            }
+                            /* Defensive: if the grab window is destroyed without a
+                             * preceding UngrabPointer, drop the stale grab so we
+                             * don't keep routing clicks to a dead window. */
+                            uint32_t expectGrab = window;
+                            if (xPointerGrabWindow_.compare_exchange_strong(
+                                    expectGrab, 0, std::memory_order_acq_rel)) {
+                                xPointerGrabOwnerEvents_.store(false, std::memory_order_release);
                             }
                             if (reqLogCount <= 15) LOGI("X11 handle DestroyWindow window=0x%x (cleaned up)", window);
                         }
