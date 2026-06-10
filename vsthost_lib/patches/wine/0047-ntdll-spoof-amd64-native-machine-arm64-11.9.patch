@@ -1,0 +1,65 @@
+From: Kamil Lulko <limakzagan@gmail.com>
+Subject: ntdll/unix: spoof AMD64 as native machine in SystemSupportedProcessorArchitectures (11.9 port)
+
+Port of the old patch 0010 (TONEX-verified on wine 10.10) onto 11.9's
+rewritten handler; it was dropped in the 11.9 rebase, which regressed
+Inno Setup installers back to "This program can only be installed on
+versions of Windows designed for the following processor architectures:
+x64" (hit by the BIAS FX 2 installer on a fresh prefix, 2026-06-10).
+
+Upstream 11.9 faithfully emulates Windows-on-ARM: IsWow64Process2 /
+SystemSupportedProcessorArchitectures report native_machine=ARM64 and
+hide AMD64 from the non-2 class. Inno Setup >= 6.3 resolves the machine
+via IsWow64Process2 and rejects native=ARM64 when the installer says
+ArchitecturesAllowed=x64 - even though FEX-Emu translates x86_64 PE
+transparently. Swap AMD64 into the native slot of the user-facing reply
+and demote the real ARM64 to a non-native entry (still listed). Wine's
+internal loader keeps using the server-side native_machine=ARM64, so
+aarch64-windows system DLLs still load. Pairs with patch 0013
+(SystemCpuInformation spoof for 32-bit wow64 callers) and the
+seedWindowsVersion Version-strip on the Kotlin side.
+
+--- a/dlls/ntdll/unix/system.c
++++ b/dlls/ntdll/unix/system.c
+@@ -4134,14 +4134,36 @@
+ 
+         for (i = 0; i < supported_machines_count; i++)
+         {
+-#ifdef __aarch64__
+-            if (class == SystemSupportedProcessorArchitectures &&
+-                supported_machines[i] == IMAGE_FILE_MACHINE_AMD64)
+-                continue;
+-#endif
+             machines_to_return[machines_to_return_count] = supported_machines[i];
+             machines_to_return_count++;
+         }
++#ifdef __aarch64__
++        /* vstpoc (11.9 port of old patch 0010): present AMD64 as the NATIVE
++         * machine in the user-facing reply. Upstream faithfully emulates
++         * Windows-on-ARM here (native=ARM64, AMD64 hidden from the non-2
++         * class), but pre-WoA installers (Inno Setup >= 6.3 reads
++         * IsWow64Process2's native_machine: IK TONEX 1.12, BIAS FX 2) reject
++         * native=ARM64 with "this program can only be installed on ... x64"
++         * even though FEX-Emu translates their x86_64 code transparently.
++         * Swap AMD64 into the native slot and demote the REAL ARM64 to a
++         * non-native entry (still listed, like the verified 10.10 behavior).
++         * Wine's internal loader keeps using the server-side
++         * native_machine=ARM64, so aarch64-windows system DLLs still load —
++         * only this user-facing reply lies. Pairs with patch 0013
++         * (SystemCpuInformation spoof for 32-bit wow64 callers). */
++        if (machines_to_return_count && machines_to_return[0] == IMAGE_FILE_MACHINE_ARM64)
++        {
++            for (i = 1; i < machines_to_return_count; i++)
++            {
++                if (machines_to_return[i] == IMAGE_FILE_MACHINE_AMD64)
++                {
++                    machines_to_return[i] = IMAGE_FILE_MACHINE_ARM64;
++                    machines_to_return[0] = IMAGE_FILE_MACHINE_AMD64;
++                    break;
++                }
++            }
++        }
++#endif
+ 
+         len = (machines_to_return_count + 1) * sizeof(*machines);
+         if (size < len)
