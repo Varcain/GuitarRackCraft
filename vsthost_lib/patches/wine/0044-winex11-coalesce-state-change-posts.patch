@@ -1,0 +1,134 @@
+From: Kamil Lulko <limakzagan@gmail.com>
+Subject: winex11.drv: coalesce synthetic window-state change posts
+
+X50's Login Failure modal popup can trigger a tight PropertyNotify /
+WM_WINE_WINDOW_STATE_CHANGED loop. The Windows-side synthetic state-change
+message is idempotent: one pending message is enough, because the X11 window
+data already contains the latest state. Keep a per-window pending bit in
+winex11.drv, set it when posting WM_WINE_WINDOW_STATE_CHANGED, and clear it when
+win32u consumes the message through pGetWindowStateUpdates.
+
+This targets the actual observed post-popup failure: the popup creates hundreds
+of state-change messages, then JUCE's background callback poster spins until
+Android kills the app for excessive CPU.
+
+diff --git a/dlls/winex11.drv/x11drv.h b/dlls/winex11.drv/x11drv.h
+index 3def37a8f21..4b86fee67f1 100644
+--- a/dlls/winex11.drv/x11drv.h
++++ b/dlls/winex11.drv/x11drv.h
+@@ -679,6 +679,7 @@ struct x11drv_win_data
+     UINT        parent_invalid : 1; /* is the parent host window possibly invalid */
+     UINT        reparenting : 1; /* window is being reparented, likely from a decoration change */
+     UINT        is_resizable : 1; /* window is allowed to be resized by the window manager */
++    UINT        state_change_pending : 1; /* WM_WINE_WINDOW_STATE_CHANGED already posted */
+     Window      embedder;       /* window id of embedder */
+     Pixmap         icon_pixmap;
+     Pixmap         icon_mask;
+@@ -707,6 +708,8 @@ extern Window get_dummy_parent(void);
+ extern BOOL window_is_reparenting( HWND hwnd );
+ extern BOOL window_should_take_focus( HWND hwnd, Time time );
+ extern BOOL window_has_pending_wm_state( HWND hwnd, UINT state );
++extern BOOL window_post_state_changed( HWND hwnd );
++extern void window_clear_state_changed( HWND hwnd );
+ extern void window_wm_state_notify( struct x11drv_win_data *data, unsigned long serial, UINT value, Time time );
+ extern void window_net_wm_state_notify( struct x11drv_win_data *data, unsigned long serial, UINT value );
+ extern void window_wm_hints_notify( struct x11drv_win_data *data, unsigned long serial, const XWMHints *hints );
+diff --git a/dlls/winex11.drv/window.c b/dlls/winex11.drv/window.c
+index 0f4f072a6e4..421738270d5 100644
+--- a/dlls/winex11.drv/window.c
++++ b/dlls/winex11.drv/window.c
+@@ -1794,6 +1794,7 @@ BOOL X11DRV_GetWindowStateUpdates( HWND hwnd, UINT *state_cmd, UINT *swp_flags,
+ 
+     *state_cmd = *swp_flags = 0;
+     *foreground = 0;
++    window_clear_state_changed( hwnd );
+ 
+     if (!(old_foreground = NtUserGetForegroundWindow())) old_foreground = NtUserGetDesktopWindow();
+     if (!is_virtual_desktop() && NtUserGetWindowThread( old_foreground, NULL ) == GetCurrentThreadId() &&
+@@ -1818,6 +1819,37 @@ BOOL X11DRV_GetWindowStateUpdates( HWND hwnd, UINT *state_cmd, UINT *swp_flags,
+     return TRUE;
+ }
+ 
++BOOL window_post_state_changed( HWND hwnd )
++{
++    struct x11drv_win_data *data;
++
++    if (!hwnd) return FALSE;
++
++    if ((data = get_win_data( hwnd )))
++    {
++        if (data->state_change_pending)
++        {
++            release_win_data( data );
++            return TRUE;
++        }
++        data->state_change_pending = TRUE;
++        release_win_data( data );
++    }
++
++    return NtUserPostMessage( hwnd, WM_WINE_WINDOW_STATE_CHANGED, 0, 0 );
++}
++
++void window_clear_state_changed( HWND hwnd )
++{
++    struct x11drv_win_data *data;
++
++    if ((data = get_win_data( hwnd )))
++    {
++        data->state_change_pending = FALSE;
++        release_win_data( data );
++    }
++}
++
+ static BOOL handle_state_change( unsigned long serial, unsigned long *expect_serial, UINT size, const void *value,
+                                  void *desired, void *pending, void *current, const char *expected,
+                                  const char *prefix, const char *received, const char *reason )
+@@ -1988,7 +2017,7 @@ void net_active_window_notify( unsigned long serial, Window value, Time time )
+                               current, expected, "", received, NULL ))
+         return;
+ 
+-    NtUserPostMessage( NtUserGetForegroundWindow(), WM_WINE_WINDOW_STATE_CHANGED, 0, 0 );
++    window_post_state_changed( NtUserGetForegroundWindow() );
+ }
+ 
+ Window get_net_active_window( Display *display )
+diff --git a/dlls/winex11.drv/event.c b/dlls/winex11.drv/event.c
+index 07b5fbf76ff..e7b1b8c3bfe 100644
+--- a/dlls/winex11.drv/event.c
++++ b/dlls/winex11.drv/event.c
+@@ -1134,7 +1134,7 @@ static BOOL X11DRV_ConfigureNotify( HWND hwnd, XEvent *xev )
+ 
+     release_win_data( data );
+ 
+-    return NtUserPostMessage( hwnd, WM_WINE_WINDOW_STATE_CHANGED, 0, 0 );
++    return window_post_state_changed( hwnd );
+ }
+ 
+ /***********************************************************************
+@@ -1174,7 +1174,7 @@ static BOOL X11DRV_GravityNotify( HWND hwnd, XEvent *xev )
+ 
+     release_win_data( data );
+ 
+-    return NtUserPostMessage( hwnd, WM_WINE_WINDOW_STATE_CHANGED, 0, 0 );
++    return window_post_state_changed( hwnd );
+ }
+ 
+ /***********************************************************************
+@@ -1261,7 +1261,7 @@ static void handle_wm_state_notify( HWND hwnd, XPropertyEvent *event )
+     release_win_data( data );
+ 
+     if (hwnd == NtUserGetForegroundWindow() && activate) set_net_active_window( hwnd, 0 );
+-    NtUserPostMessage( hwnd, WM_WINE_WINDOW_STATE_CHANGED, 0, 0 );
++    window_post_state_changed( hwnd );
+ }
+ 
+ static void handle_xembed_info_notify( HWND hwnd, XPropertyEvent *event )
+@@ -1288,7 +1288,7 @@ static void handle_net_wm_state_notify( HWND hwnd, XPropertyEvent *event )
+     window_net_wm_state_notify( data, event->serial, value );
+     release_win_data( data );
+ 
+-    NtUserPostMessage( hwnd, WM_WINE_WINDOW_STATE_CHANGED, 0, 0 );
++    window_post_state_changed( hwnd );
+ }
+ 
+ static void handle_wm_hints_notify( HWND hwnd, XPropertyEvent *event )

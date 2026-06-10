@@ -107,6 +107,47 @@ unsigned long set_big_core_affinity() {
     return mask;
 }
 
+static char asciiLower(char c) {
+    return (c >= 'A' && c <= 'Z') ? char(c - 'A' + 'a') : c;
+}
+
+static bool containsAsciiCaseInsensitive(const std::string& haystack, const char* needle) {
+    const size_t needleLen = needle ? std::strlen(needle) : 0;
+    if (!needleLen) return true;
+    if (needleLen > haystack.size()) return false;
+    for (size_t i = 0; i <= haystack.size() - needleLen; ++i) {
+        size_t j = 0;
+        for (; j < needleLen; ++j) {
+            if (asciiLower(haystack[i + j]) != asciiLower(needle[j])) break;
+        }
+        if (j == needleLen) return true;
+    }
+    return false;
+}
+
+static bool vstpocNeedsScaledGuestStacks(const WineHostProcess::Config& cfg) {
+    for (const auto& path : cfg.pluginPaths) {
+        if (containsAsciiCaseInsensitive(path, "x50ii") ||
+            containsAsciiCaseInsensitive(path, "tse x50") ||
+            containsAsciiCaseInsensitive(path, "tse audio/x50")) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static void vstpocApplyPluginEnvDefaults(const WineHostProcess::Config& cfg) {
+    if (vstpocNeedsScaledGuestStacks(cfg)) {
+        const char* existing = ::getenv("VSTPOC_STACK_PCT");
+        if (!existing || !*existing) {
+            /* X50II's JUCE callback thread overflows under FEX at PC
+             * 0x7fffb99874 before later async UI updates can run. Patch 0035
+             * scales the resolved guest stack reserve; 400 = 4x. */
+            ::setenv("VSTPOC_STACK_PCT", "400", 1);
+        }
+    }
+}
+
 // vstpoc 2026-05-24 (Fix A.2): re-pin a SPECIFIC tid to the big-core set.
 // Used by the watchdog every few seconds to defeat Android cgroup
 // demotion of background-spawned threads. Per-tid mask is silently
@@ -330,6 +371,19 @@ void WineHostProcess::setupWineEnvChild(const Config& cfg) {
      * audio-breakup diagnosis with Helix Native showed the JIT cost was
      * eating real-time deadlines even at moderate CPU. */
     ::setenv("FEX_SMCCHECKS", "mtrack", 1);
+    /* VST2 default (2026-06-10): load each plugin DLL + VSTPluginMain on its
+     * editor thread so JUCE's MessageManager, window ownership and message
+     * pump share ONE thread. With main-thread loading, every JUCE editor
+     * interaction was a cross-thread send and X50II's menu wedged the host
+     * in a self-feeding WM_USER storm (UI frozen, audio xruns). Single-thread
+     * JUCE fixed menus end-to-end; X50II + LeCto verified on device.
+     * vst3_host ignores this env. Override via wine_env.txt (=0) to A/B.
+     * See vst_host.c per_plugin_editor_thread + memory
+     * feedback_x50_stomp_popup_grab_dismiss. */
+    ::setenv("VSTPOC_LOAD_ON_EDITOR_THREAD", "1", 1);
+    /* Plugin-specific env defaults must be set before wine_env.txt so local
+     * testing can still override or disable them without a rebuild. */
+    vstpocApplyPluginEnvDefaults(cfg);
     /* vstpoc: file-driven env overrides (VSTPOC_STACK_PCT etc.) — see start()'s
      * inline copy. Both blocks per feedback_winehostprocess_dup_env. */
     vstpocApplyEnvFile(cfg.cacheDir);
@@ -347,21 +401,27 @@ void WineHostProcess::setupWineEnvChild(const Config& cfg) {
      * deadline tax for nothing. Reverted 2026-05-27 after Helix Native
      * showed audio stuttering under the combined FEX overhead. */
 
-    /* vstpoc patch 025: cycle detector synthesizes 0-replies for stuck
-     * focus messages. Helps popup-button-click on JUCE-7, but causes
-     * TH-U crashes at +0x1802DF0C3 on click-outside-to-dismiss (synth
-     * fires while WindowProc is still mid-state-setup → null deref).
-     * Disabled per user 2026-05-23: prefer hangs over crashes. Click
-     * outside / popup interaction may freeze briefly while TH-U's slow
-     * WindowProcs complete naturally, but state stays consistent. */
+    /* vstpoc: the wineserver cycle-detector band-aid is NOT used (its 11.9
+     * port destabilized plugin loading). The robust fix is patch 021's
+     * approach — don't send WM_SETFOCUS for child popups in
+     * process_mouse_message — pursued in win32u instead. This env is inert
+     * (no detector code present) but kept for clarity. */
     ::setenv("WINE_VSTPOC_NO_CYCLE_DETECT", "1", 1);
-    /* vstpoc patch 028 (ported to 11.9): coalesce WM_USER+N post storm in the
-     * wineserver. TH-U's editor-create starves win_data_mutex via a JUCE/FEX
-     * WM_USER+123 flood → CreateWindowExA never completes → "Loading editor…"
-     * forever. Cap pending posts per (hwnd,msg) at this threshold; excess are
-     * dropped (audio-safe, no synth-reply). Read once by wineserver at start —
+    /* vstpoc patch 028 (ported to 11.9): coalesce exact duplicate WM_USER+N
+     * posts in the wineserver. TH-U's editor-create and X50's popup dismiss
+     * can both be buried by a JUCE/FEX WM_USER+123 callback flood. Cap pending
+     * posts per exact (hwnd,msg,wparam,lparam) at this threshold; distinct
+     * callback pointers remain queued. Read once by wineserver at start —
      * wineserver MUST be killed for a change to take effect. */
-    ::setenv("WINE_VSTPOC_COALESCE_POSTS", "200", 1);
+    ::setenv("WINE_VSTPOC_COALESCE_POSTS", "1", 1);
+    /* vstpoc storm breaker: X50II's JUCE menu self-feeds WM_USER+123 on its
+     * MessageManager thread (distinct lparams, so the coalescer above can't
+     * catch it) → wineserver+guest spin, UI freezes, audio xruns. Duty-cycle:
+     * when a queue delivers >N WM_USER+ posts/second, suppress that channel
+     * for 250ms so input/sent/paint interleave (a dismiss click then kills
+     * the storm at its source). 500/s is ~5x JUCE's legit repaint burst rate.
+     * Read once by wineserver at start. See queue.c vstpoc_storm_account. */
+    ::setenv("WINE_VSTPOC_USER_STORM_BREAK", "500", 1);
     /* patch 030 ON: time-throttle posted WM_USER+N delivery. TH-U's JUCE
      * editor-layout WM_USER+123 ping-pong relayouts every child window, each
      * grabbing win_data_mutex — starving the editor thread that needs one
@@ -747,6 +807,22 @@ bool WineHostProcess::start() {
                           "127.0.0.1:%d", cfg_.displayNumber);
             ::setenv("DISPLAY", displayBuf, 1);
         }
+        /* Parent VST2 plugin editors under a chromeless top-level host window
+         * (vst_host.c VSTPOC_HOST_FRAME=popup) instead of WS_CHILD-of-desktop,
+         * so wine activates them natively and the WS_CHILD activation patches
+         * (0037-0040) become unnecessary. Set BEFORE vstpocApplyEnvFile so it
+         * can be overridden via cache/wine_env.txt for A/B testing
+         * (e.g. VSTPOC_HOST_FRAME=0 to fall back to the desktop-parent path). */
+        ::setenv("VSTPOC_HOST_FRAME", "popup", 1);
+        /* VST2 default (2026-06-10): single-thread JUCE — load each plugin on
+         * its editor thread (vst_host.c). Fixes the X50II stompbox-menu storm
+         * (frozen UI + xruns); X50II + LeCto verified. Duplicated from
+         * setupWineEnvChild per feedback_winehostprocess_dup_env — THIS is the
+         * real vst_host launch path. wine_env.txt (=0) overrides for A/B. */
+        ::setenv("VSTPOC_LOAD_ON_EDITOR_THREAD", "1", 1);
+        /* Plugin-specific env defaults must be set before wine_env.txt so local
+         * testing can still override or disable them without a rebuild. */
+        vstpocApplyPluginEnvDefaults(cfg_);
         /* vstpoc: file-driven env overrides (e.g. VSTPOC_STACK_PCT for patch 0035
          * thread-stack scaling — BIAS FX 2's tid 00a0 FEX overflow). This is the
          * REAL vst_host launch path, so the override MUST be here (the other copy
@@ -837,9 +913,9 @@ bool WineHostProcess::start() {
         // NOT help — confirms the bottleneck is not in cross-thread focus
         // routing but in JUCE's own callback storm post-dismiss. Revert
         // to the async (patch 027) default and enable patch 028 server-
-        // side coalescing of WM_USER+N posts: when >= 200 same-target
-        // same-msg posts already pending in a queue, drop further ones.
-        // Lossy (drops JUCE async callbacks) but breaks the runaway.
+        // side coalescing of exact duplicate WM_USER+N posts: when the same
+        // target/message/wparam/lparam callback is already pending in a queue,
+        // drop further copies. Distinct callback pointers still run.
         // vstpoc Phase 3 (2026-05-24): superseded by patch 031
         // (deferred-focus emulation of JUCE 8's mouseActivateFlags fix).
         // Disable patches 028/029/030 throttles since the new defer
@@ -859,7 +935,11 @@ bool WineHostProcess::start() {
          * IS a WM_USER+123 storm livelock (watchdog: 5 threads futex-blocked
          * on win_data_mutex, editor never finishes CreateWindowExA → "Loading
          * editor…"). Coalesce caps the post flood so the lock frees up. */
-        ::setenv("WINE_VSTPOC_COALESCE_POSTS", "200", 1); /* patch 028 ON */
+        ::setenv("WINE_VSTPOC_COALESCE_POSTS", "1", 1); /* patch 028 ON */
+        /* patch 0046 ON: duty-cycle breaker for sustained WM_USER self-feed
+         * (X50II menu storm). 500/s threshold ≈ 5x JUCE's legit repaint burst
+         * rate; storms run >1000/s. See the setupWineEnvChild copy + queue.c. */
+        ::setenv("WINE_VSTPOC_USER_STORM_BREAK", "500", 1);
         ::setenv("WINE_VSTPOC_TIMER_GAP_MS",   "0", 1);  /* patch 029 off (code not ported) */
         ::setenv("WINE_VSTPOC_POST_GAP_MS",    "50", 1);  /* patch 030 ON: WM_USER+N throttle @50ms (win_data_mutex starvation fix) */
         ::setenv("WINE_VSTPOC_WM_STATE_UNLOCK","1", 1);  /* TH-U editor: drop lock across cross-thread send */

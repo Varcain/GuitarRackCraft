@@ -1,0 +1,218 @@
+From: Kamil Lulko <limakzagan@gmail.com>
+Subject: server: park gapped posted messages + WM_USER storm duty-cycle breaker
+
+Two cooperating mechanisms against the X50II JUCE menu storm (see memory
+feedback_x50_stomp_popup_grab_dismiss for the full trace):
+
+1. PARK GAPPED POSTS (the actual fix, default ON, WINE_VSTPOC_PARK_POSTED=0
+   to disable): patch 030's WINE_VSTPOC_POST_GAP_MS suppresses WM_USER+
+   delivery but leaves the messages pending, so QS_POSTMESSAGE stays set and
+   the guest's GetMessage never blocks - it busy-polls the server (X50II
+   menu storm: thousands of NtUserPeekMessage round-trips/s, vst_host 59% +
+   wineserver 67% CPU, X server idle, UI starved, audio xruns). When the
+   gap suppresses delivery, clear the posted wake bits and re-arm them with
+   a server timeout at gap end. The thread then truly sleeps; the JUCE
+   self-feed loop still runs but at a harmless ~20 deliveries/s. Hardware
+   input and sent messages have their own QS bits and still wake the
+   thread, so interaction stays live.
+
+2. WM_USER RATE BREAKER (defense in depth, WINE_VSTPOC_USER_STORM_BREAK=
+   <deliveries/s>, unset/0 = off): for configurations running WITHOUT a
+   flat post gap, count WM_USER+ deliveries per queue in a rolling 1s
+   window; above the threshold, suppress WM_USER+ delivery for 250ms
+   (parked the same way). Storms run >1000/s, legit JUCE repaint bursts
+   ~60-120/s. CAUTION: thresholds low enough to trip during editor INIT
+   starve JUCE's init callbacks and can crash plugins (X50II crashed at
+   threshold 5); keep >= 500.
+
+--- a/server/queue.c
++++ b/server/queue.c
+@@ -137,6 +137,10 @@
+     struct thread_input   *input;           /* thread input descriptor */
+     struct hook_table     *hooks;           /* hook table */
+     timeout_t              vstpoc_last_user_delivery;  /* WM_USER+N throttle */
++    timeout_t              vstpoc_storm_window_start;  /* WM_USER storm-rate window */
++    unsigned int           vstpoc_storm_count;         /* WM_USER deliveries in window */
++    timeout_t              vstpoc_storm_cooldown_end;  /* nonzero while cooling down */
++    struct timeout_user   *vstpoc_storm_wake;          /* queue wake at cooldown end */
+     int                    keystate_lock;   /* owns an input keystate lock */
+     queue_shm_t           *shared;          /* queue in session shared memory */
+ };
+@@ -319,6 +323,10 @@
+         queue->input           = (struct thread_input *)grab_object( input );
+         queue->hooks           = NULL;
+         queue->vstpoc_last_user_delivery = 0;
++        queue->vstpoc_storm_window_start = 0;
++        queue->vstpoc_storm_count        = 0;
++        queue->vstpoc_storm_cooldown_end = 0;
++        queue->vstpoc_storm_wake         = NULL;
+         queue->keystate_lock   = 0;
+         list_init( &queue->send_result );
+         list_init( &queue->callback_result );
+@@ -1205,6 +1213,132 @@
+     return threshold;
+ }
+ 
++/* vstpoc WM_USER storm breaker — duty-cycle, NOT a permanent throttle.
++ *
++ * X50II's JUCE menu wedges its MessageManager thread in a self-feeding
++ * WM_USER+123 loop (each async handler re-posts the next; thousands of
++ * PeekMessage server round-trips/s; whole UI starves, audio xruns). A flat
++ * delivery gap (WINE_VSTPOC_POST_GAP_MS=200) kills the loop but ALSO starves
++ * JUCE's repaint callbacks, which ride the same WM_USER channel → permanent
++ * white editor. Instead: count WM_USER+ posted deliveries per queue in a
++ * rolling 1s window; only when the rate exceeds the env threshold (storms run
++ * >1000/s, legit repaint bursts ~60-120/s) suppress WM_USER+ delivery for a
++ * short cooldown. Hardware input / sent messages / WM_PAINT keep flowing, so
++ * a dismiss-click finally gets processed and kills the storm at its source;
++ * queued WM_USER callbacks resume at full speed after the cooldown.
++ *
++ * WINE_VSTPOC_USER_STORM_BREAK = deliveries/second threshold (0/unset = off).
++ * See memory feedback_x50_stomp_popup_grab_dismiss. */
++#define VSTPOC_STORM_WINDOW    (1 * TICKS_PER_SEC)
++#define VSTPOC_STORM_COOLDOWN  (TICKS_PER_SEC / 4)   /* 250ms */
++
++static int vstpoc_storm_threshold(void)
++{
++    static int checked, threshold;
++
++    if (!checked)
++    {
++        const char *env = getenv( "WINE_VSTPOC_USER_STORM_BREAK" );
++        threshold = (env && *env) ? atoi( env ) : 0;
++        if (threshold < 0) threshold = 0;
++        checked = 1;
++    }
++    return threshold;
++}
++
++/* Wake the queue when the cooldown elapses. Without this a thread whose ONLY
++ * pending work is the suppressed WM_USER posts blocks in select forever (the
++ * storm loop self-posts, so once parked it would never post again). */
++static void vstpoc_storm_wake_callback( void *private )
++{
++    struct msg_queue *queue = private;
++    queue->vstpoc_storm_wake = NULL;
++    set_queue_bits( queue, QS_POSTMESSAGE|QS_ALLPOSTMESSAGE );
++}
++
++/* Returns nonzero while WM_USER+ posted delivery is suppressed. While cooling,
++ * ALSO clear the posted-message wake bits: suppressed-but-pending posts
++ * otherwise keep QS_POSTMESSAGE set, so the guest's GetMessage never blocks
++ * and busy-polls the server at 100% CPU (the exact spin patch 030's flat gap
++ * exhibits). The cooldown-end timeout re-sets the bits. New posts during the
++ * cooldown re-set them too (set_queue_bits in queue_message) — that costs one
++ * extra scan per post, after which we clear and the thread sleeps again. */
++/* WINE_VSTPOC_PARK_POSTED=0 disables the gap-parking below (kill switch —
++ * it changes patch 030's busy-poll into a real sleep for EVERY plugin
++ * running with WINE_VSTPOC_POST_GAP_MS, so TH-U/BIAS need a regression
++ * pass; default ON). */
++static int vstpoc_park_enabled(void)
++{
++    static int checked, enabled;
++
++    if (!checked)
++    {
++        const char *env = getenv( "WINE_VSTPOC_PARK_POSTED" );
++        enabled = !env || !*env || atoi( env );
++        checked = 1;
++    }
++    return enabled;
++}
++
++/* Park the posted-message channel until `when`: clear the wake bits so the
++ * guest thread actually sleeps instead of busy-polling, and schedule a wake
++ * to re-set them. THIS is the real X50II storm fix: with patch 030's flat
++ * 50ms delivery gap active, the JUCE self-feed loop's pending WM_USER posts
++ * kept QS_POSTMESSAGE set, so the MessageManager thread's GetMessage woke
++ * instantly, peeked (a full wineserver round-trip), got nothing — thousands
++ * of times a second (vst_host 59% + wineserver 67% CPU, X server idle).
++ * Parking turns each 50ms gap into real sleep; the loop still self-feeds
++ * but at a harmless ~20 deliveries/s. Hardware input / sent messages have
++ * their own QS bits and still wake the thread, so clicks stay live. A new
++ * post during the park re-sets the bits (set_queue_bits in queue_message);
++ * the next scan re-parks — one bounded extra round-trip per post. */
++static void vstpoc_park_posted( struct msg_queue *queue, timeout_t when )
++{
++    clear_queue_bits( queue, QS_POSTMESSAGE|QS_ALLPOSTMESSAGE );
++    if (!queue->vstpoc_storm_wake && when > current_time)
++        queue->vstpoc_storm_wake = add_timeout_user( when, vstpoc_storm_wake_callback, queue );
++}
++
++static int vstpoc_storm_cooling( struct msg_queue *queue )
++{
++    if (!queue->vstpoc_storm_cooldown_end) return 0;
++    if (current_time < queue->vstpoc_storm_cooldown_end)
++    {
++        vstpoc_park_posted( queue, queue->vstpoc_storm_cooldown_end );
++        return 1;
++    }
++    queue->vstpoc_storm_cooldown_end = 0;
++    queue->vstpoc_storm_window_start = current_time;
++    queue->vstpoc_storm_count = 0;
++    return 0;
++}
++
++/* Account one WM_USER+ delivery; trip the cooldown when the rate exceeds the
++ * threshold. Called from the PM_REMOVE delivery path. */
++static void vstpoc_storm_account( struct msg_queue *queue )
++{
++    int threshold = vstpoc_storm_threshold();
++    static unsigned int trip_log;
++
++    if (!threshold) return;
++    if (current_time - queue->vstpoc_storm_window_start > VSTPOC_STORM_WINDOW)
++    {
++        queue->vstpoc_storm_window_start = current_time;
++        queue->vstpoc_storm_count = 0;
++    }
++    if (++queue->vstpoc_storm_count < (unsigned int)threshold) return;
++
++    queue->vstpoc_storm_cooldown_end = current_time + VSTPOC_STORM_COOLDOWN;
++    queue->vstpoc_storm_count = 0;
++    queue->vstpoc_storm_window_start = queue->vstpoc_storm_cooldown_end;
++    if (!queue->vstpoc_storm_wake)
++        queue->vstpoc_storm_wake = add_timeout_user( queue->vstpoc_storm_cooldown_end,
++                                                     vstpoc_storm_wake_callback, queue );
++    if (trip_log++ < 50)
++        fprintf( stderr, "vstpoc-storm: queue %p WM_USER rate > %d/s, cooling %dms (trip #%u)\n",
++                 queue, threshold, (int)(VSTPOC_STORM_COOLDOWN / 10000), trip_log );
++}
++
+ static int vstpoc_same_post_message( const struct message *a, const struct message *b )
+ {
+     if (a->win != b->win || a->msg != b->msg) return 0;
+@@ -1313,6 +1447,12 @@
+         if (post_gap > 0 && msg->msg >= 0x400 && (flags & PM_REMOVE) &&
+             queue->vstpoc_last_user_delivery &&
+             current_time - queue->vstpoc_last_user_delivery < post_gap)
++        {
++            if (vstpoc_park_enabled())
++                vstpoc_park_posted( queue, queue->vstpoc_last_user_delivery + post_gap );
++            return 0;
++        }
++        if (msg->msg >= 0x400 && (flags & PM_REMOVE) && vstpoc_storm_cooling( queue ))
+             return 0;
+         goto found; /* found one */
+     }
+@@ -1337,7 +1477,11 @@
+ 
+     if (flags & PM_REMOVE)
+     {
+-        if (msg->msg >= 0x400) queue->vstpoc_last_user_delivery = current_time;
++        if (msg->msg >= 0x400)
++        {
++            queue->vstpoc_last_user_delivery = current_time;
++            vstpoc_storm_account( queue );
++        }
+         if (msg->data)
+         {
+             set_reply_data_ptr( msg->data, msg->data_size );
+@@ -1464,6 +1608,7 @@
+         free( timer );
+     }
+     if (queue->timeout) remove_timeout_user( queue->timeout );
++    if (queue->vstpoc_storm_wake) remove_timeout_user( queue->vstpoc_storm_wake );
+     SHARED_WRITE_BEGIN( input_shm, input_shm_t )
+     {
+         shared->cursor_count -= queue->cursor_count;

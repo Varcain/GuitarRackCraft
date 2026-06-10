@@ -1,0 +1,121 @@
+From: Kamil Lulko <limakzagan@gmail.com>
+Subject: win32u: pace exact duplicate WM_USER posts before wineserver
+
+JUCE plugins can spin in a helper thread that repeatedly calls PostMessage for
+the same hidden-window callback message while the UI thread is inside modal menu
+or popup handling. The server-side queue coalescer bounds pending messages, but
+the caller still burns CPU entering NtUserPostMessage and the server path.
+
+When WINE_VSTPOC_COALESCE_POSTS is enabled, short-circuit exact duplicate
+WM_USER+N posts from the same sender thread for a tiny client-side interval.
+Return success, matching a coalesced async callback, and sleep for the remainder
+of the interval to keep the poster from starving UI/event processing.
+
+diff --git a/dlls/win32u/message.c b/dlls/win32u/message.c
+index a0eb097896b..b047303d763 100644
+--- a/dlls/win32u/message.c
++++ b/dlls/win32u/message.c
+@@ -4654,6 +4654,94 @@ static BOOL send_message_callback( HWND hwnd, UINT msg, WPARAM wparam, LPARAM lp
+ /***********************************************************************
+  *           NtUserPostMessage  (win32u.@)
+  */
++static int vstpoc_client_post_gap_ms(void)
++{
++    static int checked, gap_ms;
++
++    if (!checked)
++    {
++        const char *env = getenv( "WINE_VSTPOC_CLIENT_POST_GAP_MS" );
++
++        if (env && *env) gap_ms = atoi( env );
++        else
++        {
++            env = getenv( "WINE_VSTPOC_COALESCE_POSTS" );
++            gap_ms = (env && *env && atoi( env ) > 0) ? 2 : 0;
++        }
++        if (gap_ms < 0) gap_ms = 0;
++        checked = 1;
++    }
++    return gap_ms;
++}
++
++static void vstpoc_client_post_sleep( int ms )
++{
++    LARGE_INTEGER timeout;
++
++    if (ms <= 0) return;
++    timeout.QuadPart = -(LONGLONG)ms * 10000;
++    NtDelayExecution( FALSE, &timeout );
++}
++
++static BOOL vstpoc_should_skip_client_post( HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam )
++{
++    enum { cache_size = 32 };
++    static LONG lock;
++    static struct
++    {
++        DWORD tid;
++        DWORD time;
++        HWND hwnd;
++        UINT msg;
++        WPARAM wparam;
++        LPARAM lparam;
++    } cache[cache_size];
++    DWORD tid, now;
++    int gap_ms, i, slot = -1;
++
++    if (!hwnd || is_broadcast( hwnd ) || msg < WM_USER) return FALSE;
++    if (!(gap_ms = vstpoc_client_post_gap_ms())) return FALSE;
++
++    tid = GetCurrentThreadId();
++    now = NtGetTickCount();
++
++    if (InterlockedCompareExchange( &lock, 1, 0 )) return FALSE;
++
++    for (i = 0; i < ARRAY_SIZE( cache ); ++i)
++    {
++        if (cache[i].tid == tid && cache[i].hwnd == hwnd && cache[i].msg == msg &&
++            cache[i].wparam == wparam && cache[i].lparam == lparam)
++        {
++            DWORD elapsed = now - cache[i].time;
++
++            if (elapsed < gap_ms)
++            {
++                InterlockedExchange( &lock, 0 );
++                vstpoc_client_post_sleep( gap_ms - elapsed );
++                return TRUE;
++            }
++
++            cache[i].time = now;
++            InterlockedExchange( &lock, 0 );
++            return FALSE;
++        }
++        if (slot < 0 && !cache[i].tid) slot = i;
++    }
++
++    if (slot < 0)
++        slot = (((ULONG_PTR)hwnd >> 4) ^ (ULONG_PTR)wparam ^ (ULONG_PTR)lparam ^ msg ^ tid) %
++               ARRAY_SIZE( cache );
++
++    cache[slot].tid = tid;
++    cache[slot].time = now;
++    cache[slot].hwnd = hwnd;
++    cache[slot].msg = msg;
++    cache[slot].wparam = wparam;
++    cache[slot].lparam = lparam;
++    InterlockedExchange( &lock, 0 );
++    return FALSE;
++}
++
+ BOOL WINAPI NtUserPostMessage( HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam )
+ {
+     struct send_message_info info;
+@@ -4664,6 +4752,8 @@ BOOL WINAPI NtUserPostMessage( HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam
+         return FALSE;
+     }
+ 
++    if (vstpoc_should_skip_client_post( hwnd, msg, wparam, lparam )) return TRUE;
++
+     TRACE( "hwnd %p msg %x (%s) wp %lx lp %lx\n",
+            hwnd, msg, debugstr_msg_name(msg, hwnd), (long)wparam, lparam );
+ 

@@ -1,0 +1,187 @@
+From: Kamil Lulko <limakzagan@gmail.com>
+Subject: server: throttle/coalesce posted WM_USER messages for VST hosts
+
+JUCE plugins running under FEX can post WM_USER+N callbacks faster than the
+MessageManager thread drains them. When that happens during a mouse click, the
+posted-message queue can monopolize dispatch before the matching hardware
+release is converted to WM_LBUTTONUP. Keep the behavior env-gated: drop excess
+exact duplicate WM_USER+N posts after WINE_VSTPOC_COALESCE_POSTS pending
+messages and rate-limit WM_USER+N delivery with WINE_VSTPOC_POST_GAP_MS so input
+can run.
+Also make WM_USER+N yield to a queued mouse-button hardware message for the same
+thread. X50's activation form queues ButtonRelease before the plugin dispatches
+WM_LBUTTONDOWN; without this, the post-down JUCE async loop can keep the release
+from ever becoming WM_LBUTTONUP.
+
+diff --git a/server/queue.c b/server/queue.c
+index abae70fc91b..389f4816969 100644
+--- a/server/queue.c
++++ b/server/queue.c
+@@ -136,6 +136,7 @@ struct msg_queue
+     struct timeout_user   *timeout;         /* timeout for next timer to expire */
+     struct thread_input   *input;           /* thread input descriptor */
+     struct hook_table     *hooks;           /* hook table */
++    timeout_t              vstpoc_last_user_delivery;  /* WM_USER+N throttle */
+     int                    keystate_lock;   /* owns an input keystate lock */
+     queue_shm_t           *shared;          /* queue in session shared memory */
+ };
+@@ -317,6 +318,7 @@ static struct msg_queue *create_msg_queue( struct thread *thread, struct thread_
+         queue->timeout         = NULL;
+         queue->input           = (struct thread_input *)grab_object( input );
+         queue->hooks           = NULL;
++        queue->vstpoc_last_user_delivery = 0;
+         queue->keystate_lock   = 0;
+         list_init( &queue->send_result );
+         list_init( &queue->callback_result );
+@@ -1174,18 +1176,131 @@ static int match_window( user_handle_t win, user_handle_t msg_win )
+     return is_child_window( win, msg_win );
+ }
+ 
++static int vstpoc_post_gap_ticks(void)
++{
++    static int checked, ticks;
++
++    if (!checked)
++    {
++        const char *env = getenv( "WINE_VSTPOC_POST_GAP_MS" );
++        int ms = (env && *env) ? atoi( env ) : 0;
++        if (ms < 0) ms = 0;
++        ticks = ms * 10000;
++        checked = 1;
++    }
++    return ticks;
++}
++
++static int vstpoc_coalesce_threshold(void)
++{
++    static int checked, threshold;
++
++    if (!checked)
++    {
++        const char *env = getenv( "WINE_VSTPOC_COALESCE_POSTS" );
++        threshold = (env && *env) ? atoi( env ) : 0;
++        if (threshold < 0) threshold = 0;
++        checked = 1;
++    }
++    return threshold;
++}
++
++static int vstpoc_same_post_message( const struct message *a, const struct message *b )
++{
++    if (a->win != b->win || a->msg != b->msg) return 0;
++    if (a->wparam != b->wparam || a->lparam != b->lparam) return 0;
++
++    /* Posted messages carrying extra data may have distinct payloads even if
++     * the scalar parameters match. Keep coalescing to pointer-style callbacks. */
++    if (a->data_size || b->data_size) return 0;
++    return 1;
++}
++
++static int vstpoc_should_drop_post( struct msg_queue *queue, const struct message *msg )
++{
++    int threshold = vstpoc_coalesce_threshold();
++    struct message *queued;
++    int matches = 0, scanned = 0;
++
++    if (threshold <= 0 || msg->msg < 0x400) return 0;
++
++    LIST_FOR_EACH_ENTRY( queued, &queue->msg_list[POST_MESSAGE], struct message, entry )
++    {
++        if (++scanned > 8192) break;
++        if (vstpoc_same_post_message( queued, msg ) && ++matches >= threshold)
++            return 1;
++    }
++    return 0;
++}
++
++static int vstpoc_input_before_user(void)
++{
++    static int checked, enabled;
++
++    if (!checked)
++    {
++        const char *env = getenv( "WINE_VSTPOC_INPUT_BEFORE_USER" );
++        enabled = !env || !*env || atoi( env );
++        checked = 1;
++    }
++    return enabled;
++}
++
++static user_handle_t find_hardware_message_window( struct desktop *desktop, struct thread_input *input,
++                                                   struct message *msg, unsigned int *msg_code,
++                                                   struct thread **thread );
++static int check_hw_message_filter( user_handle_t win, unsigned int msg_code,
++                                    user_handle_t filter_win, unsigned int first, unsigned int last );
++
++static int vstpoc_defer_user_post_for_mousebutton( struct msg_queue *queue, user_handle_t filter_win,
++                                                   unsigned int first, unsigned int last )
++{
++    struct thread_input *input = queue->input;
++    struct message *hardware;
++
++    if (!vstpoc_input_before_user() || !input) return 0;
++
++    LIST_FOR_EACH_ENTRY( hardware, &input->msg_list, struct message, entry )
++    {
++        struct thread *win_thread;
++        unsigned int msg_code;
++        user_handle_t win;
++        int same_thread;
++
++        if (get_hardware_msg_bit( hardware->msg ) != QS_MOUSEBUTTON) continue;
++
++        win = find_hardware_message_window( input->desktop, input, hardware, &msg_code, &win_thread );
++        if (!win || !win_thread) continue;
++
++        same_thread = (win_thread == current);
++        release_object( win_thread );
++        if (!same_thread) continue;
++
++        if (check_hw_message_filter( win, msg_code, filter_win, first, last )) return 1;
++    }
++    return 0;
++}
++
+ /* retrieve a posted message */
+ static int get_posted_message( struct msg_queue *queue, user_handle_t win,
+                                unsigned int first, unsigned int last, unsigned int flags,
+                                struct get_message_reply *reply )
+ {
+     struct message *msg;
++    int post_gap = vstpoc_post_gap_ticks();
+ 
+     /* check against the filters */
+     LIST_FOR_EACH_ENTRY( msg, &queue->msg_list[POST_MESSAGE], struct message, entry )
+     {
+         if (!match_window( win, msg->win )) continue;
+         if (!check_msg_filter( msg->msg, first, last )) continue;
++        if (msg->msg >= 0x400 && (flags & PM_REMOVE) &&
++            vstpoc_defer_user_post_for_mousebutton( queue, win, first, last ))
++            return 0;
++        if (post_gap > 0 && msg->msg >= 0x400 && (flags & PM_REMOVE) &&
++            queue->vstpoc_last_user_delivery &&
++            current_time - queue->vstpoc_last_user_delivery < post_gap)
++            return 0;
+         goto found; /* found one */
+     }
+     return 0;
+@@ -1209,6 +1324,7 @@ found:
+ 
+     if (flags & PM_REMOVE)
+     {
++        if (msg->msg >= 0x400) queue->vstpoc_last_user_delivery = current_time;
+         if (msg->data)
+         {
+             set_reply_data_ptr( msg->data, msg->data_size );
+@@ -3213,6 +3329,11 @@ DECL_HANDLER(send_message)
+             set_queue_bits( recv_queue, QS_SENDMESSAGE );
+             break;
+         case MSG_POSTED:
++            if (vstpoc_should_drop_post( recv_queue, msg ))
++            {
++                free_message( msg );
++                break;
++            }
+             list_add_tail( &recv_queue->msg_list[POST_MESSAGE], &msg->entry );
+             set_queue_bits( recv_queue, QS_POSTMESSAGE|QS_ALLPOSTMESSAGE );
+             if (msg->msg == WM_HOTKEY)
