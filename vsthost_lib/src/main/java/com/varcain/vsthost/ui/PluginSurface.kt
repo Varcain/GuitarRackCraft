@@ -234,9 +234,56 @@ class EditorSurfaceView(
             override fun surfaceCreated(h: SurfaceHolder) {}
             override fun surfaceChanged(h: SurfaceHolder, fmt: Int, w: Int, hh: Int) {
                 NativeBridge.nativeAttachSurfaceToX11Display(displayNumber, h.surface, w, hh)
+                maybeRunAhbEditorTest()
+                maybeRunAhbChannelTest()
             }
             override fun surfaceDestroyed(h: SurfaceHolder) {}
         })
+    }
+
+    // Phase 1 GPU-present validation (synthetic). When cache/ahb_editor_test
+    // exists, ~1.5 s after attach register a CPU-filled gradient AHardwareBuffer
+    // as the editor's GPU source — the compositor should sample it via EGLImage
+    // in place of the (plugin or empty) CPU framebuffer. ~6 s later clear it to
+    // prove the CPU path returns. One-shot per view. Drop the marker with:
+    //   adb shell run-as <pkg> sh -c 'printf x > cache/ahb_editor_test'
+    private var ahbTestDone = false
+    private fun maybeRunAhbEditorTest() {
+        if (ahbTestDone) return
+        val marker = java.io.File(context.cacheDir, "ahb_editor_test")
+        if (!marker.exists()) return
+        ahbTestDone = true
+        val h = Handler(Looper.getMainLooper())
+        h.postDelayed({
+            val ok = NativeBridge.nativeDebugEditorAhbGradient(displayNumber, true)
+            Log.i("AhbEditorTest", "register gradient display=$displayNumber ok=$ok")
+            h.postDelayed({
+                val off = NativeBridge.nativeDebugEditorAhbGradient(displayNumber, false)
+                Log.i("AhbEditorTest", "clear gradient display=$displayNumber ok=$off")
+            }, 6000)
+        }, 1500)
+    }
+
+    // Phase 2 side-channel validation (synthetic). When cache/ahb_channel_test
+    // exists, ~1.5 s after attach run the synthetic client on a background
+    // thread: it connects to the X server's abstract AHB socket, REGISTERs +
+    // PRESENTs a gradient AHB over SCM_RIGHTS, holds it 6 s (gradient visible),
+    // then UNREGISTERs (editor reverts). Distinct gradient from the Phase 1
+    // hook (red-x/blue-y vs red-x/green-y) so the socket path is identifiable.
+    //   adb shell run-as <pkg> toybox touch cache/ahb_channel_test
+    private var ahbChannelTestDone = false
+    private fun maybeRunAhbChannelTest() {
+        if (ahbChannelTestDone) return
+        val marker = java.io.File(context.cacheDir, "ahb_channel_test")
+        if (!marker.exists()) return
+        ahbChannelTestDone = true
+        val logPath = java.io.File(context.cacheDir, "ahb_channel_test.log").absolutePath
+        Handler(Looper.getMainLooper()).postDelayed({
+            Thread {
+                val ok = NativeBridge.nativeAhbChannelTest(displayNumber, 6000, logPath)
+                Log.i("AhbChannelTest", "side-channel test display=$displayNumber ok=$ok")
+            }.start()
+        }, 1500)
     }
 
     override fun onCheckIsTextEditor(): Boolean = true

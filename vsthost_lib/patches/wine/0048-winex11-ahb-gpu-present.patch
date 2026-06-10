@@ -1,0 +1,405 @@
+From: Kamil Lulko <limakzagan@gmail.com>
+Subject: winex11.drv: zero-copy AHB GPU present over the X-server side-channel
+
+Phase 3 of the GPU X-server upgrade. Replaces the per-frame GPU->CPU
+readback in vstpoc_on_image (patch 0032's AImage_getPlaneData + XPutImage)
+with a zero-copy path: when VSTPOC_AHB_PRESENT=1, ship each rendered frame's
+AHardwareBuffer (the AImageReader's images are already AHB-backed) + its
+acquire-fence over a private AF_UNIX side-channel to the in-process X server,
+which imports it as an EGLImage and composites it directly. No CPU copy.
+
+- Connect the abstract socket "guitarrack-ahb-<display>" at surface create
+  (display parsed from DISPLAY); connect failure falls back to readback.
+- Per frame: REGISTER (buffer_count=1) + the AHB handle via SCM_RIGHTS
+  (AHardwareBuffer_sendHandleToUnixSocket from libandroid.so) + PRESENT with
+  the acquire-fence. HOLD the AImage 1-deep so DXVK can't reuse a buffer the
+  server is still sampling; the previous held image returns to the pool.
+- AImageReader usage gains GPU_SAMPLED_IMAGE (0x303) so Adreno-EGL can sample
+  it; maxImages 4->6 for hold headroom. AhbChannelProtocol.h is vendored from
+  vsthost_lib/src/main/cpp/x11/ (POSIX sockets only, byte-identical wire).
+
+Default-off (env-gated); existing plugins keep the readback path. Slots after
+patch 0032 (the AImageReader present). Device-validated: BIAS FX 2 editor
+renders pixel-correct via zero-copy on OnePlus 12 / Adreno 750.
+
+--- a/dlls/winex11.drv/vulkan.c
++++ b/dlls/winex11.drv/vulkan.c
+@@ -28,12 +28,23 @@
+ 
+ #include <stdarg.h>
+ #include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <errno.h>
+ #include <dlfcn.h>
++#include <unistd.h>
++#include <sys/socket.h>
++#include <sys/un.h>
+ 
+ #include "ntstatus.h"
+ #include "windef.h"
+ #include "winbase.h"
+ 
++/* vstpoc Phase 3: AHB GPU-present side-channel. Vendored verbatim from
++ * vsthost_lib/src/main/cpp/x11/AhbChannelProtocol.h — KEEP IN SYNC byte-for-byte
++ * (the X server is the other end). POSIX sockets only, no NDK headers. */
++#include "AhbChannelProtocol.h"
++
+ #include "wine/debug.h"
+ #include "x11drv.h"
+ #include "xcomposite.h"
+@@ -68,10 +79,42 @@
+ static vstpoc_media_status (*p_AImageReader_getWindow)( void *, void ** );
+ static vstpoc_media_status (*p_AImageReader_setImageListener)( void *, struct vstpoc_image_listener * );
+ static vstpoc_media_status (*p_AImageReader_acquireLatestImage)( void *, void ** );
++static vstpoc_media_status (*p_AImageReader_acquireLatestImageAsync)( void *, void **, int * );
+ static vstpoc_media_status (*p_AImage_getPlaneData)( const void *, int, uint8_t **, int * );
+ static vstpoc_media_status (*p_AImage_getPlaneRowStride)( const void *, int, int32_t * );
++static vstpoc_media_status (*p_AImage_getHardwareBuffer)( const void *, void ** );
+ static void (*p_AImage_delete)( void * );
+ 
++/* Phase 3 AHB GPU-present: the AImageReader's images are AHB-backed (we created
++ * it with GPU usage), so we pull the AHardwareBuffer straight off each AImage
++ * and ship its handle over the side-channel — NO CPU readback. The send symbol
++ * lives in libandroid.so (a different DLL than the AImage* symbols). */
++static int (*p_AHardwareBuffer_sendHandleToUnixSocket)( const void *buffer, int socketFd );
++
++static int vstpoc_load_android(void)
++{
++    static int loaded;
++    if (loaded) return loaded > 0;
++    void *a = dlopen( "libandroid.so", RTLD_NOW );
++    if (!a) { loaded = -1; ERR( "vstpoc: dlopen libandroid.so failed: %s\n", dlerror() ); return 0; }
++    p_AHardwareBuffer_sendHandleToUnixSocket = dlsym( a, "AHardwareBuffer_sendHandleToUnixSocket" );
++    loaded = p_AHardwareBuffer_sendHandleToUnixSocket ? 1 : -1;
++    if (loaded < 0) ERR( "vstpoc: missing AHardwareBuffer_sendHandleToUnixSocket in libandroid.so\n" );
++    return loaded > 0;
++}
++
++/* Display number of our X server connection (DISPLAY=host:N → N), used to name
++ * the per-display abstract side-channel socket. */
++static int vstpoc_display_number(void)
++{
++    const char *ds = DisplayString( gdi_display );
++    const char *c;
++    if (!ds) ds = getenv( "DISPLAY" );
++    if (!ds) return 0;
++    c = strrchr( ds, ':' );
++    return c ? atoi( c + 1 ) : 0;   /* atoi stops at the '.screen' suffix */
++}
++
+ struct vstpoc_surface_ctx
+ {
+     void *reader;
+@@ -80,6 +123,12 @@
+     GC gc;
+     int width, height, depth;
+     int in_use;
++    /* Phase 3 AHB GPU-present (VSTPOC_AHB_PRESENT=1). */
++    int ahb_present;      /* GPU path active for this surface */
++    int chan_fd;          /* AHB side-channel socket, -1 = none (CPU readback) */
++    uint32_t window_id;   /* x11_window as the side-channel key */
++    int registered;       /* a REGISTER has been sent (size unchanged since) */
++    void *held_image;     /* AImage held until the next present (1-deep, prevents reuse) */
+ };
+ static struct vstpoc_surface_ctx g_vstpoc_surfaces[16];
+ static struct vstpoc_image_listener g_vstpoc_listeners[16];
+@@ -90,13 +139,15 @@
+     if (loaded) return loaded > 0;
+     void *m = dlopen( "libmediandk.so", RTLD_NOW );
+     if (!m) { loaded = -1; ERR( "vstpoc: dlopen libmediandk.so failed: %s\n", dlerror() ); return 0; }
+-    p_AImageReader_newWithUsage       = dlsym( m, "AImageReader_newWithUsage" );
+-    p_AImageReader_getWindow          = dlsym( m, "AImageReader_getWindow" );
+-    p_AImageReader_setImageListener   = dlsym( m, "AImageReader_setImageListener" );
+-    p_AImageReader_acquireLatestImage = dlsym( m, "AImageReader_acquireLatestImage" );
+-    p_AImage_getPlaneData             = dlsym( m, "AImage_getPlaneData" );
+-    p_AImage_getPlaneRowStride        = dlsym( m, "AImage_getPlaneRowStride" );
+-    p_AImage_delete                   = dlsym( m, "AImage_delete" );
++    p_AImageReader_newWithUsage            = dlsym( m, "AImageReader_newWithUsage" );
++    p_AImageReader_getWindow               = dlsym( m, "AImageReader_getWindow" );
++    p_AImageReader_setImageListener        = dlsym( m, "AImageReader_setImageListener" );
++    p_AImageReader_acquireLatestImage      = dlsym( m, "AImageReader_acquireLatestImage" );
++    p_AImageReader_acquireLatestImageAsync = dlsym( m, "AImageReader_acquireLatestImageAsync" );
++    p_AImage_getPlaneData                  = dlsym( m, "AImage_getPlaneData" );
++    p_AImage_getPlaneRowStride             = dlsym( m, "AImage_getPlaneRowStride" );
++    p_AImage_getHardwareBuffer             = dlsym( m, "AImage_getHardwareBuffer" );
++    p_AImage_delete                        = dlsym( m, "AImage_delete" );
+     int ok = p_AImageReader_newWithUsage && p_AImageReader_getWindow && p_AImageReader_setImageListener
+           && p_AImageReader_acquireLatestImage && p_AImage_getPlaneData && p_AImage_delete;
+     loaded = ok ? 1 : -1;
+@@ -104,12 +155,73 @@
+     return ok;
+ }
+ 
++/* Phase 3 GPU path: ship the freshest frame's AHardwareBuffer + acquire-fence
++ * over the side-channel — no CPU readback. The AImage is HELD (1-deep) until the
++ * next frame so DXVK can't reuse its buffer while the X server samples it; the
++ * previous held image is returned to the pool here. REGISTER replaces the
++ * window's single buffer each frame (the AImageReader's 4 buffers cycle), then
++ * PRESENT(index 0) with the fence the X server GPU-waits before sampling.
++ * Returns 1 if it handled the frame, 0 to fall back to CPU readback. */
++static int vstpoc_present_ahb( struct vstpoc_surface_ctx *s, void *reader )
++{
++    void *image = NULL, *ahb = NULL;
++    int fence_fd = -1, ok = 0;
++    AhbChMsg msg;
++
++    if (s->chan_fd < 0 || !p_AImage_getHardwareBuffer || !p_AHardwareBuffer_sendHandleToUnixSocket)
++        return 0;
++
++    if (p_AImageReader_acquireLatestImageAsync)
++    {
++        if (p_AImageReader_acquireLatestImageAsync( reader, &image, &fence_fd ) != 0 || !image) return 0;
++    }
++    else if (p_AImageReader_acquireLatestImage( reader, &image ) != 0 || !image) return 0;
++
++    if (p_AImage_getHardwareBuffer( image, &ahb ) != 0 || !ahb) goto done;
++
++    /* REGISTER (buffer_count=1, replaces) + the AHB handle (SCM_RIGHTS). */
++    memset( &msg, 0, sizeof(msg) );
++    msg.magic = AHBCH_MAGIC; msg.version = AHBCH_VERSION; msg.type = AHBCH_REGISTER;
++    msg.window_id = s->window_id; msg.width = s->width; msg.height = s->height;
++    msg.format = 1 /* AHARDWAREBUFFER_FORMAT_R8G8B8A8_UNORM */; msg.buffer_count = 1;
++    if (!ahbch_send_msg( s->chan_fd, &msg, -1 )) goto chan_broken;
++    if (p_AHardwareBuffer_sendHandleToUnixSocket( ahb, s->chan_fd ) != 0) goto chan_broken;
++
++    /* PRESENT(index 0) with the acquire-fence. */
++    memset( &msg, 0, sizeof(msg) );
++    msg.magic = AHBCH_MAGIC; msg.version = AHBCH_VERSION; msg.type = AHBCH_PRESENT;
++    msg.window_id = s->window_id; msg.buffer_index = 0; msg.has_fence = (fence_fd >= 0);
++    if (!ahbch_send_msg( s->chan_fd, &msg, fence_fd )) goto chan_broken;
++    ok = 1;
++
++    /* Hold THIS image; release the previous one back to the swapchain pool. */
++    if (s->held_image) p_AImage_delete( s->held_image );
++    s->held_image = image;
++    image = NULL;
++    goto done;
++
++chan_broken:
++    ERR( "vstpoc: AHB side-channel send failed (%s) — reverting to CPU readback\n", strerror(errno) );
++    close( s->chan_fd );
++    s->chan_fd = -1;
++    s->ahb_present = 0;
++
++done:
++    if (fence_fd >= 0) close( fence_fd );   /* SCM_RIGHTS dup'd it; close our copy */
++    if (image) p_AImage_delete( image );
++    return ok;
++}
++
+ /* AImageReader image-available callback: runs on the reader's own thread.
+- * Acquire the freshest frame, read its pixels, XPutImage to the editor window. */
++ * GPU path (VSTPOC_AHB_PRESENT): ship the AHB over the side-channel. Otherwise
++ * acquire the freshest frame, read its pixels, XPutImage to the editor window. */
+ static void vstpoc_on_image( void *context, void *reader )
+ {
+     struct vstpoc_surface_ctx *s = context;
+     void *image = NULL;
++
++    if (s->ahb_present && vstpoc_present_ahb( s, reader )) return;
++
+     if (p_AImageReader_acquireLatestImage( reader, &image ) != 0 || !image) return;
+     uint8_t *data = NULL; int len = 0; int32_t stride = s->width * 4;
+     if (p_AImage_getPlaneData( image, 0, &data, &len ) == 0 && data)
+@@ -141,8 +253,13 @@
+     if (depth < 24) depth = 24;
+ 
+     void *reader = NULL, *anw = NULL;
+-    /* AIMAGE_FORMAT_RGBA_8888=0x1; usage GPU_COLOR_OUTPUT(0x200)|CPU_READ_OFTEN(0x3) */
+-    if (p_AImageReader_newWithUsage( (int32_t)w, (int32_t)h, 0x1, 0x203ull, 4, &reader ) != 0 || !reader)
++    /* AIMAGE_FORMAT_RGBA_8888=0x1; usage GPU_COLOR_OUTPUT(0x200) | GPU_SAMPLED_IMAGE(0x100)
++     * | CPU_READ_OFTEN(0x3). GPU_SAMPLED_IMAGE lets the X server's Adreno-EGL import +
++     * sample the AHB (Phase 3 GPU present); CPU_READ_OFTEN keeps the readback fallback. */
++    /* maxImages=6: the GPU path holds 1 image (1-deep, until the next present) to
++     * stop DXVK reusing it mid-sample, so the pool needs headroom above DXVK's
++     * swapchain min so vkAcquireNextImage never starves. */
++    if (p_AImageReader_newWithUsage( (int32_t)w, (int32_t)h, 0x1, 0x303ull, 6, &reader ) != 0 || !reader)
+     { ERR( "vstpoc: AImageReader_newWithUsage failed\n" ); return VK_ERROR_INITIALIZATION_FAILED; }
+     if (p_AImageReader_getWindow( reader, &anw ) != 0 || !anw)
+     { ERR( "vstpoc: AImageReader_getWindow failed\n" ); return VK_ERROR_INITIALIZATION_FAILED; }
+@@ -163,6 +280,32 @@
+         struct vstpoc_surface_ctx *s = &g_vstpoc_surfaces[idx];
+         s->in_use = 1; s->reader = reader; s->x11_window = x11_window;
+         s->width = (int)w; s->height = (int)h; s->depth = (int)depth;
++        s->chan_fd = -1; s->ahb_present = 0; s->held_image = NULL; s->registered = 0;
++        s->window_id = (uint32_t)x11_window;
++
++        /* Phase 3: if VSTPOC_AHB_PRESENT=1, connect the AHB side-channel so each
++         * frame's AHardwareBuffer goes GPU->GPU to the X server (no readback).
++         * Connect failure (server not up) just leaves chan_fd=-1 → readback. */
++        const char *ap = getenv( "VSTPOC_AHB_PRESENT" );
++        if (ap && ap[0] == '1' && vstpoc_load_android())
++        {
++            int dnum = vstpoc_display_number();
++            int cfd = socket( AF_UNIX, SOCK_STREAM, 0 );
++            if (cfd >= 0)
++            {
++                struct sockaddr_un addr;
++                socklen_t alen = ahbch_make_addr( &addr, dnum );
++                if (connect( cfd, (struct sockaddr *)&addr, alen ) == 0)
++                {
++                    s->chan_fd = cfd; s->ahb_present = 1;
++                    ERR( "vstpoc: AHB GPU-present ACTIVE — side-channel connected (display %d win=0x%lx %ux%u)\n",
++                         dnum, x11_window, w, h );
++                }
++                else { ERR( "vstpoc: AHB side-channel connect (display %d) failed: %s — using readback\n",
++                            dnum, strerror(errno) ); close( cfd ); }
++            }
++        }
++
+         s->dpy = XOpenDisplay( DisplayString( gdi_display ) );
+         if (s->dpy)
+         {
+@@ -170,8 +313,8 @@
+             g_vstpoc_listeners[idx].context = s;
+             g_vstpoc_listeners[idx].onImageAvailable = vstpoc_on_image;
+             p_AImageReader_setImageListener( reader, &g_vstpoc_listeners[idx] );
+-            ERR( "vstpoc: GPU-present ACTIVE — android_surface + AImageReader readback (%ux%u depth=%u win=0x%lx)\n",
+-                 w, h, depth, x11_window );
++            ERR( "vstpoc: GPU-present ACTIVE — android_surface + AImageReader (%s) (%ux%u depth=%u win=0x%lx)\n",
++                 s->ahb_present ? "AHB side-channel" : "CPU readback", w, h, depth, x11_window );
+         }
+         else ERR( "vstpoc: XOpenDisplay for readback failed — surface created but no present\n" );
+     }
+--- /dev/null
++++ b/dlls/winex11.drv/AhbChannelProtocol.h
+@@ -0,0 +1,138 @@
++// AhbChannelProtocol.h — Phase 2 of the GPU X-server upgrade.
++//
++// A private control channel for passing AHardwareBuffer handles + sync-fds
++// between a frame producer (the wine winex11.drv Vulkan present path, Phase 3 —
++// or a synthetic test client) and the in-process X11 server's GLES compositor,
++// DECOUPLED from the TCP X11 protocol socket. SCM_RIGHTS fd-passing is
++// impossible on the custom-libxcb TCP socket, so AHB/fence handles travel here.
++//
++// Transport: AF_UNIX SOCK_STREAM, abstract namespace ("\0guitarrack-ahb-<N>"),
++// one socket per X11 display number. Additive + independently disableable; does
++// NOT touch the TCP path. Keyed by X11 window id (both sides already know it).
++//
++// This header is intentionally plain C (fixed-width types, static-inline socket
++// helpers, no C++/namespaces) so it can be vendored verbatim into the wine tree
++// for the Phase 3 producer.
++#ifndef GUITARRACKCRAFT_X11_AHB_CHANNEL_PROTOCOL_H
++#define GUITARRACKCRAFT_X11_AHB_CHANNEL_PROTOCOL_H
++
++#include <stdint.h>
++#include <stddef.h>
++#include <string.h>
++#include <stdio.h>
++#include <sys/socket.h>
++#include <sys/un.h>
++#include <unistd.h>
++
++/* NOTE: this header deliberately does NOT include <android/hardware_buffer.h> —
++ * the helpers below only use POSIX sockets, so the header is vendorable verbatim
++ * into the wine tree (winex11.drv, which has bionic sockets but not the NDK
++ * AHB headers). The AHB *handles* themselves travel via the NDK's
++ * AHardwareBuffer_send/recvHandleFromUnixSocket, called by the endpoint code
++ * (which includes/declares those itself), NOT by anything here. */
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++#define AHBCH_MAGIC   0x41484243u  /* 'AHBC' */
++#define AHBCH_VERSION 1u
++
++enum AhbChMsgType {
++    AHBCH_REGISTER   = 1, /* client->server, followed by buffer_count AHB handles
++                           * (each via AHardwareBuffer_sendHandleToUnixSocket) */
++    AHBCH_PRESENT    = 2, /* client->server, has_fence=1 => one sync-fd via SCM_RIGHTS */
++    AHBCH_UNREGISTER = 3, /* client->server */
++    AHBCH_RELEASE    = 4, /* server->client: buffer_index is free to reuse */
++};
++
++/* Fixed 40-byte message header. Host-local socket → native byte order (both
++ * ends are LE ARM64/x86_64). Field meaning depends on `type`. */
++typedef struct AhbChMsg {
++    uint32_t magic;        /* AHBCH_MAGIC */
++    uint16_t version;      /* AHBCH_VERSION */
++    uint16_t type;         /* enum AhbChMsgType */
++    uint32_t window_id;    /* X11 window id the AHB(s) back */
++    uint32_t width;        /* REGISTER: buffer width  */
++    uint32_t height;       /* REGISTER: buffer height */
++    uint32_t format;       /* REGISTER: AHARDWAREBUFFER_FORMAT_* */
++    uint32_t buffer_count; /* REGISTER: number of AHB handles that follow */
++    uint32_t buffer_index; /* PRESENT / RELEASE: which buffer in the ring */
++    uint32_t has_fence;    /* PRESENT: 1 => one sync-fd follows via SCM_RIGHTS */
++    uint32_t reserved;     /* pad to 40 / future use */
++} AhbChMsg;
++
++/* Fill `addr` with the abstract-namespace address for display N. Returns the
++ * socklen_t to pass to bind()/connect() (covers the leading NUL + name, NOT the
++ * whole sun_path — abstract sockets are length-delimited, not NUL-delimited). */
++static inline socklen_t ahbch_make_addr(struct sockaddr_un* addr, int display_number) {
++    memset(addr, 0, sizeof(*addr));
++    addr->sun_family = AF_UNIX;
++    char name[64];
++    int n = snprintf(name, sizeof(name), "guitarrack-ahb-%d", display_number);
++    if (n < 0) n = 0;
++    if (n > (int)sizeof(name) - 1) n = (int)sizeof(name) - 1;
++    addr->sun_path[0] = '\0';                 /* abstract namespace */
++    memcpy(addr->sun_path + 1, name, (size_t)n);
++    return (socklen_t)(offsetof(struct sockaddr_un, sun_path) + 1 + n);
++}
++
++/* Send one message, optionally with a single fd attached via SCM_RIGHTS
++ * (fence_fd < 0 => none). Returns 1 on success, 0 on failure. */
++static inline int ahbch_send_msg(int fd, const AhbChMsg* msg, int fence_fd) {
++    struct iovec iov;
++    iov.iov_base = (void*)msg;
++    iov.iov_len  = sizeof(*msg);
++    struct msghdr mh;
++    memset(&mh, 0, sizeof(mh));
++    mh.msg_iov    = &iov;
++    mh.msg_iovlen = 1;
++    char cbuf[CMSG_SPACE(sizeof(int))];
++    if (fence_fd >= 0) {
++        memset(cbuf, 0, sizeof(cbuf));
++        mh.msg_control    = cbuf;
++        mh.msg_controllen = sizeof(cbuf);
++        struct cmsghdr* c = CMSG_FIRSTHDR(&mh);
++        c->cmsg_level = SOL_SOCKET;
++        c->cmsg_type  = SCM_RIGHTS;
++        c->cmsg_len   = CMSG_LEN(sizeof(int));
++        memcpy(CMSG_DATA(c), &fence_fd, sizeof(int));
++    }
++    ssize_t r = sendmsg(fd, &mh, 0);
++    return r == (ssize_t)sizeof(*msg) ? 1 : 0;
++}
++
++/* Receive one message. If a fence fd arrives via SCM_RIGHTS it is stored in
++ * *out_fence_fd (the caller owns + must close it); otherwise *out_fence_fd = -1.
++ * Returns 1 on success, 0 on EOF/error. */
++static inline int ahbch_recv_msg(int fd, AhbChMsg* msg, int* out_fence_fd) {
++    if (out_fence_fd) *out_fence_fd = -1;
++    struct iovec iov;
++    iov.iov_base = msg;
++    iov.iov_len  = sizeof(*msg);
++    struct msghdr mh;
++    memset(&mh, 0, sizeof(mh));
++    mh.msg_iov    = &iov;
++    mh.msg_iovlen = 1;
++    char cbuf[CMSG_SPACE(sizeof(int))];
++    mh.msg_control    = cbuf;
++    mh.msg_controllen = sizeof(cbuf);
++    ssize_t r = recvmsg(fd, &mh, MSG_WAITALL);
++    if (r != (ssize_t)sizeof(*msg)) return 0;
++    struct cmsghdr* c;
++    for (c = CMSG_FIRSTHDR(&mh); c; c = CMSG_NXTHDR(&mh, c)) {
++        if (c->cmsg_level == SOL_SOCKET && c->cmsg_type == SCM_RIGHTS) {
++            int got;
++            memcpy(&got, CMSG_DATA(c), sizeof(int));
++            if (out_fence_fd) *out_fence_fd = got; else if (got >= 0) close(got);
++            break;
++        }
++    }
++    return 1;
++}
++
++#ifdef __cplusplus
++}  /* extern "C" */
++#endif
++
++#endif  /* GUITARRACKCRAFT_X11_AHB_CHANNEL_PROTOCOL_H */

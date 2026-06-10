@@ -115,6 +115,7 @@ class MainActivity : ComponentActivity() {
                 prepareLv2AndInitEngine()
             }
             engineReady = true
+            maybeRunAhbSpike()
             maybeAutostartEditor()
         }
 
@@ -243,6 +244,28 @@ class MainActivity : ComponentActivity() {
      * absent (the normal case) = no-op. Drop the marker with:
      *   adb shell run-as <pkg> sh -c 'echo "BIAS FX 2" > cache/autostart_editor.txt'
      */
+    /** Phase 0 GPU-upgrade spike (throwaway). If cache/ahbspike exists, run the
+     *  cross-driver AHardwareBuffer + fence interop test in-process (the app has
+     *  GPU access + adrenotools works here, same as the wine subprocess) and log
+     *  PASS/FAIL to logcat tag "AhbSpike". Drop the marker with:
+     *    adb shell run-as <pkg> sh -c 'printf x > cache/ahbspike'
+     */
+    private suspend fun maybeRunAhbSpike() {
+        try {
+            if (!File(cacheDir, "ahbspike").exists()) return
+            val turnipDir = File(filesDir, "wine/turnip").absolutePath + "/"  // trailing slash required
+            val logPath = File(cacheDir, "ahbspike.log").absolutePath
+            withContext(Dispatchers.IO) {
+                android.util.Log.i("AhbSpike", "running spike (hook=${applicationInfo.nativeLibraryDir} turnip=$turnipDir log=$logPath)")
+                val ok = com.varcain.vsthost.NativeBridge.nativeAhbSpike(
+                    applicationInfo.nativeLibraryDir, turnipDir, "vulkan.ad07xx.so", logPath)
+                android.util.Log.i("AhbSpike", "spike returned ok=$ok")
+            }
+        } catch (e: Throwable) {
+            android.util.Log.e("AhbSpike", "spike threw", e)
+        }
+    }
+
     private suspend fun maybeAutostartEditor() {
         try {
             val marker = File(cacheDir, "autostart_editor.txt")

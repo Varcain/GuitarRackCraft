@@ -113,6 +113,25 @@ object NativeBridge {
      *  context (and making the wizard's own positioning look broken). */
     external fun nativeSetX11FramebufferFrozen(displayNumber: Int, frozen: Boolean)
 
+    /** Phase 0 GPU-upgrade spike (throwaway). Runs the cross-driver
+     *  AHardwareBuffer + fence interop test in-process; logs to logcat tag
+     *  "AhbSpike". Returns true on PASS. See ahbspike/AhbSpike.cpp. */
+    external fun nativeAhbSpike(hookDir: String, driverDir: String, driverName: String, logPath: String): Boolean
+
+    /** Phase 1 synthetic GPU-present hook. on=true registers a CPU-filled
+     *  gradient AHardwareBuffer as display N's editor source (the compositor
+     *  samples it via EGLImage instead of uploading the CPU framebuffer);
+     *  on=false clears it. Returns true on success. Validates the AHB→EGLImage
+     *  →composite path with no plugin loaded. */
+    external fun nativeDebugEditorAhbGradient(displayNumber: Int, on: Boolean): Boolean
+
+    /** Phase 2 synthetic side-channel client (throwaway). Connects to display
+     *  N's AHB side-channel (abstract AF_UNIX socket), REGISTERs + PRESENTs a
+     *  gradient AHardwareBuffer over SCM_RIGHTS, holds it `holdMs`, then
+     *  UNREGISTERs. Proves the socket transport independent of the TCP X11 path.
+     *  Blocking for ~holdMs — call from a background thread. Logs to logPath. */
+    external fun nativeAhbChannelTest(displayNumber: Int, holdMs: Int, logPath: String): Boolean
+
     /** Inject a pointer event into display N's plugin window.
      *  action: 0 = ButtonPress(1),  1 = ButtonRelease(1),
      *          2 = MotionNotify,    3 = ButtonPress(3)+ButtonRelease(3)

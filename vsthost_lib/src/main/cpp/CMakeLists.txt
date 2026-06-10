@@ -31,8 +31,13 @@ add_library(vsthost SHARED
     x11/X11ConnectionHandler.cpp
     x11/X11Framebuffer.cpp
     x11/X11PropertyStore.cpp
+    x11/AhbTexture.cpp
     plugin/PluginUIGuard.cpp
     util/PeExports.cpp
+    # Phase 0 GPU-upgrade spike (cross-driver AHB+fence, throwaway diagnostic)
+    ahbspike/AhbSpike.cpp
+    # Phase 2 AHB side-channel synthetic client (throwaway diagnostic)
+    ahbspike/AhbChannelTest.cpp
     # GuitarRackCraft IPlugin bridge (consumed by :app via prefab)
     vst/VstFactory.cpp
     vst/WineVstPlugin.cpp
@@ -48,6 +53,7 @@ target_link_libraries(vsthost
     log
     EGL
     GLESv2
+    vulkan   # AhbSpike.cpp (Vulkan types/headers; Turnip loaded via dlopen at runtime)
 )
 
 target_compile_options(vsthost PRIVATE
