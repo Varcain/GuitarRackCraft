@@ -163,6 +163,37 @@ struct X11NativeDisplay::Impl {
     std::atomic<bool> dirty{false};
     std::mutex dirtyMutex;                    // Protects dirty condition variable
     std::condition_variable dirtyCv;          // Signals render thread when dirty changes
+
+    /* Phase A (dirty-region compositor upload). The editor-layer framebuffer is
+     * written ONLY by PutImage + CopyArea (PolyFillRectangle no-ops for windows;
+     * popup map/unmap/destroy change compositing but NOT this texture). So those
+     * two paths accumulate a dirty bounding-box (framebuffer pixel coords,
+     * stacked-slot space, half-open [x0,x1)x[y0,y1), empty when x0>=x1) and the
+     * render thread uploads only that rect via glTexSubImage2D into a persistent
+     * fbTex instead of re-specifying the whole texture (glTexImage2D) every
+     * frame. When nothing touched the editor (e.g. only a popup changed) the box
+     * is empty and the renderer SKIPS the fbTex upload entirely, just
+     * re-compositing. fbFullUpload forces a full re-spec (init / resize / attach
+     * / any path we can't bound precisely). The box is written + reset under
+     * bufferMutex (every writer holds it); fbFullUpload is atomic so lifecycle
+     * paths that don't hold bufferMutex can still force a full frame. */
+    int fbDirtyX0 = 0, fbDirtyY0 = 0, fbDirtyX1 = 0, fbDirtyY1 = 0;  // bufferMutex
+    std::atomic<bool> fbFullUpload{true};
+    int fbTexW = 0, fbTexH = 0;                 // render-thread-only: fbTex alloc size
+    std::vector<uint32_t> dirtyStage;           // render-thread-only: packed sub-rect upload
+    // Expand the editor-layer dirty bbox by a framebuffer-coord write rect.
+    // Caller must hold bufferMutex.
+    void markFbDirty(int x, int y, int w, int h) {
+        if (w <= 0 || h <= 0) return;
+        int x1 = x + w, y1 = y + h;
+        if (fbDirtyX0 >= fbDirtyX1) { fbDirtyX0 = x; fbDirtyY0 = y; fbDirtyX1 = x1; fbDirtyY1 = y1; }
+        else {
+            if (x  < fbDirtyX0) fbDirtyX0 = x;
+            if (y  < fbDirtyY0) fbDirtyY0 = y;
+            if (x1 > fbDirtyX1) fbDirtyX1 = x1;
+            if (y1 > fbDirtyY1) fbDirtyY1 = y1;
+        }
+    }
     std::atomic<bool> detachDeferred{false};  // Set when detach is deferred due to plugin creation
     // Graceful teardown state
     std::atomic<bool> closingGracefully{false};  // Set when graceful teardown initiated
@@ -497,6 +528,9 @@ struct X11NativeDisplay::Impl {
         glDeleteShader(fsId);
         texUniform = glGetUniformLocation(program, "uTex");
         glGenTextures(1, &fbTex);
+        // Phase A: fbTex is a fresh, unsized GL texture (a re-attach makes a new
+        // one). Force the next frame to full-spec it before any glTexSubImage2D.
+        fbTexW = 0; fbTexH = 0; fbFullUpload = true;
         glGenBuffers(1, &fbVbo);
         float verts[] = { -1,-1, 0,1,  1,-1, 1,1,  -1,1, 0,0,  1,1, 1,0 };
         glBindBuffer(GL_ARRAY_BUFFER, fbVbo);
@@ -593,6 +627,12 @@ struct X11NativeDisplay::Impl {
             int fw = 0, fh = 0;
             int cropOffX = 0, cropOffY = 0;
             std::vector<PopupSnapshot> popupSnapshots;
+            // Phase A editor-layer upload plan (decided under bufferMutex below):
+            //   fullUp  -> glTexImage2D the whole renderBuffer (init/resize/attach)
+            //   haveRect-> glTexSubImage2D just (dx0,dy0,dw,dh) from dirtyStage
+            //   neither -> editor texture unchanged; only re-composite (popup change)
+            bool fullUp = false, haveRect = false;
+            int dx0 = 0, dy0 = 0, dw = 0, dh = 0;
             {
                 std::lock_guard<std::mutex> lock(bufferMutex);
                 fw = pluginWidth > 0 ? pluginWidth : width;
@@ -603,11 +643,35 @@ struct X11NativeDisplay::Impl {
                     fh = pluginHeight * (int)pluginSlotWindows.size();
                 }
                 bool useCrop = false;  // installer auto-crop disabled — see ConfigureWindow note
+                // Phase A: pick the editor-layer upload mode. fbFullUpload covers
+                // init/attach/resume; a texture-size change forces a re-spec; a
+                // framebuffer size that doesn't match fw*fh forces full (keeps the
+                // existing uploadTex(fw,fh) assumption). Otherwise upload only the
+                // accumulated dirty rect, or nothing if the editor didn't change.
+                bool fbSizeOk = (framebuffer.size() == (size_t)fw * fh);
+                fullUp = fbFullUpload.exchange(false) || fbTexW != fw || fbTexH != fh || !fbSizeOk;
+                int bx0 = fbDirtyX0, by0 = fbDirtyY0, bx1 = fbDirtyX1, by1 = fbDirtyY1;
+                fbDirtyX0 = fbDirtyY0 = fbDirtyX1 = fbDirtyY1 = 0;  // reset box (empty)
                 if (!useCrop && width > 0 && height > 0 && !framebuffer.empty()) {
-                    if (renderBuffer.size() != framebuffer.size()) {
-                        renderBuffer.resize(framebuffer.size());
+                    if (fullUp || !kGpuCompositor) {
+                        if (renderBuffer.size() != framebuffer.size()) {
+                            renderBuffer.resize(framebuffer.size());
+                        }
+                        renderBuffer = framebuffer;  // full staging copy
+                    } else if (fbSizeOk && bx1 > bx0 && by1 > by0) {
+                        if (bx0 < 0) bx0 = 0;  if (by0 < 0) by0 = 0;
+                        if (bx1 > fw) bx1 = fw; if (by1 > fh) by1 = fh;
+                        if (bx1 > bx0 && by1 > by0) {
+                            dx0 = bx0; dy0 = by0; dw = bx1 - bx0; dh = by1 - by0;
+                            dirtyStage.resize((size_t)dw * dh);
+                            const uint32_t* fb = framebuffer.data();
+                            for (int row = 0; row < dh; ++row)
+                                memcpy(dirtyStage.data() + (size_t)row * dw,
+                                       fb + (size_t)(dy0 + row) * fw + dx0,
+                                       (size_t)dw * sizeof(uint32_t));
+                            haveRect = true;
+                        }
                     }
-                    renderBuffer = framebuffer;  // Copy to staging buffer
                 }
                 /* Snapshot mapped popup overlays IN X11 STACKING ORDER so
                  * sub-popups (created after their parent) render ON TOP of
@@ -688,8 +752,21 @@ struct X11NativeDisplay::Impl {
                 glClear(GL_COLOR_BUFFER_BIT);
                 glUseProgram(program);
 
-                // Editor layer (root-relative rect 0,0,fw,fh).
-                uploadTex(fbTex, renderBuffer.data(), fw, fh);
+                // Editor layer (root-relative rect 0,0,fw,fh). Phase A: persistent
+                // texture — full re-spec only on init/resize/attach, else upload
+                // just the dirty rect, else nothing (popup-only change).
+                glActiveTexture(GL_TEXTURE0);
+                glBindTexture(GL_TEXTURE_2D, fbTex);
+                if (fullUp) {
+                    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, fw, fh, 0,
+                                 GL_RGBA, GL_UNSIGNED_BYTE, renderBuffer.data());
+                    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+                    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+                    fbTexW = fw; fbTexH = fh;
+                } else if (haveRect) {
+                    glTexSubImage2D(GL_TEXTURE_2D, 0, dx0, dy0, dw, dh,
+                                    GL_RGBA, GL_UNSIGNED_BYTE, dirtyStage.data());
+                }
                 compositeQuad(fbTex, 0, 0, fw, fh, width, height, x0, y0, scale);
 
                 // Popups on top, in stacking order. One texture per wid; small
@@ -2209,6 +2286,7 @@ struct X11NativeDisplay::Impl {
                                                 }
                                             }
                                             framebuffer = std::move(newFb);
+                                            fbFullUpload = true;  // Phase A: framebuffer replaced
                                         }
                                         pluginWidth = ww;
                                         pluginHeight = wh;
@@ -2450,6 +2528,14 @@ struct X11NativeDisplay::Impl {
                                     }
                                 }
                                 if (isWindow) {
+                                    /* Phase A: only the editor-layer texture needs
+                                     * re-upload, and only the written rect. dstBuf is
+                                     * the framebuffer iff this was an editor write (vs
+                                     * a size-mismatched pixmap fallback). x,y are
+                                     * framebuffer coords (y already slot-offset); w,h
+                                     * the image dims (over-reporting past clip is
+                                     * harmless, clamped at upload). */
+                                    if (dstBuf == framebuffer.data()) markFbDirty(x, y, w, h);
                                     dirty = true;
                                     dirtyCv.notify_one();
                                 }
@@ -2643,6 +2729,7 @@ struct X11NativeDisplay::Impl {
                                 pluginHeight = winHeight;
                                 constexpr uint32_t bgX11 = 0xFF302020;
                                 framebuffer.assign((size_t)pluginWidth * pluginHeight, bgX11);
+                                fbFullUpload = true;  // Phase A: framebuffer cleared
                             }
                             LOGI("X11: plugin slot claimed wid=0x%x %dx%d (parent=0x%x%s); framebuffer %dx%d (owner fd=%d, frozen=%d)",
                                  wid, winWidth, winHeight, parentWid,
@@ -3381,6 +3468,9 @@ struct X11NativeDisplay::Impl {
                                 }
                             }
                             if (dstIsWindow) {
+                                /* Phase A: mark only the copied rect (framebuffer
+                                 * coords, offset already applied) for re-upload. */
+                                if (dstPixels == framebuffer.data()) markFbDirty(dstX, dstY, cw, ch);
                                 dirty = true;
                                 dirtyCv.notify_one();
                             }
@@ -4366,6 +4456,7 @@ struct X11NativeDisplay::Impl {
                                     uint32_t bgX11 = 0xFF302020;
                                     /* resize() preserves existing pixels; only fills newly added pixels */
                                     framebuffer.resize((size_t)pluginWidth * pluginHeight, bgX11);
+                                    fbFullUpload = true;  // Phase A: framebuffer resized
                                 }
                                 /* Register as plugin slot too so touch routing knows about it. */
                                 bool already = false;
@@ -5297,6 +5388,7 @@ bool X11NativeDisplay::startServer(int placeholderW, int placeholderH) {
     impl_->width  = placeholderW > 0 ? placeholderW : 1;
     impl_->height = placeholderH > 0 ? placeholderH : 1;
     impl_->framebuffer.assign((size_t)impl_->width * impl_->height, 0xFF302020);
+    impl_->fbFullUpload = true;  // Phase A: framebuffer (re)initialised
     impl_->dirty = true;
 
     impl_->running = true;
@@ -5620,6 +5712,7 @@ void X11NativeDisplay::setSurfaceSize(int width, int height) {
             int fh = impl_->pluginHeight > 0 ? impl_->pluginHeight : height;
             uint32_t bgX11 = 0xFF302020;
             impl_->framebuffer.assign((size_t)fw * fh, bgX11);
+            impl_->fbFullUpload = true;  // Phase A: framebuffer resized
         }
         impl_->dirty = true;
         impl_->dirtyCv.notify_one();  // Wake render thread to re-render at new size
@@ -5951,6 +6044,7 @@ void X11NativeDisplay::setPluginSize(int w, int h) {
         }
     }
     impl_->framebuffer = std::move(newFb);
+    impl_->fbFullUpload = true;  // Phase A: framebuffer resized
     impl_->pluginWidth = w;
     impl_->pluginHeight = h;
     impl_->dirty = true;
