@@ -27,11 +27,14 @@
 #include "X11ConnectionHandler.h"
 #include "X11EventBuilder.h"
 #include "X11Log.h"
+#include "AhbTexture.h"
+#include "AhbChannelProtocol.h"
 #include "../plugin/PluginUIGuard.h"
 
 #include "../utils/ThreadUtils.h"
 #include <android/log.h>
 #include <android/native_window_jni.h>
+#include <android/hardware_buffer.h>
 #include <EGL/egl.h>
 #include <GLES2/gl2.h>
 #include <unistd.h>
@@ -194,6 +197,176 @@ struct X11NativeDisplay::Impl {
             if (y1 > fbDirtyY1) fbDirtyY1 = y1;
         }
     }
+
+    /* Phase 1 (GPU editor present). When an AHardwareBuffer is registered for the
+     * editor (synthetic debug hook now; the AHB side-channel later), the render
+     * thread imports it as a GL texture (ahbImporter_) and composites that for
+     * the editor quad instead of the CPU framebuffer — zero copy. Inert until
+     * something registers an AHB, so GDI/software editors are unaffected.
+     * Registration is cross-thread (ahbMutex_); the render thread owns the
+     * importer + the held AHB reference. */
+    guitarrackcraft::AhbImporter ahbImporter_;       // render-thread only
+    GLuint  ahbEditorTex_ = 0;                        // render-thread: imported editor texture
+    AHardwareBuffer* ahbEditorCurrent_ = nullptr;     // render-thread: AHB backing ahbEditorTex_ (holds 1 ref)
+    std::mutex ahbMutex_;
+    AHardwareBuffer* ahbEditorPending_ = nullptr;     // cross-thread set; render thread consumes
+    bool ahbEditorPendingValid_ = false;              // a new pending value (incl. nullptr=clear) awaits
+    int  ahbEditorW_ = 0, ahbEditorH_ = 0;            // pending AHB dimensions
+    int  ahbEditorPendingFence_ = -1;                 // optional producer sync-fd (owned; consumed/closed on consume)
+    // True while a pending registration awaits OR a texture is currently bound.
+    // Lets the compositor run for an AHB editor even when the CPU framebuffer is
+    // empty (e.g. the synthetic hook with no plugin loaded). Atomic: read in the
+    // render-loop guard before the GL context exists, written under no lock.
+    std::atomic<bool> ahbEditorActive_{false};
+
+    // Register (or clear, ahb=nullptr) the editor's GPU source. Acquires a
+    // reference on `ahb`; the render thread releases the previous one. `fenceFd`
+    // (>=0) is a producer sync-fd this object TAKES OWNERSHIP of — GPU-waited
+    // before sampling, then closed. Any thread.
+    void setEditorAhb(AHardwareBuffer* ahb, int w, int h, int fenceFd = -1) {
+        if (ahb) AHardwareBuffer_acquire(ahb);
+        std::lock_guard<std::mutex> lk(ahbMutex_);
+        // If a prior pending was never consumed, release it + its fence so we don't leak.
+        if (ahbEditorPendingValid_ && ahbEditorPending_) AHardwareBuffer_release(ahbEditorPending_);
+        if (ahbEditorPendingFence_ >= 0) { close(ahbEditorPendingFence_); ahbEditorPendingFence_ = -1; }
+        ahbEditorPending_ = ahb;
+        ahbEditorW_ = w; ahbEditorH_ = h;
+        ahbEditorPendingFence_ = fenceFd;
+        ahbEditorPendingValid_ = true;
+        ahbEditorActive_.store(true);  // ensure the render loop enters to consume this
+        dirty = true;
+        dirtyCv.notify_one();
+    }
+
+    // Render-thread: pick up a pending editor-AHB registration (if any) and
+    // import it into ahbEditorTex_. A null pending clears the GPU source (back
+    // to the CPU framebuffer). Returns true when the editor layer should be
+    // sourced from ahbEditorTex_ this frame. Must hold a current GL context.
+    bool consumePendingEditorAhb() {
+        AHardwareBuffer* toImport = nullptr;
+        int fenceFd = -1;
+        bool haveNew = false, clear = false;
+        {
+            std::lock_guard<std::mutex> lk(ahbMutex_);
+            if (ahbEditorPendingValid_) {
+                haveNew   = true;
+                toImport  = ahbEditorPending_;        // ref transferred to us
+                fenceFd   = ahbEditorPendingFence_;   // fd ownership transferred to us
+                clear     = (toImport == nullptr);
+                ahbEditorPending_ = nullptr;
+                ahbEditorPendingFence_ = -1;
+                ahbEditorPendingValid_ = false;
+            }
+        }
+        if (haveNew) {
+            // Replace: drop the previous backing AHB ref + its texture.
+            if (ahbEditorCurrent_) { AHardwareBuffer_release(ahbEditorCurrent_); ahbEditorCurrent_ = nullptr; }
+            ahbEditorTex_ = 0;
+            if (!clear && toImport) {
+                GLuint t = ahbImporter_.importToTexture(toImport);
+                if (t) {
+                    ahbEditorCurrent_ = toImport;     // keep the ref alive while sampled
+                    ahbEditorTex_ = t;
+                    // Cross-driver sync: GPU-wait the producer's fence so the
+                    // compositor's sample queues behind Turnip's write. On
+                    // success the fd is consumed; else fall through to close it.
+                    if (fenceFd >= 0 && ahbImporter_.waitFenceFd(fenceFd)) fenceFd = -1;
+                } else {
+                    // Import failed → drop back to the CPU path, don't leak.
+                    AHardwareBuffer_release(toImport);
+                }
+            }
+            // clear case: toImport==nullptr (no ref to release); CPU path resumes.
+        }
+        if (fenceFd >= 0) close(fenceFd);  // unwaited (cleared/failed/unsupported)
+        ahbEditorActive_.store(ahbEditorTex_ != 0);
+        return ahbEditorTex_ != 0;
+    }
+
+    // Phase 1 synthetic validation hook (any thread). on=true: allocate an
+    // AHardwareBuffer at the editor size, CPU-fill a recognizable gradient in
+    // the same B,G,R,A byte order as the framebuffer (so the compositor's
+    // BGRA->RGBA shader swizzle yields the intended colors), and register it as
+    // the editor's GPU source. on=false: clear it (CPU framebuffer resumes).
+    // Returns false if allocation/lock fails. Exercises the full Phase 1 path
+    // (import -> EGLImage -> composite) with no plugin/wine involved.
+    bool debugFillEditorAhb(bool on) {
+        if (!on) { setEditorAhb(nullptr, 0, 0); LOGI("debugFillEditorAhb: cleared"); return true; }
+        int w = pluginWidth > 0 ? pluginWidth : width;
+        int h = pluginHeight > 0 ? pluginHeight : height;
+        if (w <= 0 || h <= 0) { w = 512; h = 512; }
+
+        AHardwareBuffer_Desc desc = {};
+        desc.width  = (uint32_t)w;
+        desc.height = (uint32_t)h;
+        desc.layers = 1;
+        desc.format = AHARDWAREBUFFER_FORMAT_R8G8B8A8_UNORM;
+        desc.usage  = AHARDWAREBUFFER_USAGE_GPU_SAMPLED_IMAGE |
+                      AHARDWAREBUFFER_USAGE_CPU_WRITE_OFTEN;
+        AHardwareBuffer* ahb = nullptr;
+        if (AHardwareBuffer_allocate(&desc, &ahb) != 0 || !ahb) {
+            LOGE("debugFillEditorAhb: AHardwareBuffer_allocate(%dx%d) failed", w, h);
+            return false;
+        }
+        AHardwareBuffer_Desc actual = {};
+        AHardwareBuffer_describe(ahb, &actual);  // actual.stride is in PIXELS
+
+        void* ptr = nullptr;
+        if (AHardwareBuffer_lock(ahb, AHARDWAREBUFFER_USAGE_CPU_WRITE_OFTEN,
+                                 -1, nullptr, &ptr) != 0 || !ptr) {
+            LOGE("debugFillEditorAhb: lock failed");
+            AHardwareBuffer_release(ahb);
+            return false;
+        }
+        const uint32_t strideTexels = actual.stride ? actual.stride : (uint32_t)w;
+        uint8_t* base = (uint8_t*)ptr;
+        for (int y = 0; y < h; ++y) {
+            uint8_t* row = base + (size_t)y * strideTexels * 4;
+            uint8_t gch = (uint8_t)(y * 255 / (h > 1 ? h - 1 : 1));   // green ramps down the rows
+            for (int x = 0; x < w; ++x) {
+                uint8_t rch = (uint8_t)(x * 255 / (w > 1 ? w - 1 : 1)); // red ramps across columns
+                uint8_t* px = row + (size_t)x * 4;
+                px[0] = 128;  // B
+                px[1] = gch;  // G
+                px[2] = rch;  // R
+                px[3] = 255;  // A
+            }
+        }
+        AHardwareBuffer_unlock(ahb, nullptr);
+        setEditorAhb(ahb, w, h);
+        AHardwareBuffer_release(ahb);  // setEditorAhb took its own ref
+        LOGI("debugFillEditorAhb: registered %dx%d gradient AHB (stride=%u texels)", w, h, strideTexels);
+        return true;
+    }
+
+    /* Phase 2: AF_UNIX AHB side-channel. A second listener (abstract socket
+     * "guitarrack-ahb-<displayNumber>") receives AHB handles + fence-fds from a
+     * frame producer (synthetic client now; wine winex11.drv in Phase 3),
+     * decoupled from the TCP X11 socket which can't carry SCM_RIGHTS. Keyed by
+     * X11 window id; the registered buffers feed the Phase 1 editor-AHB slot.
+     * Additive + independently disableable; the render thread still owns all GL
+     * import (via setEditorAhb), so the listener thread is pure socket I/O. */
+    struct AhbChannelWindow {
+        int w = 0, h = 0;
+        uint32_t format = 0;
+        std::vector<AHardwareBuffer*> buffers;  // owned refs (released on unregister/disconnect)
+        int currentIndex = -1;
+    };
+    std::thread ahbChannelThread;
+    std::atomic<bool> ahbChannelRunning_{false};
+    int ahbChannelFd_ = -1;       // listen fd
+    int ahbChannelConnFd_ = -1;   // current connection fd (teardown shuts it down)
+    std::mutex ahbChannelMutex_;
+    std::unordered_map<uint32_t, AhbChannelWindow> ahbChannelWindows_;
+
+    // Release + forget every registered buffer set. Caller holds ahbChannelMutex_.
+    void releaseAllAhbChannelWindowsLocked() {
+        for (auto& kv : ahbChannelWindows_)
+            for (AHardwareBuffer* b : kv.second.buffers)
+                if (b) AHardwareBuffer_release(b);
+        ahbChannelWindows_.clear();
+    }
+
     std::atomic<bool> detachDeferred{false};  // Set when detach is deferred due to plugin creation
     // Graceful teardown state
     std::atomic<bool> closingGracefully{false};  // Set when graceful teardown initiated
@@ -535,6 +708,15 @@ struct X11NativeDisplay::Impl {
         float verts[] = { -1,-1, 0,1,  1,-1, 1,1,  -1,1, 0,0,  1,1, 1,0 };
         glBindBuffer(GL_ARRAY_BUFFER, fbVbo);
         glBufferData(GL_ARRAY_BUFFER, sizeof(verts), verts, GL_STATIC_DRAW);
+        // Phase 1: probe AHB→EGLImage import support (needs a current context).
+        // A re-attach makes a new GL context; forget the stale texture/EGLImage
+        // and drop any registered AHB (back to CPU until the producer re-registers
+        // — wine re-registers on resize/re-attach anyway).
+        ahbImporter_.init(eglDisplay);
+        ahbImporter_.onContextLost();
+        ahbEditorTex_ = 0;
+        if (ahbEditorCurrent_) { AHardwareBuffer_release(ahbEditorCurrent_); ahbEditorCurrent_ = nullptr; }
+        ahbEditorActive_.store(false);  // dropped the GPU source; CPU path until re-registered
         return program != 0;
     }
 
@@ -732,8 +914,11 @@ struct X11NativeDisplay::Impl {
             }
             dirty = false;  // Clear after snapshot; new PutImage during render will re-set it
 
-            // Render from staging buffer (no lock held - PutImage can update framebuffer concurrently)
-            if (kGpuCompositor && width > 0 && height > 0 && fw > 0 && fh > 0 && !renderBuffer.empty()) {
+            // Render from staging buffer (no lock held - PutImage can update framebuffer concurrently).
+            // The AHB editor source (ahbEditorActive_) can drive the compositor even with an empty CPU
+            // framebuffer (synthetic hook with no plugin loaded), so admit that case too.
+            if (kGpuCompositor && width > 0 && height > 0 && fw > 0 && fh > 0 &&
+                (!renderBuffer.empty() || ahbEditorActive_.load())) {
                 /* GPU compositor path: editor layer + each popup are separate
                  * textured quads, composited in z-order on the GPU. Same
                  * letterbox transform as the monolithic path; editor is
@@ -752,22 +937,35 @@ struct X11NativeDisplay::Impl {
                 glClear(GL_COLOR_BUFFER_BIT);
                 glUseProgram(program);
 
+                // Phase 1: if an AHardwareBuffer is registered for the editor,
+                // sample it directly (zero-copy GPU present) and skip the CPU
+                // framebuffer upload entirely. Inert unless something registered
+                // an AHB, so GDI/software editors keep the fbTex path below.
+                bool editorFromAhb = consumePendingEditorAhb();
+
                 // Editor layer (root-relative rect 0,0,fw,fh). Phase A: persistent
                 // texture — full re-spec only on init/resize/attach, else upload
                 // just the dirty rect, else nothing (popup-only change).
-                glActiveTexture(GL_TEXTURE0);
-                glBindTexture(GL_TEXTURE_2D, fbTex);
-                if (fullUp) {
-                    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, fw, fh, 0,
-                                 GL_RGBA, GL_UNSIGNED_BYTE, renderBuffer.data());
-                    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-                    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-                    fbTexW = fw; fbTexH = fh;
-                } else if (haveRect) {
-                    glTexSubImage2D(GL_TEXTURE_2D, 0, dx0, dy0, dw, dh,
-                                    GL_RGBA, GL_UNSIGNED_BYTE, dirtyStage.data());
+                if (editorFromAhb) {
+                    compositeQuad(ahbEditorTex_, 0, 0, fw, fh, width, height, x0, y0, scale);
+                } else if (!renderBuffer.empty()) {
+                    glActiveTexture(GL_TEXTURE0);
+                    glBindTexture(GL_TEXTURE_2D, fbTex);
+                    if (fullUp) {
+                        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, fw, fh, 0,
+                                     GL_RGBA, GL_UNSIGNED_BYTE, renderBuffer.data());
+                        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+                        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+                        fbTexW = fw; fbTexH = fh;
+                    } else if (haveRect) {
+                        glTexSubImage2D(GL_TEXTURE_2D, 0, dx0, dy0, dw, dh,
+                                        GL_RGBA, GL_UNSIGNED_BYTE, dirtyStage.data());
+                    }
+                    compositeQuad(fbTex, 0, 0, fw, fh, width, height, x0, y0, scale);
                 }
-                compositeQuad(fbTex, 0, 0, fw, fh, width, height, x0, y0, scale);
+                // else: no editor source this frame (AHB cleared + empty CPU
+                // framebuffer) — the glClear background shows through. Popups,
+                // if any, still draw below.
 
                 // Popups on top, in stacking order. One texture per wid; small
                 // and visible only briefly, so per-frame re-upload is cheap and
@@ -1833,6 +2031,146 @@ struct X11NativeDisplay::Impl {
                 }
             }
         }
+    }
+
+    /* Phase 2 side-channel listener. Binds the abstract AF_UNIX socket and
+     * accepts one producer connection at a time (the wine subprocess, or the
+     * synthetic test client — both single, long-lived). Pure socket I/O; all GL
+     * import stays on the render thread via setEditorAhb. Stopped by clearing
+     * running/ahbChannelRunning_ + shutdown(ahbChannelFd_/ConnFd_) in teardown. */
+    void ahbChannelLoop() {
+        int lfd = socket(AF_UNIX, SOCK_STREAM, 0);
+        if (lfd < 0) { LOGE("ahbChannel: socket failed: %s", strerror(errno)); return; }
+        struct sockaddr_un addr;
+        socklen_t alen = ahbch_make_addr(&addr, displayNumber_);
+        if (bind(lfd, (struct sockaddr*)&addr, alen) < 0) {
+            LOGE("ahbChannel: bind abstract 'guitarrack-ahb-%d' failed: %s",
+                 displayNumber_, strerror(errno));
+            close(lfd);
+            return;
+        }
+        if (listen(lfd, 2) < 0) {
+            LOGE("ahbChannel: listen failed: %s", strerror(errno));
+            close(lfd);
+            return;
+        }
+        ahbChannelFd_ = lfd;
+        LOGI("ahbChannel: listening on abstract 'guitarrack-ahb-%d'", displayNumber_);
+        while (running && ahbChannelRunning_) {
+            int cfd = accept(lfd, nullptr, nullptr);
+            if (cfd < 0 || !running || !ahbChannelRunning_) {
+                if (cfd >= 0) close(cfd);
+                break;
+            }
+            ahbChannelConnFd_ = cfd;
+            LOGI("ahbChannel: producer connected fd=%d", cfd);
+            handleAhbChannelConnection(cfd);
+            ahbChannelConnFd_ = -1;
+            close(cfd);
+            LOGI("ahbChannel: producer disconnected");
+        }
+        ahbChannelFd_ = -1;
+        close(lfd);
+        std::lock_guard<std::mutex> lk(ahbChannelMutex_);
+        releaseAllAhbChannelWindowsLocked();
+    }
+
+    // Per-connection message loop. Reads AhbChMsg's until EOF/error. REGISTER
+    // stores the AHB ring; PRESENT feeds the chosen buffer to the editor slot;
+    // UNREGISTER clears. On disconnect, drop the editor source + all buffers.
+    void handleAhbChannelConnection(int fd) {
+        while (running && ahbChannelRunning_) {
+            AhbChMsg msg;
+            int fenceFd = -1;
+            if (!ahbch_recv_msg(fd, &msg, &fenceFd)) break;
+            if (msg.magic != AHBCH_MAGIC || msg.version != AHBCH_VERSION) {
+                LOGE("ahbChannel: bad header magic=0x%x ver=%u — dropping connection",
+                     msg.magic, msg.version);
+                if (fenceFd >= 0) close(fenceFd);
+                break;
+            }
+            switch (msg.type) {
+            case AHBCH_REGISTER: {
+                if (fenceFd >= 0) close(fenceFd);  // REGISTER carries no fence
+                AhbChannelWindow win;
+                win.w = (int)msg.width; win.h = (int)msg.height; win.format = msg.format;
+                bool ok = (msg.buffer_count > 0 && msg.buffer_count <= 8);
+                for (uint32_t i = 0; ok && i < msg.buffer_count; ++i) {
+                    AHardwareBuffer* ahb = nullptr;
+                    if (AHardwareBuffer_recvHandleFromUnixSocket(fd, &ahb) != 0 || !ahb) {
+                        LOGE("ahbChannel: REGISTER recv handle %u/%u failed", i, msg.buffer_count);
+                        ok = false;
+                        break;
+                    }
+                    win.buffers.push_back(ahb);  // recv gives us an owned ref
+                }
+                if (!ok) {
+                    for (AHardwareBuffer* b : win.buffers) if (b) AHardwareBuffer_release(b);
+                    LOGE("ahbChannel: REGISTER wid=0x%x rejected", msg.window_id);
+                    break;
+                }
+                bool announce = true;  // a streaming producer REGISTERs per frame; log only on change
+                {
+                    std::lock_guard<std::mutex> lk(ahbChannelMutex_);
+                    auto it = ahbChannelWindows_.find(msg.window_id);
+                    if (it != ahbChannelWindows_.end()) {
+                        announce = (it->second.w != win.w || it->second.h != win.h);
+                        for (AHardwareBuffer* b : it->second.buffers) if (b) AHardwareBuffer_release(b);
+                    }
+                    ahbChannelWindows_[msg.window_id] = std::move(win);
+                }
+                if (announce)
+                    LOGI("ahbChannel: REGISTER wid=0x%x %dx%d count=%u",
+                         msg.window_id, (int)msg.width, (int)msg.height, msg.buffer_count);
+                break;
+            }
+            case AHBCH_PRESENT: {
+                AHardwareBuffer* present = nullptr;
+                int pw = 0, ph = 0;
+                {
+                    std::lock_guard<std::mutex> lk(ahbChannelMutex_);
+                    auto it = ahbChannelWindows_.find(msg.window_id);
+                    if (it != ahbChannelWindows_.end() &&
+                        msg.buffer_index < it->second.buffers.size()) {
+                        present = it->second.buffers[msg.buffer_index];
+                        pw = it->second.w; ph = it->second.h;
+                        it->second.currentIndex = (int)msg.buffer_index;
+                    }
+                }
+                if (present) {
+                    // Transfer fence ownership to the editor slot; the render
+                    // thread GPU-waits it before sampling (cross-driver sync).
+                    setEditorAhb(present, pw, ph, fenceFd);
+                    fenceFd = -1;
+                } else {
+                    LOGE("ahbChannel: PRESENT wid=0x%x idx=%u — not registered",
+                         msg.window_id, msg.buffer_index);
+                    if (fenceFd >= 0) close(fenceFd);
+                }
+                break;
+            }
+            case AHBCH_UNREGISTER: {
+                if (fenceFd >= 0) close(fenceFd);
+                setEditorAhb(nullptr, 0, 0);
+                std::lock_guard<std::mutex> lk(ahbChannelMutex_);
+                auto it = ahbChannelWindows_.find(msg.window_id);
+                if (it != ahbChannelWindows_.end()) {
+                    for (AHardwareBuffer* b : it->second.buffers) if (b) AHardwareBuffer_release(b);
+                    ahbChannelWindows_.erase(it);
+                }
+                LOGI("ahbChannel: UNREGISTER wid=0x%x", msg.window_id);
+                break;
+            }
+            default:
+                if (fenceFd >= 0) close(fenceFd);
+                LOGW("ahbChannel: unknown msg type=%u", msg.type);
+                break;
+            }
+        }
+        // Connection gone: revert the editor to the CPU framebuffer and free buffers.
+        setEditorAhb(nullptr, 0, 0);
+        std::lock_guard<std::mutex> lk(ahbChannelMutex_);
+        releaseAllAhbChannelWindowsLocked();
     }
 
     void serverLoop() {
@@ -5396,6 +5734,10 @@ bool X11NativeDisplay::startServer(int placeholderW, int placeholderH) {
     impl_->pluginUIRunning = true;
     impl_->serverThread   = std::thread(&Impl::serverLoop,   impl_.get());
     impl_->pluginUIThread = std::thread(&Impl::pluginUILoop, impl_.get());
+    // Phase 2: AHB side-channel listener (abstract AF_UNIX socket). Additive —
+    // does nothing until a producer connects; harmless if none ever does.
+    impl_->ahbChannelRunning_ = true;
+    impl_->ahbChannelThread = std::thread(&Impl::ahbChannelLoop, impl_.get());
 
     for (int i = 0; i < 100 && !impl_->listening_; i++) usleep(10000);
     LOGI("X11 display %d server started (placeholder fb %dx%d, listening=%d)",
@@ -5550,6 +5892,11 @@ bool X11NativeDisplay::signalDetach() {
     if (impl_->serverFd >= 0) {
         ::shutdown(impl_->serverFd, SHUT_RDWR);
     }
+    // Phase 2: wake the AHB side-channel's blocking accept()/recvmsg() so
+    // ahbChannelThread.join() can complete (joined in detachSurface).
+    impl_->ahbChannelRunning_.store(false);
+    if (impl_->ahbChannelFd_ >= 0)     ::shutdown(impl_->ahbChannelFd_, SHUT_RDWR);
+    if (impl_->ahbChannelConnFd_ >= 0) ::shutdown(impl_->ahbChannelConnFd_, SHUT_RDWR);
     // Wake every per-client thread's blocking recv() by shutting down
     // its socket. Per-client threads are .detach()'ed inside serverLoop
     // and we can't join them — but they each pop themselves from
@@ -5675,6 +6022,14 @@ void X11NativeDisplay::detachSurface() {
         LOGI("X11Debug: detachSurface display=%d joining serverThread...", displayNumber_);
         impl_->serverThread.join();
         LOGI("X11Debug: detachSurface display=%d serverThread joined", displayNumber_);
+    }
+    impl_->ahbChannelRunning_.store(false);
+    if (impl_->ahbChannelFd_ >= 0)     ::shutdown(impl_->ahbChannelFd_, SHUT_RDWR);
+    if (impl_->ahbChannelConnFd_ >= 0) ::shutdown(impl_->ahbChannelConnFd_, SHUT_RDWR);
+    if (impl_->ahbChannelThread.joinable()) {
+        LOGI("X11Debug: detachSurface display=%d joining ahbChannelThread...", displayNumber_);
+        impl_->ahbChannelThread.join();
+        LOGI("X11Debug: detachSurface display=%d ahbChannelThread joined", displayNumber_);
     }
     if (impl_->renderThread.joinable()) {
         LOGI("X11Debug: detachSurface display=%d joining renderThread...", displayNumber_);
@@ -6062,6 +6417,10 @@ float X11NativeDisplay::getUIScale() const {
     return impl_->uiScale;
 }
 
+bool X11NativeDisplay::debugSetEditorAhbGradient(bool on) {
+    return impl_->debugFillEditorAhb(on);
+}
+
 X11NativeDisplay* getOrCreateX11Display(int displayNumber) {
     std::lock_guard<std::mutex> lock(g_displayMutex);
     auto it = g_displays.find(displayNumber);
@@ -6180,6 +6539,14 @@ bool withDisplayIsWidgetAtPoint(int displayNumber, int x, int y) {
     auto it = g_displays.find(displayNumber);
     if (it != g_displays.end())
         return it->second->isWidgetAtPoint(x, y);
+    return false;
+}
+
+bool withDisplayDebugSetEditorAhbGradient(int displayNumber, bool on) {
+    std::lock_guard<std::mutex> lock(g_displayMutex);
+    auto it = g_displays.find(displayNumber);
+    if (it != g_displays.end())
+        return it->second->debugSetEditorAhbGradient(on);
     return false;
 }
 

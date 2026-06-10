@@ -11,6 +11,8 @@
 #include "util/log.h"
 #include "x11/DisplayState.h"
 #include "x11/X11NativeDisplay.h"
+#include "ahbspike/AhbSpike.h"
+#include "ahbspike/AhbChannelTest.h"
 
 #include <jni.h>
 
@@ -141,6 +143,50 @@ JNIEXPORT void JNICALL
 Java_com_varcain_vsthost_NativeBridge_nativeSetX11FramebufferFrozen(
     JNIEnv* /*env*/, jobject /*thiz*/, jint displayNumber, jboolean frozen) {
     withDisplaySetFramebufferFrozen(displayNumber, frozen != JNI_FALSE);
+}
+
+/* Phase 0 GPU-upgrade spike (throwaway diagnostic). Runs the cross-driver
+ * AHardwareBuffer + fence interop test in the app process and logs PASS/FAIL to
+ * logcat tag "AhbSpike". Returns true on PASS. See ahbspike/AhbSpike.cpp. */
+JNIEXPORT jboolean JNICALL
+Java_com_varcain_vsthost_NativeBridge_nativeAhbSpike(
+    JNIEnv* env, jobject /*thiz*/, jstring hookDir, jstring driverDir,
+    jstring driverName, jstring logPath) {
+    const char* hook = env->GetStringUTFChars(hookDir, nullptr);
+    const char* drv  = env->GetStringUTFChars(driverDir, nullptr);
+    const char* name = env->GetStringUTFChars(driverName, nullptr);
+    const char* lpath = env->GetStringUTFChars(logPath, nullptr);
+    bool ok = runAhbSpike(hook, drv, name, lpath);
+    env->ReleaseStringUTFChars(hookDir, hook);
+    env->ReleaseStringUTFChars(driverDir, drv);
+    env->ReleaseStringUTFChars(driverName, name);
+    env->ReleaseStringUTFChars(logPath, lpath);
+    return ok ? JNI_TRUE : JNI_FALSE;
+}
+
+/* Phase 1 synthetic GPU-present validation hook. on=true: registers a
+ * CPU-filled gradient AHardwareBuffer as the editor's GPU source on the given
+ * display (compositor samples it via EGLImage in place of the CPU framebuffer);
+ * on=false: clears it. Returns true on success. See
+ * X11NativeDisplay::debugSetEditorAhbGradient. */
+JNIEXPORT jboolean JNICALL
+Java_com_varcain_vsthost_NativeBridge_nativeDebugEditorAhbGradient(
+    JNIEnv* /*env*/, jobject /*thiz*/, jint displayNumber, jboolean on) {
+    return guitarrackcraft::withDisplayDebugSetEditorAhbGradient(
+               displayNumber, on != JNI_FALSE) ? JNI_TRUE : JNI_FALSE;
+}
+
+/* Phase 2 synthetic side-channel client (throwaway). Connects to display N's
+ * AHB side-channel and drives one REGISTER→PRESENT→hold→UNREGISTER cycle with a
+ * gradient AHB, proving the AF_UNIX transport + SCM_RIGHTS AHB passing. Blocking
+ * for holdMs; call from a worker thread. Logs to logPath. See AhbChannelTest. */
+JNIEXPORT jboolean JNICALL
+Java_com_varcain_vsthost_NativeBridge_nativeAhbChannelTest(
+    JNIEnv* env, jobject /*thiz*/, jint displayNumber, jint holdMs, jstring logPath) {
+    const char* lpath = logPath ? env->GetStringUTFChars(logPath, nullptr) : nullptr;
+    bool ok = guitarrackcraft::runAhbChannelTest(displayNumber, holdMs, lpath);
+    if (lpath) env->ReleaseStringUTFChars(logPath, lpath);
+    return ok ? JNI_TRUE : JNI_FALSE;
 }
 
 }  // extern "C"

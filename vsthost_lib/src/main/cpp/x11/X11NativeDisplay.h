@@ -158,6 +158,14 @@ public:
     /** Get the current UI scale factor. */
     float getUIScale() const;
 
+    /** Phase 1 GPU-present validation hook. on=true: allocate an
+     *  AHardwareBuffer at the editor size, CPU-fill a gradient, and register
+     *  it as the editor's GPU source — the compositor samples it via EGLImage
+     *  instead of uploading the CPU framebuffer (zero-copy path). on=false:
+     *  clear it, reverting to the CPU framebuffer. Returns false if the AHB
+     *  allocation/lock fails. Synthetic; needs no plugin/wine. */
+    bool debugSetEditorAhbGradient(bool on);
+
 private:
     struct Impl;
     std::unique_ptr<Impl> impl_;
@@ -198,6 +206,10 @@ bool withDisplaySnapshotFramebuffer(int displayNumber, std::vector<uint32_t>& ou
 float withDisplayGetUIScale(int displayNumber);
 /** Hit-test: returns true if (x, y) hits an X11 widget rather than plugin background. */
 bool withDisplayIsWidgetAtPoint(int displayNumber, int x, int y);
+/** Phase 1 synthetic GPU-present hook: register (on=true) or clear (on=false)
+ *  a CPU-filled gradient AHardwareBuffer as the editor's GPU source on this
+ *  display. See X11NativeDisplay::debugSetEditorAhbGradient. */
+bool withDisplayDebugSetEditorAhbGradient(int displayNumber, bool on);
 /** Post a task to the display's plugin UI thread while holding the display map lock (avoids TOCTOU). */
 void withDisplayPostTask(int displayNumber, std::function<void()> task);
 /** Set the idle callback while holding the display map lock (avoids TOCTOU). */
