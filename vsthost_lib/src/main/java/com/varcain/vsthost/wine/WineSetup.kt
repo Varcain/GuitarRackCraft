@@ -130,6 +130,7 @@ object WineSetup {
         seedCryptoProviders(winePrefix)
         seedComClasses(winePrefix)
         seedWow64Emulator(winePrefix)  // wine 11.x: point ARM64EC/wow64 at FEX
+        seedDisableCrashDialog(winePrefix)  // no winedbg popup on subprocess crashes
         /* Also seed every existing wineprefix_template_<id> dir (installer
          * mode plugins like X50II clone from their own template, not from
          * the base prefix — without this, the RpcSs registration only
@@ -157,6 +158,10 @@ object WineSetup {
             f.isDirectory && f.name.startsWith("wineprefix_")
         }?.forEach { p ->
             seedCryptoProviders(p); seedComClasses(p); seedFonts(ctx, p); seedUserFolders(ctx, p)
+            // Reach prefixes created before this seed existed (e.g. the BIAS
+            // FX 2 prefix) so a CEF subprocess crash dies cleanly instead of
+            // popping a stuck winedbg window. Marker-gated/idempotent.
+            seedDisableCrashDialog(p)
         }
         versionFile.writeText(expected)
         Log.i(TAG, "wine install ready in ${System.currentTimeMillis() - t0} ms")
@@ -493,6 +498,44 @@ object WineSetup {
 """
         systemReg.appendText(body)
         Log.i(TAG, "seeded Wow64 emulator (FEX) registry in ${winePrefix.absolutePath}")
+    }
+
+    /** Stop wine from auto-launching winedbg on an unhandled exception.
+     *
+     *  BIAS FX 2 (and any CEF plugin) runs its renderer/gpu/utility roles in
+     *  separate CefSubprocess.exe processes that we don't control and can't
+     *  wrap with our VEH. When one hits a Chromium CHECK/IMMEDIATE_CRASH
+     *  (int3 / ud2) — e.g. on the "Add" component browser — wine's default
+     *  AeDebug handler spawns an INTERACTIVE winedbg that ATTACHES and
+     *  SUSPENDS the crashed process: a stuck "Wine Debugger" window blits
+     *  over the editor and the renderer never tears down so CEF can't
+     *  respawn it. On a normal Chromium build a renderer crash just
+     *  terminates and the browser respawns it — that's what we want here.
+     *
+     *  kernelbase start_debugger (dlls/kernelbase/debug.c) reads
+     *  HKLM\…\AeDebug\{Debugger,Auto}. Auto=1 means "launch without asking"
+     *  (Auto=0 would pop a MessageBox — worse). Point Debugger at a
+     *  NON-EXISTENT exe: CreateProcessW fails → start_debugger logs an ERR and
+     *  returns, BeingDebugged stays false → wine terminates the faulting
+     *  process. No debugger, no window flash (vs cmd.exe /c exit, which can
+     *  flash a console under our X server), clean death so CEF respawns the
+     *  subprocess. Applies to every wine process in the prefix including the
+     *  CefSubprocesses. */
+    fun seedDisableCrashDialog(winePrefix: File) {
+        val systemReg = File(winePrefix, "system.reg")
+        if (!systemReg.exists()) return
+        val marker = "vstpoc-no-crash-dialog-v1"
+        if (systemReg.readText().contains(marker)) return
+        val body = """
+
+;; $marker
+[Software\\Microsoft\\Windows NT\\CurrentVersion\\AeDebug] 1779200000
+"Debugger"="C:\\windows\\system32\\vstpoc_nodebug.exe %ld %ld"
+"Auto"="1"
+
+"""
+        systemReg.appendText(body)
+        Log.i(TAG, "seeded AeDebug no-op (winedbg suppressed) in ${winePrefix.absolutePath}")
     }
 
     private fun seedUserFolders(ctx: Context, winePrefix: File) {
