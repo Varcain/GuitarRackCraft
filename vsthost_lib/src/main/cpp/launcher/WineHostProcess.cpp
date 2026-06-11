@@ -266,9 +266,9 @@ static void vstpocWriteFexConfig(const std::string& configFile, const std::strin
  * fork child (start()) and the wineboot fork child (bootServicesIfNeeded()).
  * Safe to call only after fork — mutates ::setenv. */
 /* vstpoc Mesa-Zink (desktop GL over Vulkan/Turnip for GL plugin editors like
- * AmpliTube). Sets the SUPPORTING env always (harmless — Mesa only loads when
- * win32u's egl_init sees VSTPOC_EGL_LIBRARY, which is opt-in via wine_env.txt
- * for now). Adds the mesa + turnip dirs to LD_LIBRARY_PATH so mesa's deps
+ * AmpliTube). Enables the desktop-GL path GLOBALLY via VSTPOC_EGL_LIBRARY (see
+ * below) — every GL editor now goes through zink->Turnip instead of system
+ * Adreno GLES. Adds the mesa + turnip dirs to LD_LIBRARY_PATH so mesa's deps
  * resolve (mesa-only libs incl. the stub libLLVM live in mesaDir; shared
  * libdrm/libxcb/libz in turnipDir; the app-built X11 libs in nativeLibDir win,
  * but they're the same Termux build). zink uses the system Vulkan loader by
@@ -283,9 +283,21 @@ static void vstpocSetMesaZinkEnv(const std::string& wineRoot, const std::string&
     ::setenv("MESA_LOADER_DRIVER_OVERRIDE", "zink", 1);
     ::setenv("GALLIUM_DRIVER", "zink", 1);
     ::setenv("LIBGL_DRIVERS_PATH", (mesaDir + "/dri").c_str(), 1);
-    /* NOTE: VSTPOC_EGL_LIBRARY (the actual desktop-GL switch) is intentionally
-     * NOT set here — opt-in via cache/wine_env.txt during bring-up:
-     *   VSTPOC_EGL_LIBRARY=<wineRoot>/mesa/libEGL.so.1 */
+    /* Desktop-GL switch — now ENABLED GLOBALLY (was opt-in via wine_env.txt).
+     * VSTPOC_EGL_LIBRARY makes win32u's egl_init dlopen our standalone Mesa
+     * libEGL → desktop GL 4.6 via zink->Turnip for every GL plugin editor
+     * (needed by JUCE/desktop-GLSL editors like AmpliTube). The two tuning
+     * vars are required by the headless zink path and are inert unless our
+     * libEGL is actually loaded (system Adreno EGL / DXVK ignore them):
+     *   LIBGL_ALWAYS_SOFTWARE=1 forces Mesa's surfaceless software loader (the
+     *     only route to zink with no DRM render-node on untrusted_app);
+     *   VSTPOC_ZINK_FORCE_HW=1 stops that flag from making zink demand a CPU
+     *     (lavapipe) device — keep the real HW (Turnip) pdev.
+     * All three are setenv-overwrite so cache/wine_env.txt (applied later) can
+     * still A/B them off per plugin during regression testing. */
+    ::setenv("VSTPOC_EGL_LIBRARY", (mesaDir + "/libEGL_vstpoc.so").c_str(), 1);
+    ::setenv("LIBGL_ALWAYS_SOFTWARE", "1", 1);
+    ::setenv("VSTPOC_ZINK_FORCE_HW", "1", 1);
 }
 
 void WineHostProcess::setupWineEnvChild(const Config& cfg) {
