@@ -446,6 +446,12 @@ class VstInstallerViewModel(app: Application) : AndroidViewModel(app) {
         if (dst.exists()) dst.deleteRecursively()
         return runCatching {
             VstHostSetup.copyPrefix(basePrefix, dst)
+            // MSI installs open the package in transacted-storage mode, which
+            // creates a snapshot temp file under %TEMP% (= C:\windows\temp). Our
+            // minimal base prefix never ran wineboot, so that dir is missing and
+            // StgOpenStorage fails with STG_E_FILENOTFOUND, aborting the whole
+            // install (e.g. Neural DSP Granophyre). Ensure it exists in the clone.
+            File(dst, "drive_c/windows/temp").mkdirs()
             WineSetup.seedCommonControlsManifests(dst)
             WineSetup.seedProgramFilesDirs(dst)
             WineSetup.seedDisableMenubuilder(dst)
@@ -591,8 +597,14 @@ class VstInstallerViewModel(app: Application) : AndroidViewModel(app) {
          *    - On a 1080p phone landscape SurfaceView (~2200×1000), letterbox
          *      scale ~2.08× makes the wizard appear ~1045×742 — large and
          *      easily readable */
-        const val INSTALLER_SCREEN_W = 640
-        const val INSTALLER_SCREEN_H = 480
+        // Big enough for modern installer wizards — Advanced Installer's themed
+        // wizard (e.g. Neural DSP Granophyre) is 700x526, and at 640x480 wine
+        // clipped the GDI surface to the virtual screen: the bottom-right Back/
+        // Next/Cancel buttons (y~500) were cut off and clipped regions rendered
+        // black. Verified against desktop wine 11.9 (renders correctly at full
+        // size). 1024x768 fits common wizards with margin.
+        const val INSTALLER_SCREEN_W = 1024
+        const val INSTALLER_SCREEN_H = 768
 
         /** Minimum size for an .exe to be considered as a manager candidate.
          *  Most legitimate managers are >1 MB (Inno installers themselves are
