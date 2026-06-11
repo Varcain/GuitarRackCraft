@@ -1,0 +1,106 @@
+From: Kamil Lulko <limakzagan@gmail.com>
+Subject: zink: desktop OpenGL over Vulkan/Turnip headless on Android
+
+Make Mesa's zink (GL->Vulkan) usable for a *desktop*-GL context via the EGL
+surfaceless platform on Android, with no DRM render-node access (renderD128 is
+SELinux-denied for untrusted_app) and Turnip as the Vulkan driver. Three Android
+special-cases in upstream Mesa block this; each is the wrong assumption for our
+headless-zink use:
+
+  1. dri_target.c  - Android zink returns galliumdrm (DRI2/image) extensions,
+     but the EGL surfaceless software loader needs __DRI_SWRAST (mandatory) and
+     __DRI_KOPPER (fd-less zink), both only in galliumvk. Return galliumvk like
+     desktop so kopper_init_screen(fd==-1) -> pipe_loader_vk_probe_dri -> zink.
+  2. eglcurrent.h  - _eglIsApiValid() rejects EGL_OPENGL_API on Android, so
+     eglBindAPI(EGL_OPENGL_API) fails and contexts silently fall back to GLES.
+     We run zink, which provides desktop GL; accept EGL_OPENGL_API.
+  3. zink_screen.c - LIBGL_ALWAYS_SOFTWARE (needed only to reach the surfaceless
+     software loader) also makes zink demand a CPU/lavapipe device. Add a
+     VSTPOC_ZINK_FORCE_HW=1 guard so zink keeps the real HW (Turnip) pdev.
+
+Result on device: GL_VERSION=4.6 (Compatibility Profile) Mesa 24.2.8, JUCE
+desktop-GLSL editors (AmpliTube) render. Env: LIBGL_ALWAYS_SOFTWARE=1 +
+VSTPOC_ZINK_FORCE_HW=1 + MESA_LOADER_DRIVER_OVERRIDE=zink.
+
+diff --git a/src/egl/main/eglcurrent.h b/src/egl/main/eglcurrent.h
+index e0f6f7b6b12..dccd910dd74 100644
+--- a/src/egl/main/eglcurrent.h
++++ b/src/egl/main/eglcurrent.h
+@@ -66,8 +66,13 @@ struct _egl_thread_info {
+ static inline EGLBoolean
+ _eglIsApiValid(EGLenum api)
+ {
+-#if HAVE_OPENGL && !DETECT_OS_ANDROID
+-   /* OpenGL is not a valid/supported API on Android */
++#if HAVE_OPENGL
++   /* vstpoc: upstream gates desktop EGL_OPENGL_API off on Android (stock Android
++    * GLES-only assumption). We run zink, which DOES provide a desktop-GL context
++    * (the whole point of this build — wine/JUCE/AmpliTube need desktop GLSL), so
++    * accept EGL_OPENGL_API here. Without this eglBindAPI(EGL_OPENGL_API) returns
++    * EGL_BAD_PARAMETER, the context silently falls back to GLES1 (disabled in
++    * this build) and eglCreateContext fails ("Unable to create a context"). */
+    if (api == EGL_OPENGL_API)
+       return true;
+ #endif
+diff --git a/src/gallium/drivers/zink/zink_screen.c b/src/gallium/drivers/zink/zink_screen.c
+index bbc5f562081..75c487d6b5c 100644
+--- a/src/gallium/drivers/zink/zink_screen.c
++++ b/src/gallium/drivers/zink/zink_screen.c
+@@ -74,7 +74,7 @@ bool zink_tracing = false;
+ #if DETECT_OS_APPLE
+ #define VK_LIBNAME "libvulkan.1.dylib"
+ #elif DETECT_OS_ANDROID
+-#define VK_LIBNAME "libvulkan.so"
++#define VK_LIBNAME "libvulkan_vstpoc.so"
+ #else
+ #define VK_LIBNAME "libvulkan.so.1"
+ #endif
+@@ -1700,8 +1700,15 @@ zink_get_cpu_device_type(const struct zink_screen *screen, uint32_t pdev_count,
+ static void
+ choose_pdev(struct zink_screen *screen, int64_t dev_major, int64_t dev_minor)
+ {
+-   bool cpu = debug_get_bool_option("LIBGL_ALWAYS_SOFTWARE", false) ||
+-              debug_get_bool_option("D3D_ALWAYS_SOFTWARE", false);
++   /* vstpoc: we set LIBGL_ALWAYS_SOFTWARE only to force the EGL *surfaceless*
++    * platform onto its no-DRM software-loader fallback (the only route to zink
++    * when /dev/dri is SELinux-denied) — NOT to request a CPU/lavapipe Vulkan
++    * device (we don't even build lavapipe). Without this guard zink would demand
++    * VK_PHYSICAL_DEVICE_TYPE_CPU and reject Turnip ("CPU device requested but
++    * none found"). VSTPOC_ZINK_FORCE_HW=1 keeps zink on the real HW pdev. */
++   bool cpu = (debug_get_bool_option("LIBGL_ALWAYS_SOFTWARE", false) ||
++               debug_get_bool_option("D3D_ALWAYS_SOFTWARE", false)) &&
++              !debug_get_bool_option("VSTPOC_ZINK_FORCE_HW", false);
+ 
+    if (cpu || (dev_major > 0 && dev_major < 255)) {
+       uint32_t pdev_count;
+diff --git a/src/gallium/targets/dri/dri_target.c b/src/gallium/targets/dri/dri_target.c
+index 6604afe99f5..1d7d4ceda6b 100644
+--- a/src/gallium/targets/dri/dri_target.c
++++ b/src/gallium/targets/dri/dri_target.c
+@@ -143,9 +143,15 @@ DEFINE_LOADER_DRM_ENTRYPOINT(lima)
+ #endif
+ 
+ #if defined(GALLIUM_ZINK)
+-#if DETECT_OS_ANDROID
+-DEFINE_LOADER_DRM_ENTRYPOINT(zink);
+-#else
++/* vstpoc: upstream returns galliumdrm (DRI2/image) for zink on Android because
++ * the stock Android EGL platform presents through gralloc/ANativeWindow. We run
++ * zink HEADLESS via the EGL *surfaceless* platform (wine win32u offscreen FBO —
++ * there is no ANativeWindow) and have NO DRM render-node access (renderD128 is
++ * SELinux-denied for untrusted_app). The surfaceless software path loads zink via
++ * dri2_load_driver_swrast, which needs __DRI_SWRAST (mandatory) and, for fd-less
++ * GPU zink, __DRI_KOPPER (optional) — both live in galliumvk_driver_extensions,
++ * NEITHER in galliumdrm. So return the desktop/vk set unconditionally:
++ * kopper_init_screen(fd==-1) -> pipe_loader_vk_probe_dri -> zink over Turnip. */
+ const __DRIextension **__driDriverGetExtensions_zink(void);
+ 
+ PUBLIC const __DRIextension **__driDriverGetExtensions_zink(void)
+@@ -153,7 +159,6 @@ PUBLIC const __DRIextension **__driDriverGetExtensions_zink(void)
+    return debug_get_bool_option("LIBGL_KOPPER_DISABLE", false) ? galliumdrm_driver_extensions : galliumvk_driver_extensions;
+ }
+ #endif
+-#endif
+ 
+ #if defined(GALLIUM_D3D12)
+ DEFINE_LOADER_DRM_ENTRYPOINT(d3d12);

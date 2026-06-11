@@ -265,6 +265,29 @@ static void vstpocWriteFexConfig(const std::string& configFile, const std::strin
 /* Set wine env vars in the current process. Used by both the vst_host
  * fork child (start()) and the wineboot fork child (bootServicesIfNeeded()).
  * Safe to call only after fork — mutates ::setenv. */
+/* vstpoc Mesa-Zink (desktop GL over Vulkan/Turnip for GL plugin editors like
+ * AmpliTube). Sets the SUPPORTING env always (harmless — Mesa only loads when
+ * win32u's egl_init sees VSTPOC_EGL_LIBRARY, which is opt-in via wine_env.txt
+ * for now). Adds the mesa + turnip dirs to LD_LIBRARY_PATH so mesa's deps
+ * resolve (mesa-only libs incl. the stub libLLVM live in mesaDir; shared
+ * libdrm/libxcb/libz in turnipDir; the app-built X11 libs in nativeLibDir win,
+ * but they're the same Termux build). zink uses the system Vulkan loader by
+ * default. */
+static void vstpocSetMesaZinkEnv(const std::string& wineRoot, const std::string& nativeLibDir) {
+    const std::string mesaDir   = wineRoot + "/mesa";
+    const std::string turnipDir = wineRoot + "/turnip";
+    const std::string ldpath = nativeLibDir + ":" + mesaDir + ":" + turnipDir;
+    ::setenv("LD_LIBRARY_PATH", ldpath.c_str(), 1);
+    /* Our Mesa is a STANDALONE (non-glvnd) build — win32u dlopens its libEGL.so
+     * directly, so no glvnd __EGL_VENDOR_LIBRARY_FILENAMES is needed. */
+    ::setenv("MESA_LOADER_DRIVER_OVERRIDE", "zink", 1);
+    ::setenv("GALLIUM_DRIVER", "zink", 1);
+    ::setenv("LIBGL_DRIVERS_PATH", (mesaDir + "/dri").c_str(), 1);
+    /* NOTE: VSTPOC_EGL_LIBRARY (the actual desktop-GL switch) is intentionally
+     * NOT set here — opt-in via cache/wine_env.txt during bring-up:
+     *   VSTPOC_EGL_LIBRARY=<wineRoot>/mesa/libEGL.so.1 */
+}
+
 void WineHostProcess::setupWineEnvChild(const Config& cfg) {
     /* See start() for the rationale behind each var; this is a verbatim
      * extraction so the two children share identical env. */
@@ -320,6 +343,7 @@ void WineHostProcess::setupWineEnvChild(const Config& cfg) {
         ::setenv("MESA_SHADER_CACHE_DIR", mesaCache.c_str(), 1);
         ::setenv("XDG_CACHE_HOME", cfg.cacheDir.c_str(), 1);
         ::setenv("HOME", cfg.cacheDir.c_str(), 1);
+        vstpocSetMesaZinkEnv(wineRoot, cfg.nativeLibDir);
     }
     ::setenv("HODLL64",      "libarm64ecfex.dll",             1);
     ::setenv("HODLL",        "libwow64fex.dll",               1);
@@ -767,6 +791,7 @@ bool WineHostProcess::start() {
             ::setenv("MESA_SHADER_CACHE_DIR", mesaCache.c_str(), 1);
             ::setenv("XDG_CACHE_HOME", cfg_.cacheDir.c_str(), 1);
             ::setenv("HOME", cfg_.cacheDir.c_str(), 1);
+            vstpocSetMesaZinkEnv(wineRoot, cfg_.nativeLibDir);
         }
         // HODLL64 / HODLL select which PE DLL implements WoW64-style x86
         // emulation. libarm64ecfex.dll is loaded by wine arm64ec when it

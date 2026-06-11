@@ -198,3 +198,594 @@
      CHECK_EXTENSION( EGL_KHR_no_config_context );
  #undef CHECK_EXTENSION
  
+diff --git a/dlls/win32u/opengl.c b/dlls/win32u/opengl.c
+index 3b8db3ca291..bd5e396ab59 100644
+--- a/dlls/win32u/opengl.c
++++ b/dlls/win32u/opengl.c
+@@ -158,7 +158,11 @@ void opengl_drawable_release( struct opengl_drawable *drawable )
+ 
+ static void opengl_drawable_set_context( struct opengl_drawable *drawable, struct opengl_context *context )
+ {
+-    if (!drawable->funcs->set_context) return;
++    /* vstpoc: NULL-harden. A context whose initial sync faulted (e.g. the GLES
++     * DSA fault) ends up with draw/read == NULL; context_sync_drawables then
++     * passes NULL here every frame, turning a one-time failure into a permanent
++     * make-current loop (AmpliTube white screen). */
++    if (!drawable || !drawable->funcs->set_context) return;
+     drawable->funcs->set_context( drawable, context ? context->driver_private : NULL );
+ }
+ 
+@@ -178,6 +182,11 @@ static void opengl_drawable_flush( struct opengl_drawable *drawable, int interva
+ 
+ static BOOL opengl_drawable_swap( struct opengl_drawable *drawable )
+ {
++    static int vstpoc_n;  /* vstpoc-gl TEMP diag: does the plugin present via GL? */
++    if (vstpoc_n++ < 20)
++        ERR( "vstpoc-gl: opengl_drawable_swap #%d client=%p hwnd=%p is_window=%d\n", vstpoc_n,
++             drawable->client, drawable->client ? drawable->client->hwnd : 0,
++             is_client_surface_window( drawable->client, 0 ) );
+     if (!is_client_surface_window( drawable->client, 0 )) return FALSE;
+     client_surface_update( drawable->client );
+     return drawable->funcs->swap( drawable );
+@@ -185,6 +194,25 @@ static BOOL opengl_drawable_swap( struct opengl_drawable *drawable )
+ 
+ #ifdef SONAME_LIBEGL
+ 
++/* vstpoc: when VSTPOC_EGL_LIBRARY points at our bundled Mesa glvnd libEGL, we
++ * get a REAL desktop-GL context via Zink (GL->Vulkan on Turnip) instead of the
++ * Android system GLES — desktop-GLSL apps (JUCE editors like AmpliTube, whose
++ * JUCE_OPENGL_ES is compile-time-off) then compile their shaders. Set in
++ * egl_init(); toggles EGL_OPENGL_API + surfaceless platform + desktop context
++ * attribs. Default 0 = unchanged Android-GLES path. */
++static int g_vstpoc_mesa_egl;
++
++/* EGL_KHR_create_context / surfaceless tokens (may be absent from older headers). */
++#ifndef EGL_CONTEXT_FLAGS_KHR
++#define EGL_CONTEXT_FLAGS_KHR 0x30FC
++#endif
++#ifndef EGL_CONTEXT_OPENGL_PROFILE_MASK_KHR
++#define EGL_CONTEXT_OPENGL_PROFILE_MASK_KHR 0x30FD
++#endif
++#ifndef EGL_PLATFORM_SURFACELESS_MESA
++#define EGL_PLATFORM_SURFACELESS_MESA 0x31DD
++#endif
++
+ struct framebuffer_surface
+ {
+     struct opengl_drawable base;
+@@ -252,35 +280,55 @@ static GLenum depth_format_from_pfd( const struct wgl_pixel_format *desc )
+     return 0;
+ }
+ 
++/* vstpoc-gles: Android's system EGL exposes OpenGL ES only — the GL 4.5 DSA
++ * entry points (glCreateFramebuffers & co) used upstream don't exist there
++ * (eglGetProcAddress returns NULL, and calling them faulted on the first JUCE
++ * GL editor make-current → AmpliTube white screen). Use bind-based ES 3.0
++ * calls instead; they work identically on desktop GL 3.x+. These helpers run
++ * on create/resize/destroy only, so the save/restore binding churn is cheap. */
+ static GLuint create_framebuffer( struct opengl_drawable *drawable, const struct wgl_pixel_format *desc )
+ {
+     const struct opengl_funcs *funcs = &display_funcs;
+     GLuint count = 1, fbo, name;
++    GLint old_draw_fbo = 0, old_read_fbo = 0, old_rbo = 0;
++    GLenum draw_buf = GL_COLOR_ATTACHMENT0;
+ 
+     if (drawable->doublebuffer) count *= 2;
+     if (drawable->stereo) count *= 2;
+ 
+-    funcs->p_glCreateFramebuffers( 1, &fbo );
++    funcs->p_glGetIntegerv( GL_DRAW_FRAMEBUFFER_BINDING, &old_draw_fbo );
++    funcs->p_glGetIntegerv( GL_READ_FRAMEBUFFER_BINDING, &old_read_fbo );
++    funcs->p_glGetIntegerv( GL_RENDERBUFFER_BINDING, &old_rbo );
++
++    funcs->p_glGenFramebuffers( 1, &fbo );
++    funcs->p_glBindFramebuffer( GL_FRAMEBUFFER, fbo );
+ 
+     for (GLuint i = 0; i < count; i++)
+     {
+-        funcs->p_glCreateRenderbuffers( 1, &name );
+-        funcs->p_glNamedFramebufferRenderbuffer( fbo, GL_COLOR_ATTACHMENT0 + i, GL_RENDERBUFFER, name );
++        funcs->p_glGenRenderbuffers( 1, &name );
++        funcs->p_glBindRenderbuffer( GL_RENDERBUFFER, name );
++        funcs->p_glFramebufferRenderbuffer( GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0 + i, GL_RENDERBUFFER, name );
+         TRACE( "drawable %p/%u created color buffer %#x/%u\n", drawable, fbo, GL_COLOR_ATTACHMENT0 + i, name );
+     }
+ 
+     if (desc->pfd.cDepthBits)
+     {
+-        funcs->p_glCreateRenderbuffers( 1, &name );
+-        funcs->p_glNamedFramebufferRenderbuffer( fbo, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, name );
+-        if (desc->pfd.cStencilBits) funcs->p_glNamedFramebufferRenderbuffer( fbo, GL_STENCIL_ATTACHMENT, GL_RENDERBUFFER, name );
++        funcs->p_glGenRenderbuffers( 1, &name );
++        funcs->p_glBindRenderbuffer( GL_RENDERBUFFER, name );
++        funcs->p_glFramebufferRenderbuffer( GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, name );
++        if (desc->pfd.cStencilBits) funcs->p_glFramebufferRenderbuffer( GL_FRAMEBUFFER, GL_STENCIL_ATTACHMENT, GL_RENDERBUFFER, name );
+         TRACE( "drawable %p/%u created depth buffer %u\n", drawable, fbo, name );
+     }
+ 
+-    funcs->p_glNamedFramebufferDrawBuffer( fbo, GL_COLOR_ATTACHMENT0 );
+-    funcs->p_glNamedFramebufferReadBuffer( fbo, drawable->doublebuffer ? GL_COLOR_ATTACHMENT1 : GL_COLOR_ATTACHMENT0 );
++    /* per-FBO draw/read buffer state, set while the FBO is bound */
++    funcs->p_glDrawBuffers( 1, &draw_buf );
++    funcs->p_glReadBuffer( drawable->doublebuffer ? GL_COLOR_ATTACHMENT1 : GL_COLOR_ATTACHMENT0 );
+     TRACE( "drawable %p created framebuffer %u\n", drawable, fbo );
+ 
++    funcs->p_glBindFramebuffer( GL_DRAW_FRAMEBUFFER, old_draw_fbo );
++    funcs->p_glBindFramebuffer( GL_READ_FRAMEBUFFER, old_read_fbo );
++    funcs->p_glBindRenderbuffer( GL_RENDERBUFFER, old_rbo );
++
+     return fbo;
+ }
+ 
+@@ -290,51 +338,69 @@ static void resize_framebuffer( struct opengl_drawable *drawable, const struct w
+     const struct opengl_funcs *funcs = &display_funcs;
+     GLuint count = 1, name;
+     GLenum ret;
++    GLint old_read_fbo = 0, old_rbo = 0;
+ 
+     if (drawable->doublebuffer) count *= 2;
+     if (drawable->stereo) count *= 2;
+ 
++    /* vstpoc-gles: bind-based (no DSA on GLES). Use the READ target so the
++     * app's draw framebuffer binding is untouched mid-frame. */
++    funcs->p_glGetIntegerv( GL_READ_FRAMEBUFFER_BINDING, &old_read_fbo );
++    funcs->p_glGetIntegerv( GL_RENDERBUFFER_BINDING, &old_rbo );
++    funcs->p_glBindFramebuffer( GL_READ_FRAMEBUFFER, fbo );
++
+     for (GLuint i = 0; i < count; i++)
+     {
+-        funcs->p_glGetNamedFramebufferAttachmentParameteriv( fbo, GL_COLOR_ATTACHMENT0 + i, GL_FRAMEBUFFER_ATTACHMENT_OBJECT_NAME, (GLint *)&name );
+-        funcs->p_glNamedRenderbufferStorageMultisample( name, desc->samples, color_format_from_pfd( desc ), width, height );
++        funcs->p_glGetFramebufferAttachmentParameteriv( GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0 + i, GL_FRAMEBUFFER_ATTACHMENT_OBJECT_NAME, (GLint *)&name );
++        funcs->p_glBindRenderbuffer( GL_RENDERBUFFER, name );
++        funcs->p_glRenderbufferStorageMultisample( GL_RENDERBUFFER, desc->samples, color_format_from_pfd( desc ), width, height );
+         TRACE( "drawable %p/%u resized color buffer %#x/%u to %d,%d\n", drawable, fbo, GL_COLOR_ATTACHMENT0 + i, name, width, height );
+     }
+ 
+     if (desc->pfd.cDepthBits)
+     {
+-        funcs->p_glGetNamedFramebufferAttachmentParameteriv( fbo, GL_DEPTH_ATTACHMENT, GL_FRAMEBUFFER_ATTACHMENT_OBJECT_NAME, (GLint *)&name );
+-        funcs->p_glNamedRenderbufferStorageMultisample( name, desc->samples, depth_format_from_pfd( desc ), width, height );
++        funcs->p_glGetFramebufferAttachmentParameteriv( GL_READ_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_FRAMEBUFFER_ATTACHMENT_OBJECT_NAME, (GLint *)&name );
++        funcs->p_glBindRenderbuffer( GL_RENDERBUFFER, name );
++        funcs->p_glRenderbufferStorageMultisample( GL_RENDERBUFFER, desc->samples, depth_format_from_pfd( desc ), width, height );
+         TRACE( "drawable %p/%u resized depth buffer %u to %d,%d\n", drawable, fbo, name, width, height );
+     }
+ 
+-    ret = funcs->p_glCheckNamedFramebufferStatus( fbo, GL_FRAMEBUFFER );
+-    if (ret != GL_FRAMEBUFFER_COMPLETE) WARN( "glCheckNamedFramebufferStatus returned %#x\n", ret );
++    ret = funcs->p_glCheckFramebufferStatus( GL_READ_FRAMEBUFFER );
++    if (ret != GL_FRAMEBUFFER_COMPLETE) WARN( "glCheckFramebufferStatus returned %#x\n", ret );
+     TRACE( "drawable %p/%u resized buffers to %d,%d\n", drawable, fbo, width, height );
++
++    funcs->p_glBindFramebuffer( GL_READ_FRAMEBUFFER, old_read_fbo );
++    funcs->p_glBindRenderbuffer( GL_RENDERBUFFER, old_rbo );
+ }
+ 
+ static void destroy_framebuffer( struct opengl_drawable *drawable, const struct wgl_pixel_format *desc, GLuint fbo )
+ {
+     const struct opengl_funcs *funcs = &display_funcs;
+     GLuint count = 1, name;
++    GLint old_read_fbo = 0;
+ 
+     if (drawable->doublebuffer) count *= 2;
+     if (drawable->stereo) count *= 2;
+ 
++    /* vstpoc-gles: bind-based (no DSA on GLES). */
++    funcs->p_glGetIntegerv( GL_READ_FRAMEBUFFER_BINDING, &old_read_fbo );
++    funcs->p_glBindFramebuffer( GL_READ_FRAMEBUFFER, fbo );
++
+     for (GLuint i = 0; i < count; i++)
+     {
+-        funcs->p_glGetNamedFramebufferAttachmentParameteriv( fbo, GL_COLOR_ATTACHMENT0 + i, GL_FRAMEBUFFER_ATTACHMENT_OBJECT_NAME, (GLint *)&name );
++        funcs->p_glGetFramebufferAttachmentParameteriv( GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0 + i, GL_FRAMEBUFFER_ATTACHMENT_OBJECT_NAME, (GLint *)&name );
+         funcs->p_glDeleteRenderbuffers( 1, &name );
+         TRACE( "drawable %p/%u destroyed color buffer %#x/%u\n", drawable, fbo, GL_COLOR_ATTACHMENT0 + i, name );
+     }
+ 
+     if (desc->pfd.cDepthBits)
+     {
+-        funcs->p_glGetNamedFramebufferAttachmentParameteriv( fbo, GL_DEPTH_ATTACHMENT, GL_FRAMEBUFFER_ATTACHMENT_OBJECT_NAME, (GLint *)&name );
++        funcs->p_glGetFramebufferAttachmentParameteriv( GL_READ_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_FRAMEBUFFER_ATTACHMENT_OBJECT_NAME, (GLint *)&name );
+         funcs->p_glDeleteRenderbuffers( 1, &name );
+         TRACE( "drawable %p/%u destroyed depth buffer %u\n", drawable, fbo, name );
+     }
+ 
++    funcs->p_glBindFramebuffer( GL_READ_FRAMEBUFFER, old_read_fbo == (GLint)fbo ? 0 : old_read_fbo );
+     funcs->p_glDeleteFramebuffers( 1, &fbo );
+     TRACE( "drawable %p destroyed framebuffer %u\n", drawable, fbo );
+ }
+@@ -397,13 +463,96 @@ static void framebuffer_surface_set_context( struct opengl_drawable *drawable, v
+ 
+ static void framebuffer_surface_flush( struct opengl_drawable *drawable, UINT flags )
+ {
++    static int vstpoc_n;  /* vstpoc-gl TEMP diag */
++    if (vstpoc_n++ < 20)
++        ERR( "vstpoc-gl: framebuffer_surface_flush #%d flags=%#x read_fbo=%u draw_fbo=%u\n",
++             vstpoc_n, flags, drawable->read_fbo, drawable->draw_fbo );
+     TRACE( "%s, flags %#x\n", debugstr_opengl_drawable( drawable ), flags );
+     if (flags & GL_FLUSH_UPDATED && drawable->read_fbo) framebuffer_surface_resize( drawable );
+ }
+ 
+ static BOOL framebuffer_surface_swap( struct opengl_drawable *drawable )
+ {
++    /* vstpoc-gles: PRESENT the offscreen framebuffer to the window. On Android
++     * there is no EGL window surface behind the X11 window (it lives in our
++     * in-process X server), so read the pixels back and blit them through GDI —
++     * the window surface then reaches the X server via the normal XPutImage
++     * path and gets composited like any other editor content. */
++    const struct opengl_funcs *funcs = &display_funcs;
++    HWND hwnd = drawable->client ? drawable->client->hwnd : 0;
++    GLint old_read_fbo = 0;
++    char info_buf[sizeof(BITMAPINFOHEADER) + 4 * sizeof(RGBQUAD)];
++    BITMAPINFO *info = (BITMAPINFO *)info_buf;
++    UINT *bits;
++    RECT rect;
++    int width, height;
++    HDC hdc;
++    static int vstpoc_n;  /* vstpoc-gl TEMP diag */
++
+     TRACE( "%s\n", debugstr_opengl_drawable( drawable ) );
++
++    if (!hwnd || !drawable->read_fbo) return TRUE;
++
++    NtUserGetClientRect( hwnd, &rect, NtUserGetDpiForWindow( hwnd ) );
++    width  = rect.right  > 0 ? rect.right  : 1;
++    height = rect.bottom > 0 ? rect.bottom : 1;
++
++    if (!(bits = malloc( (size_t)width * height * 4 ))) return FALSE;
++
++    funcs->p_glGetIntegerv( GL_READ_FRAMEBUFFER_BINDING, &old_read_fbo );
++
++    /* resolve a multisampled draw fbo into the single-sample read fbo */
++    if (drawable->draw_fbo && drawable->draw_fbo != drawable->read_fbo)
++    {
++        GLint old_draw_fbo = 0;
++        funcs->p_glGetIntegerv( GL_DRAW_FRAMEBUFFER_BINDING, &old_draw_fbo );
++        funcs->p_glBindFramebuffer( GL_READ_FRAMEBUFFER, drawable->draw_fbo );
++        funcs->p_glBindFramebuffer( GL_DRAW_FRAMEBUFFER, drawable->read_fbo );
++        funcs->p_glBlitFramebuffer( 0, 0, width, height, 0, 0, width, height, GL_COLOR_BUFFER_BIT, GL_NEAREST );
++        funcs->p_glBindFramebuffer( GL_DRAW_FRAMEBUFFER, old_draw_fbo );
++    }
++
++    funcs->p_glBindFramebuffer( GL_READ_FRAMEBUFFER, drawable->read_fbo );
++    /* vstpoc-gl: the drawn frame always lands in COLOR_ATTACHMENT0 — create_framebuffer
++     * sets glDrawBuffers={ATTACHMENT0}, and the MSAA resolve above blits into the
++     * read_fbo's draw buffer (also ATTACHMENT0). For a doublebuffer surface the FBO's
++     * *read* buffer is left at ATTACHMENT1 (the emulated front), which we never
++     * populate (there's no flip/copy on swap) so it reads back all-black. Read the
++     * attachment that actually holds the frame. (Replaces a temp self-heal probe that
++     * only ran for the first 8 frames, which is why AmpliTube went black on frame 9.) */
++    if (drawable->doublebuffer) funcs->p_glReadBuffer( GL_COLOR_ATTACHMENT0 );
++    funcs->p_glPixelStorei( GL_PACK_ALIGNMENT, 4 );
++    funcs->p_glReadPixels( 0, 0, width, height, GL_RGBA, GL_UNSIGNED_BYTE, bits );
++    funcs->p_glBindFramebuffer( GL_READ_FRAMEBUFFER, old_read_fbo );
++
++    /* RGBA -> BGRA for the 32bpp DIB (GLES has no GL_BGRA readback in core) */
++    for (size_t i = 0, total = (size_t)width * height; i < total; i++)
++    {
++        UINT c = bits[i];
++        bits[i] = (c & 0xff00ff00) | ((c & 0x00ff0000) >> 16) | ((c & 0x000000ff) << 16);
++    }
++
++    memset( info_buf, 0, sizeof(info_buf) );
++    info->bmiHeader.biSize        = sizeof(info->bmiHeader);
++    info->bmiHeader.biWidth       = width;
++    info->bmiHeader.biHeight      = height;  /* bottom-up DIB == glReadPixels row order, no flip */
++    info->bmiHeader.biPlanes      = 1;
++    info->bmiHeader.biBitCount    = 32;
++    info->bmiHeader.biCompression = BI_RGB;
++    info->bmiHeader.biSizeImage   = width * height * 4;
++
++    if ((hdc = NtUserGetDCEx( hwnd, 0, DCX_CACHE | DCX_USESTYLE )))
++    {
++        NtGdiSetDIBitsToDeviceInternal( hdc, 0, 0, width, height, 0, 0, 0, height,
++                                        (void *)bits, info, DIB_RGB_COLORS,
++                                        width * height * 4, sizeof(info_buf), FALSE, NULL );
++        NtUserReleaseDC( hwnd, hdc );
++    }
++    free( bits );
++
++    if (vstpoc_n++ < 8)
++        ERR( "vstpoc-gl: framebuffer_surface_swap PRESENT #%d hwnd=%p %dx%d read_fbo=%u\n",
++             vstpoc_n, hwnd, width, height, drawable->read_fbo );
+     return TRUE;
+ }
+ 
+@@ -450,7 +599,22 @@ static EGLConfig egl_config_for_format( const struct egl_platform *egl, int form
+ 
+ static void egldrv_init_egl_platform( struct egl_platform *platform )
+ {
+-    platform->type = EGL_PLATFORM_SURFACELESS_MESA;
++    /* vstpoc Mesa/Zink: use the surfaceless platform so Mesa picks zink (no X11/
++     * wayland window system). Everything renders to an offscreen FBO anyway
++     * (egldrv_surface_create) which we read back + GDI-blit to the window. */
++    if (g_vstpoc_mesa_egl)
++    {
++        platform->type = 0x31DD;  /* EGL_PLATFORM_SURFACELESS_MESA */
++        platform->native_display = 0;  /* EGL_DEFAULT_DISPLAY */
++        return;
++    }
++    /* vstpoc: Android's system EGL has no EGL_PLATFORM_SURFACELESS_MESA. Leave
++     * type=0 so init_egl_platforms() falls back to eglGetDisplay(EGL_DEFAULT_
++     * DISPLAY) — the Android GLES display. wine's opengl32 then runs over GLES
++     * (see the GLES config/context/bindAPI changes below); rendering still goes
++     * to an offscreen framebuffer (egldrv_surface_create) composited to the
++     * window, so no ANativeWindow is needed for the context. */
++    platform->type = 0;
+     platform->native_display = 0;
+ }
+ 
+@@ -486,7 +650,10 @@ static UINT egldrv_init_pixel_formats( UINT *onscreen_count )
+     for (i = 0, j = 0; i < count; i++)
+     {
+         funcs->p_eglGetConfigAttrib( egl->display, configs[i], EGL_RENDERABLE_TYPE, &render );
+-        if (render & EGL_OPENGL_BIT) configs[j++] = configs[i];
++        /* vstpoc: Android EGL exposes only GLES-renderable configs (no
++         * EGL_OPENGL_BIT). Accept GLES2/3 so wine has pixel formats to offer;
++         * wine's opengl32 then maps WGL onto a GLES context. */
++        if (render & (EGL_OPENGL_BIT | EGL_OPENGL_ES2_BIT | EGL_OPENGL_ES3_BIT)) configs[j++] = configs[i];
+     }
+     count = j;
+ 
+@@ -778,18 +945,18 @@ static BOOL egldrv_context_create( int format, void *share, const int *attribs,
+             name = EGL_CONTEXT_MINOR_VERSION_KHR;
+             break;
+         case WGL_CONTEXT_FLAGS_ARB:
+-            name = EGL_CONTEXT_FLAGS_KHR;
++            /* Desktop GL (Mesa/Zink) accepts FORWARD_COMPATIBLE/DEBUG flags; a
++             * GLES context (EGL_OPENGL_ES_API) rejects them with
++             * EGL_BAD_ATTRIBUTE (0x3004), so drop them only on the GLES path. */
++            name = g_vstpoc_mesa_egl ? EGL_CONTEXT_FLAGS_KHR : EGL_NONE;
+             break;
+         case WGL_CONTEXT_OPENGL_NO_ERROR_ARB:
+             name = EGL_CONTEXT_OPENGL_NO_ERROR_KHR;
+             break;
+         case WGL_CONTEXT_PROFILE_MASK_ARB:
+-            if (attribs[1] & WGL_CONTEXT_ES2_PROFILE_BIT_EXT)
+-            {
+-                ERR( "OpenGL ES contexts are not supported\n" );
+-                return FALSE;
+-            }
+-            name = EGL_CONTEXT_OPENGL_PROFILE_MASK_KHR;
++            /* Desktop GL needs the core/compat profile mask; GLES has no profile
++             * distinction and rejects it (EGL_BAD_ATTRIBUTE) → drop on GLES. */
++            name = g_vstpoc_mesa_egl ? EGL_CONTEXT_OPENGL_PROFILE_MASK_KHR : EGL_NONE;
+             break;
+         default:
+             name = EGL_NONE;
+@@ -811,6 +978,54 @@ static BOOL egldrv_context_create( int format, void *share, const int *attribs,
+     }
+     *attribs_end = EGL_NONE;
+ 
++    if (g_vstpoc_mesa_egl)
++    {
++        /* Desktop GL (Zink): honor the app's requested version; if wine's legacy
++         * wglCreateContext passed none, default to 3.2 — enough for JUCE's
++         * desktop-GLSL shaders (the whole point of the Zink path). Do NOT clamp
++         * to GLES [2,3]. */
++        EGLint *maj = NULL, *p;
++        for (p = egl_attribs; p < attribs_end; p += 2)
++            if (p[0] == EGL_CONTEXT_MAJOR_VERSION_KHR) maj = p + 1;
++        if (!maj)
++        {
++            assert( attribs_end - egl_attribs <= ARRAY_SIZE(egl_attribs) - 5 );
++            attribs_end[0] = EGL_CONTEXT_MAJOR_VERSION_KHR; attribs_end[1] = 3;
++            attribs_end[2] = EGL_CONTEXT_MINOR_VERSION_KHR; attribs_end[3] = 2;
++            attribs_end += 4;
++            *attribs_end = EGL_NONE;
++        }
++    }
++    else
++    {
++    /* vstpoc: force a MODERN GLES version. wine's legacy wglCreateContext passes
++     * no version attribs → eglCreateContext(EGL_OPENGL_ES_API) defaults to GLES
++     * 1.1 (fixed-function, no shaders), which modern renderers (AmpliTube ATK)
++     * can't use → white screen. Ensure EGL_CONTEXT_MAJOR_VERSION is present and
++     * in [2,3]; default/clamp to GLES 3.0 (≈ desktop GL 3.3 core feature set). */
++    {
++        EGLint *maj = NULL, *mn = NULL, *p;
++        for (p = egl_attribs; p < attribs_end; p += 2)
++        {
++            if (p[0] == EGL_CONTEXT_MAJOR_VERSION_KHR) maj = p + 1;
++            else if (p[0] == EGL_CONTEXT_MINOR_VERSION_KHR) mn = p + 1;
++        }
++        if (!maj)
++        {
++            assert( attribs_end - egl_attribs <= ARRAY_SIZE(egl_attribs) - 3 );
++            attribs_end[0] = EGL_CONTEXT_MAJOR_VERSION_KHR;
++            attribs_end[1] = 3;
++            attribs_end += 2;
++            *attribs_end = EGL_NONE;
++        }
++        else if (*maj < 2 || *maj > 3)
++        {
++            *maj = 3;
++            if (mn) *mn = 0;
++        }
++    }
++    }
++
+     /* For now only OpenGL is supported. It's enough to set the API only for
+      * context creation, since:
+      * 1. the default API is EGL_OPENGL_ES_API
+@@ -818,10 +1033,24 @@ static BOOL egldrv_context_create( int format, void *share, const int *attribs,
+      *    > EGL_OPENGL_API and EGL_OPENGL_ES_API are interchangeable for all
+      *    > purposes except eglCreateContext.
+      */
+-    funcs->p_eglBindAPI( EGL_OPENGL_API );
+-    *context = funcs->p_eglCreateContext( egl->display, EGL_NO_CONFIG_KHR, share, attribs ? egl_attribs : NULL );
+-
+-    if ((err = funcs->p_eglGetError()) != EGL_SUCCESS || !*context)
++    /* vstpoc: Android's system EGL only supports EGL_OPENGL_ES_API (no desktop
++     * EGL_OPENGL_API). Bind GLES so eglCreateContext succeeds; the WGL major/
++     * minor-version attribs map to the GLES context version. AmpliTube's ATK
++     * renderer issues GLES-compatible GL — desktop-only entry points wine fails
++     * to resolve just WARN (opengl32 best-effort), they aren't called here. */
++    /* vstpoc: desktop GL (EGL_OPENGL_API) on the Mesa/Zink path so JUCE's
++     * desktop-GLSL compiles; GLES otherwise (Android system EGL). */
++    funcs->p_eglBindAPI( g_vstpoc_mesa_egl ? EGL_OPENGL_API : EGL_OPENGL_ES_API );
++    /* vstpoc: always pass egl_attribs — we ensured a major version above, so
++     * even the no-attribs legacy path gets GL 3.2 / GLES 3.0 (not the 1.1 default). */
++    *context = funcs->p_eglCreateContext( egl->display, EGL_NO_CONFIG_KHR, share, egl_attribs );
++
++    err = funcs->p_eglGetError();
++    /* vstpoc-gl TEMP diag: always log the GLES context-creation result (rare
++     * event, no per-call perturbation). Validates whether a NULL editor
++     * renderer correlates with a failed/NULL GL context on our GLES path. */
++    ERR( "vstpoc-gl: eglCreateContext(ES) → %p (egl err %#x)\n", *context, err );
++    if (err != EGL_SUCCESS || !*context)
+     {
+         WARN( "Context creation failed (error %#x).\n", err );
+         return FALSE;
+@@ -847,7 +1076,21 @@ static BOOL egldrv_make_current( struct opengl_drawable *draw, struct opengl_dra
+ 
+     TRACE( "draw %s, read %s, context %p\n", debugstr_opengl_drawable( draw ), debugstr_opengl_drawable( read ), context );
+ 
+-    return funcs->p_eglMakeCurrent( egl->display, context ? draw->surface : EGL_NO_SURFACE, context ? read->surface : EGL_NO_SURFACE, context );
++    {
++        EGLBoolean ok = funcs->p_eglMakeCurrent( egl->display, context ? draw->surface : EGL_NO_SURFACE,
++                                                 context ? read->surface : EGL_NO_SURFACE, context );
++        /* vstpoc-gl TEMP diag: MakeCurrent result + the GL_VERSION the plugin
++         * will see (an "OpenGL ES x.x" string that a desktop-GL renderer might
++         * reject). Only fires on context switches — low perturbation. */
++        if (context)
++        {
++            const GLubyte *ver = (ok && funcs->p_glGetString) ? funcs->p_glGetString( GL_VERSION ) : NULL;
++            ERR( "vstpoc-gl: eglMakeCurrent ctx=%p draw_surf=%p → %d, GL_VERSION=%s\n",
++                 context, context ? draw->surface : EGL_NO_SURFACE, (int)ok,
++                 ver ? (const char *)ver : "(null)" );
++        }
++        return ok;
++    }
+ }
+ 
+ static void egldrv_pbuffer_destroy( struct opengl_drawable *drawable )
+@@ -880,8 +1123,22 @@ static BOOL egl_init( const struct opengl_driver_funcs **driver_funcs )
+ {
+     struct opengl_funcs *funcs = &display_funcs;
+     const char *extensions;
++    const char *egl_lib = getenv( "VSTPOC_EGL_LIBRARY" );
++
++    /* RTLD_LOCAL (NOT GLOBAL): our standalone Mesa libEGL exports eglDestroySyncKHR
++     * etc.; with RTLD_GLOBAL those shadow the system libEGL and break later
++     * dlopens of system libs that need the REAL system EGL (e.g. libgui.so via
++     * libadrenotools → DXVK's Turnip fails to load). win32u uses the EGL via the
++     * handle's dlsym, so LOCAL is sufficient. */
++    if (egl_lib && *egl_lib && (funcs->egl_handle = dlopen( egl_lib, RTLD_NOW | RTLD_LOCAL )))
++    {
++        g_vstpoc_mesa_egl = 1;
++        ERR( "vstpoc: Mesa EGL ACTIVE — %s (desktop GL via Zink->Turnip)\n", egl_lib );
++    }
++    else if (egl_lib && *egl_lib)
++        ERR( "vstpoc: VSTPOC_EGL_LIBRARY=%s dlopen failed: %s — falling back to system EGL\n", egl_lib, dlerror() );
+ 
+-    if (!(funcs->egl_handle = dlopen( SONAME_LIBEGL, RTLD_NOW | RTLD_GLOBAL )))
++    if (!funcs->egl_handle && !(funcs->egl_handle = dlopen( SONAME_LIBEGL, RTLD_NOW | RTLD_GLOBAL )))
+     {
+         ERR( "Failed to load %s: %s\n", SONAME_LIBEGL, dlerror() );
+         return FALSE;
+@@ -911,8 +1168,19 @@ static BOOL egl_init( const struct opengl_driver_funcs **driver_funcs )
+         ERR( "Failed to find required extension %s\n", #ext );  \
+         goto failed;                                            \
+     }
+-    CHECK_EXTENSION( EGL_KHR_client_get_all_proc_addresses );
+-    CHECK_EXTENSION( EGL_EXT_platform_base );
++    /* vstpoc: Android EGL (Qualcomm) does not advertise this client extension,
++     * but eglGetProcAddress returns core GL functions anyway (de facto on
++     * Android/GLES). Don't hard-fail here — the USE_GL_FUNC loop below resolves
++     * every needed GL function via eglGetProcAddress and fails loudly if one is
++     * truly missing. Relaxing this lets wine's OpenGL backend initialise, which
++     * GL-based plugin editors (AmpliTube) need to create their renderer. */
++    if (!has_extension( extensions, "EGL_KHR_client_get_all_proc_addresses" ))
++        WARN( "vstpoc: EGL_KHR_client_get_all_proc_addresses not advertised; relying on eglGetProcAddress core lookup\n" );
++    /* vstpoc: Android EGL 1.5 has the core eglGetPlatformDisplay but not the
++     * EGL_EXT_platform_base client string, and we fall back to eglGetDisplay
++     * (EGL_DEFAULT_DISPLAY) anyway (see egldrv_init_egl_platform). Don't fail. */
++    if (!has_extension( extensions, "EGL_EXT_platform_base" ))
++        WARN( "vstpoc: EGL_EXT_platform_base not advertised; using core/default EGL display\n" );
+ #undef CHECK_EXTENSION
+ 
+ #define USE_GL_FUNC( func )                                                                     \
+@@ -959,7 +1227,10 @@ static BOOL init_egl_platform( struct egl_platform *egl, const struct opengl_fun
+         return FALSE;                                                                              \
+     }
+     CHECK_EXTENSION( EGL_KHR_create_context );
+-    CHECK_EXTENSION( EGL_KHR_create_context_no_error );
++    /* vstpoc: EGL_KHR_create_context_no_error is optional on Android; only the
++     * WGL_CONTEXT_OPENGL_NO_ERROR path needs it (AmpliTube doesn't use it). */
++    if (!has_extension( extensions, "EGL_KHR_create_context_no_error" ))
++        WARN( "vstpoc: EGL_KHR_create_context_no_error not advertised; no-error contexts unavailable\n" );
+     CHECK_EXTENSION( EGL_KHR_no_config_context );
+ #undef CHECK_EXTENSION
+ 
+@@ -1034,7 +1305,25 @@ static void init_egl_platforms( struct opengl_funcs *funcs, const struct opengl_
+     driver_funcs->p_init_egl_platform( &display_egl );
+     if (!display_egl.type) display_egl.display = funcs->p_eglGetDisplay( EGL_DEFAULT_DISPLAY );
+ 
+-    init_egl_platform( &display_egl, funcs );
++    if (!init_egl_platform( &display_egl, funcs ) && g_vstpoc_mesa_egl)
++    {
++        /* vstpoc #1+#2: the Mesa surfaceless PLATFORM display came back NULL
++         * (glvnd not mapping the mesa vendor for that platform). Log the EGL
++         * error, then retry with the plain default display — glvnd may route
++         * eglGetDisplay(DEFAULT) to the sole configured vendor where the
++         * platform-display path doesn't. */
++        EGLint e = funcs->p_eglGetError();
++        ERR( "vstpoc: Mesa surfaceless platform display FAILED (type=%#x egl_err=%#x); retrying eglGetDisplay(DEFAULT)\n",
++             display_egl.type, e );
++        display_egl.type = 0;
++        display_egl.display = funcs->p_eglGetDisplay( EGL_DEFAULT_DISPLAY );
++        ERR( "vstpoc: eglGetDisplay(EGL_DEFAULT_DISPLAY) → %p (egl_err=%#x)\n",
++             display_egl.display, funcs->p_eglGetError() );
++        if (init_egl_platform( &display_egl, funcs ))
++            ERR( "vstpoc: Mesa default-display init SUCCEEDED\n" );
++        else
++            ERR( "vstpoc: Mesa default-display init FAILED too (egl_err=%#x)\n", funcs->p_eglGetError() );
++    }
+     init_egl_devices( funcs );
+ }
+ 
+@@ -1802,6 +2091,15 @@ static struct opengl_drawable *get_updated_drawable( HDC hdc, int format, struct
+         opengl_drawable_add_ref( drawable );
+         return drawable;
+     }
++    /* vstpoc-gl TEMP diag: why didn't we reuse? (drives the per-frame drawable
++     * recreation seen with AmpliTube's JUCE GL editor) */
++    {
++        static int vstpoc_n;
++        if (vstpoc_n++ < 12)
++            ERR( "vstpoc-gl: get_updated_drawable NO-REUSE #%d hwnd=%p drawable=%p client=%p client_hwnd=%p\n",
++                 vstpoc_n, hwnd, drawable, drawable ? drawable->client : NULL,
++                 (drawable && drawable->client) ? drawable->client->hwnd : NULL );
++    }
+ 
+     /* retrieve D3D internal drawables from the DCs if they have any */
+     if (!hdc && drawable) hdc = drawable->owner_hdc;
+@@ -1838,6 +2136,13 @@ static BOOL context_sync_drawables( struct opengl_context *context, HDC draw_hdc
+         if (old_read != old_draw) opengl_drawable_set_context( old_draw, NULL );
+     }
+ 
++    /* vstpoc-gl TEMP diag: trace the sync decision (previous/ret/driver result). */
++    {
++        static int vstpoc_n;
++        if (vstpoc_n++ < 12)
++            ERR( "vstpoc-gl: sync #%d previous=%p context=%p ctx_draw=%p new_draw=%p ret_pre=%d\n",
++                 vstpoc_n, previous, context, context->draw, new_draw, ret );
++    }
+     if (!ret && (ret = driver_funcs->p_make_current( new_draw, new_read, context->driver_private )))
+     {
+         NtCurrentTeb()->glContext = context;
+@@ -1858,6 +2163,12 @@ static BOOL context_sync_drawables( struct opengl_context *context, HDC draw_hdc
+         opengl_drawable_flush( new_draw, new_draw->interval, 0 );
+     }
+ 
++    /* vstpoc-gl TEMP diag: final sync verdict (FALSE = wglMakeCurrent fails -> JUCE bails). */
++    {
++        static int vstpoc_n;
++        if (vstpoc_n++ < 12)
++            ERR( "vstpoc-gl: sync #%d verdict ret=%d\n", vstpoc_n, ret );
++    }
+     if (ret)
+     {
+         /* update the current window drawable to the last used draw surface */
