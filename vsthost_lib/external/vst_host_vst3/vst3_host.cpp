@@ -1545,6 +1545,111 @@ static void process_block(IAudioProcessor* processor,
     processor->process(data);
 }
 
+/* vstpoc 2026-06-11: dedicated real-time audio-producer thread. Runs ONLY the
+ * shm-ring I/O + IAudioProcessor::process() and NEVER pumps the Windows message
+ * queue. This restores the VST3 threading contract (process thread ≠ UI thread):
+ * the producer loop used to live on the main thread and dispatch the plugin's
+ * GUI/JUCE async callbacks (WM_USER+123) inline, so one ~80ms callback
+ * (AmpliTube) stalled audio 120-200ms → periodic xruns. The main thread now owns
+ * the message pump; audio runs here on its own (high-priority) core.
+ * See feedback_amplitube_xrun_msgpump. */
+static DWORD WINAPI audio_thread_proc(LPVOID arg)
+{
+    IAudioProcessor* processor = (IAudioProcessor*)arg;
+    const int blockFrames = 512;
+    float in_l[blockFrames], in_r[blockFrames];
+    float out_l[blockFrames], out_r[blockFrames];
+
+    /* Per-block wall-clock (QPC, no syscall) to confirm the deadline is met now
+     * that the pump is off this thread. A SPIKE here is process() itself
+     * exceeding budget — rare and plugin-intrinsic, not our message-pump stall. */
+    LARGE_INTEGER qpc_freq; QueryPerformanceFrequency(&qpc_freq);
+    const double qpc_us_scale = 1000000.0 / (double)qpc_freq.QuadPart;
+    auto qpc_us = [&]() -> uint64_t { LARGE_INTEGER c; QueryPerformanceCounter(&c); return (uint64_t)((double)c.QuadPart * qpc_us_scale); };
+    const uint64_t kBudgetUs = (uint64_t)blockFrames * 1000000ull / 48000ull; /* 512@48k ≈ 10667us */
+
+    uint64_t stats_blocks = 0, stats_wait_loops = 0, stats_out_full = 0;
+    uint64_t stats_partial_pushes = 0, stats_dropped_frames = 0;
+    uint64_t stats_process_us_total = 0, stats_process_us_max = 0, stats_spikes = 0;
+    DWORD stats_last_log = GetTickCount();
+
+    while (g_shm && !g_shm->stop_flag) {
+        /* Pull a block from the input ring (mic). Producer = launcher. */
+        uint64_t ih = __atomic_load_n(&g_shm->audio_in_head, __ATOMIC_ACQUIRE);
+        uint64_t it = __atomic_load_n(&g_shm->audio_in_tail, __ATOMIC_RELAXED);
+        uint64_t available = ih - it;
+        if (available < (uint64_t)blockFrames) {
+            ++stats_wait_loops;
+            Sleep(1);
+            continue;
+        }
+        /* Cap latency: if the launcher produced >4 blocks we haven't consumed,
+         * fast-forward to leave 2 blocks of headroom (see vst_host.c). */
+        if (available > (uint64_t)blockFrames * 4) {
+            it = ih - (uint64_t)blockFrames * 2;
+        }
+        for (int i = 0; i < blockFrames; i++) {
+            uint64_t idx = (it + i) & (VSTPOC_AUDIO_RING_FRAMES - 1);
+            in_l[i] = g_shm->audio_in[idx * VSTPOC_CHANNELS + 0];
+            in_r[i] = g_shm->audio_in[idx * VSTPOC_CHANNELS + 1];
+        }
+        __atomic_store_n(&g_shm->audio_in_tail, it + blockFrames, __ATOMIC_RELEASE);
+
+        uint64_t pw0 = qpc_us();
+        process_block(processor, in_l, in_r, out_l, out_r, blockFrames);
+        uint64_t proc_us = qpc_us() - pw0;
+        stats_process_us_total += proc_us;
+        if (proc_us > stats_process_us_max) stats_process_us_max = proc_us;
+        if (proc_us > kBudgetUs) {
+            ++stats_spikes;
+            LOG("SPIKE blk=%llu proc_wall_us=%llu budget=%llu (process() over budget)\n",
+                (unsigned long long)stats_blocks, (unsigned long long)proc_us,
+                (unsigned long long)kBudgetUs);
+        }
+
+        /* Push block to output ring (speaker). Consumer = launcher. Partial-push
+         * whatever fits and drop only the tail rather than the whole block. */
+        uint64_t oh = __atomic_load_n(&g_shm->audio_head, __ATOMIC_RELAXED);
+        uint64_t ot = __atomic_load_n(&g_shm->audio_tail, __ATOMIC_ACQUIRE);
+        uint64_t space = (uint64_t)VSTPOC_AUDIO_RING_FRAMES - (oh - ot);
+        uint64_t push  = space < (uint64_t)blockFrames ? space : (uint64_t)blockFrames;
+        for (uint64_t i = 0; i < push; i++) {
+            uint64_t idx = (oh + i) & (VSTPOC_AUDIO_RING_FRAMES - 1);
+            g_shm->audio[idx * VSTPOC_CHANNELS + 0] = out_l[i];
+            g_shm->audio[idx * VSTPOC_CHANNELS + 1] = out_r[i];
+        }
+        __atomic_store_n(&g_shm->audio_head, oh + push, __ATOMIC_RELEASE);
+        if (g_shm) g_shm->guest_frames_produced += push;
+        ++stats_blocks;
+        if (push < (uint64_t)blockFrames) {
+            ++stats_partial_pushes;
+            stats_dropped_frames += (uint64_t)blockFrames - push;
+        }
+        if (space < (uint64_t)blockFrames) { ++stats_out_full; Sleep(1); }
+
+        DWORD now = GetTickCount();
+        if (now - stats_last_log >= 5000) {
+            LOG("audio stats: blocks=%llu wait_loops=%llu out_full=%llu partial=%llu "
+                "dropped_frames=%llu spikes=%llu budget=%llu proc_wall avg=%llu max=%llu\n",
+                (unsigned long long)stats_blocks,
+                (unsigned long long)stats_wait_loops,
+                (unsigned long long)stats_out_full,
+                (unsigned long long)stats_partial_pushes,
+                (unsigned long long)stats_dropped_frames,
+                (unsigned long long)stats_spikes,
+                (unsigned long long)kBudgetUs,
+                (unsigned long long)(stats_blocks ? stats_process_us_total / stats_blocks : 0),
+                (unsigned long long)stats_process_us_max);
+            stats_blocks = stats_wait_loops = stats_out_full = 0;
+            stats_partial_pushes = stats_dropped_frames = 0;
+            stats_process_us_total = stats_process_us_max = stats_spikes = 0;
+            stats_last_log = now;
+        }
+    }
+    LOG("audio thread: stop_flag set, exiting\n");
+    return 0;
+}
+
 /* vstpoc: main thread id, so the unhandled-exception filter never kills it. */
 static DWORD g_main_tid = 0;
 
@@ -1856,116 +1961,44 @@ int main(int argc, char** argv)
         g_shm->guest_ready = 1;
         __sync_synchronize();
     }
-    LOG("ready — entering audio loop\n");
+    LOG("ready — audio on dedicated thread, message pump on main thread\n");
 
-    /* Audio loop: consume input ring, process, produce output ring.
-     * Also pumps messages on this thread — VST3 plugins (TAL, JUCE, etc.)
-     * often expect SOMEONE to be dispatching messages during attached()
-     * so wine-internal window operations can complete. Editor thread is
-     * blocked in attached() so it can't pump for itself. */
-    const int blockFrames = 512;
-    float in_l[blockFrames], in_r[blockFrames];
-    float out_l[blockFrames], out_r[blockFrames];
-    MSG audio_msg;
-    /* Audio-loop timing stats: how often the loop spun waiting for input,
-     * how often the output ring was full, how long process() took. Logged
-     * every ~5 seconds so we can diagnose stuttering despite "no xruns". */
-    uint64_t stats_blocks = 0;
-    uint64_t stats_wait_loops = 0;
-    uint64_t stats_out_full = 0;
-    uint64_t stats_partial_pushes = 0;
-    uint64_t stats_dropped_frames = 0;
-    uint64_t stats_process_us_total = 0;
-    uint64_t stats_process_us_max = 0;
-    DWORD stats_last_log = GetTickCount();
+    /* Spawn the dedicated real-time audio-producer thread (ring I/O + process()
+     * only — it NEVER pumps messages). The MAIN thread below becomes the message
+     * pump (JUCE MessageManager / editor support / COM), so a slow GUI callback
+     * can no longer stall audio. setupProcessing/setActive(true)/setProcessing(true)
+     * already ran above on this (main) thread per the VST3 lifecycle; we only call
+     * process() from the new thread, and join it before setProcessing(false). */
+    HANDLE audioThread = CreateThread(NULL, 0, audio_thread_proc, processor, 0, NULL);
+    if (audioThread) {
+        /* Audio wins on core contention with the GUI/message work. */
+        SetThreadPriority(audioThread, THREAD_PRIORITY_TIME_CRITICAL);
+    } else {
+        LOG("FATAL: CreateThread(audio_thread_proc) failed (err=%lu)\n",
+            (unsigned long)GetLastError());
+    }
+
+    /* Main-thread message loop: dispatch the plugin's window / COM / JUCE async
+     * callback (WM_USER+123) messages. MsgWaitForMultipleObjectsEx sleeps until a
+     * message arrives — no busy-spin, since audio no longer lives here — or the
+     * 100ms timeout lets us re-check stop_flag. */
     while (g_shm && !g_shm->stop_flag) {
-        /* Drain wine-internal messages targeted at the main thread (system
-         * windows, COM messages, etc.). Without this, plugins that send
-         * synchronous wine API calls during attached() can wait forever. */
-        while (PeekMessageA(&audio_msg, NULL, 0, 0, PM_REMOVE)) {
-            TranslateMessage(&audio_msg);
-            DispatchMessageA(&audio_msg);
-        }
-        /* Pull a block from the input ring (mic). Producer = launcher. */
-        uint64_t ih = __atomic_load_n(&g_shm->audio_in_head, __ATOMIC_ACQUIRE);
-        uint64_t it = __atomic_load_n(&g_shm->audio_in_tail, __ATOMIC_RELAXED);
-        uint64_t available = ih - it;
-        if (available < (uint64_t)blockFrames) {
-            ++stats_wait_loops;
-            Sleep(1);
-            continue;
-        }
-        /* Cap latency. Same logic as vst_host.c: if the launcher has
-         * produced more than 4 blocks of input that we haven't consumed
-         * yet, fast-forward the tail to leave 2 blocks of headroom. Without
-         * this, any one-time drift at startup (FEX JIT warmup, wineserver
-         * boot, plugin's first-process() doing setup work) becomes
-         * permanent input-side latency. VST3 hadn't had this cap; that's
-         * why AmpCraft VST3 felt noticeably more delayed than AmpCraft VST2
-         * even though both run through the same shm ring with the same
-         * block size. */
-        if (available > (uint64_t)blockFrames * 4) {
-            it = ih - (uint64_t)blockFrames * 2;
-        }
-        for (int i = 0; i < blockFrames; i++) {
-            uint64_t idx = (it + i) & (VSTPOC_AUDIO_RING_FRAMES - 1);
-            in_l[i] = g_shm->audio_in[idx * VSTPOC_CHANNELS + 0];
-            in_r[i] = g_shm->audio_in[idx * VSTPOC_CHANNELS + 1];
-        }
-        __atomic_store_n(&g_shm->audio_in_tail, it + blockFrames, __ATOMIC_RELEASE);
-
-        DWORD t0 = GetTickCount();
-        process_block(processor, in_l, in_r, out_l, out_r, blockFrames);
-        DWORD t1 = GetTickCount();
-        uint64_t proc_us = (uint64_t)(t1 - t0) * 1000;  /* ms*1000 ≈ us */
-        stats_process_us_total += proc_us;
-        if (proc_us > stats_process_us_max) stats_process_us_max = proc_us;
-
-        /* Push block to output ring (speaker). Consumer = launcher.
-         * Match vst_host.c's behavior: partial-push whatever fits and drop
-         * the remainder, rather than dropping the whole block. Coarse
-         * whole-block drops add audible glitches; partial pushes only lose
-         * the tail samples that wouldn't have made it anyway. */
-        uint64_t oh = __atomic_load_n(&g_shm->audio_head, __ATOMIC_RELAXED);
-        uint64_t ot = __atomic_load_n(&g_shm->audio_tail, __ATOMIC_ACQUIRE);
-        uint64_t space = (uint64_t)VSTPOC_AUDIO_RING_FRAMES - (oh - ot);
-        uint64_t push  = space < (uint64_t)blockFrames ? space : (uint64_t)blockFrames;
-        for (uint64_t i = 0; i < push; i++) {
-            uint64_t idx = (oh + i) & (VSTPOC_AUDIO_RING_FRAMES - 1);
-            g_shm->audio[idx * VSTPOC_CHANNELS + 0] = out_l[i];
-            g_shm->audio[idx * VSTPOC_CHANNELS + 1] = out_r[i];
-        }
-        __atomic_store_n(&g_shm->audio_head, oh + push, __ATOMIC_RELEASE);
-        if (g_shm) g_shm->guest_frames_produced += push;
-        ++stats_blocks;
-        if (push < (uint64_t)blockFrames) {
-            ++stats_partial_pushes;
-            stats_dropped_frames += (uint64_t)blockFrames - push;
-        }
-        /* If the host isn't consuming, throttle so we don't spin on a full
-         * ring (matches vst_host.c line 1009). */
-        if (space < (uint64_t)blockFrames) { ++stats_out_full; Sleep(1); }
-
-        DWORD now = GetTickCount();
-        if (now - stats_last_log >= 5000) {
-            LOG("audio stats: blocks=%llu wait_loops=%llu out_full=%llu "
-                "partial=%llu dropped_frames=%llu proc_us avg=%llu max=%llu\n",
-                (unsigned long long)stats_blocks,
-                (unsigned long long)stats_wait_loops,
-                (unsigned long long)stats_out_full,
-                (unsigned long long)stats_partial_pushes,
-                (unsigned long long)stats_dropped_frames,
-                (unsigned long long)(stats_blocks ? stats_process_us_total / stats_blocks : 0),
-                (unsigned long long)stats_process_us_max);
-            stats_blocks = stats_wait_loops = stats_out_full = 0;
-            stats_partial_pushes = stats_dropped_frames = 0;
-            stats_process_us_total = 0;
-            stats_process_us_max = 0;
-            stats_last_log = now;
+        MsgWaitForMultipleObjectsEx(0, NULL, 100, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
+        MSG msg;
+        while (PeekMessageA(&msg, NULL, 0, 0, PM_REMOVE)) {
+            TranslateMessage(&msg);
+            DispatchMessageA(&msg);
         }
     }
 
     LOG("stop_flag set; shutting down\n");
+
+    /* Stop audio FIRST so process() is not running when we deactivate below —
+     * setProcessing(false)/setActive(false) must not race process(). */
+    if (audioThread) {
+        WaitForSingleObject(audioThread, 5000);
+        CloseHandle(audioThread);
+    }
 
     /* Teardown — strict reverse of init order to satisfy VST3 lifecycle. */
     if (editorThread) {
