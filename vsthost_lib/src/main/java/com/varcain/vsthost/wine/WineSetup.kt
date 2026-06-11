@@ -65,7 +65,7 @@ object WineSetup {
      *  (block confirmed in pWindowPosChanging→create_win_data). TEMP.
      *  v12: cwx2 unconditional + create_win_data ENTER marker (v11 size gate
      *  hid markers; disambiguate dispatch vs get_win_data vs create). TEMP. */
-    private const val SETUP_VERSION = 23  // v23: turnip bundle = Android-HAL driver (vulkan.ad07xx.so) loaded via libadrenotools (was Khronos ICD)
+    private const val SETUP_VERSION = 29  // v29: zink uses Turnip via libvulkan_vstpoc shim (adrenotools KGSL); renamed libEGL avoids system shadow
 
     data class Setup(
         val wineRoot: File,
@@ -103,6 +103,7 @@ object WineSetup {
         if (needFullRebuild) {
             extractNlsTarball(ctx, wineRoot)
             extractTurnipLibs(ctx, wineRoot)
+            extractMesaZinkLibs(ctx, wineRoot)
         }
         // DO NOT extract wine.inf. When wine finds wine.inf with a newer
         // mtime than `<prefix>/.update-timestamp`, ntdll's prefix-update
@@ -270,6 +271,52 @@ object WineSetup {
             }
         } catch (e: Exception) {
             Log.w(TAG, "failed to extract $assetName: ${e.message}")
+        }
+    }
+
+    /** Extract `mesa-zink-libs.tar.gz` into <wineRoot>/mesa/. Mesa's glvnd EGL +
+     *  the Zink gallium driver (GL→Vulkan) + X11/glvnd deps + a STUB libLLVM
+     *  (the real one is 133MB and zink never calls it). win32u's egl_init dlopens
+     *  <mesa>/libEGL.so.1 (VSTPOC_EGL_LIBRARY) to give desktop-GL plugin editors
+     *  (AmpliTube) a real GL 4.x context instead of Android GLES, so their
+     *  desktop-GLSL shaders compile. zink runs on our Turnip (same as DXVK).
+     *  Files have .so.N SONAMEs / non-lib names so they can't ship in jniLibs. */
+    private fun extractMesaZinkLibs(ctx: Context, wineRoot: File) {
+        val target = File(wineRoot, "mesa")
+        target.mkdirs()
+        // The asset pipeline gunzips *.tar.gz -> *.tar in the APK, so accept both.
+        val (assetName, gzipped) = when {
+            assetExists(ctx, "mesa-zink-libs.tar") -> "mesa-zink-libs.tar" to false
+            assetExists(ctx, "mesa-zink-libs.tar.gz") -> "mesa-zink-libs.tar.gz" to true
+            else -> {
+                Log.w(TAG, "mesa-zink-libs.tar(.gz) missing from assets — GL plugin editors stay GLES")
+                return
+            }
+        }
+        try {
+            ctx.assets.open(assetName).use { rawIn ->
+                (if (gzipped) GZIPInputStream(rawIn) else rawIn).use { stream ->
+                    val tar = TarReader(stream)
+                    var nFiles = 0
+                    while (true) {
+                        val entry = tar.nextEntry() ?: break
+                        if (entry.name.isEmpty()) continue
+                        val dst = File(target, entry.name)
+                        when (entry.type) {
+                            TarEntry.Type.DIR -> dst.mkdirs()
+                            TarEntry.Type.FILE -> {
+                                dst.parentFile?.mkdirs()
+                                FileOutputStream(dst).use { fos -> tar.copyEntryTo(fos) }
+                                nFiles++
+                            }
+                            else -> { /* skip symlinks — real SONAME files are shipped */ }
+                        }
+                    }
+                    Log.i(TAG, "extracted $nFiles Mesa-Zink files to ${target.absolutePath}")
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "failed to extract mesa-zink-libs.tar.gz: ${e.message}")
         }
     }
 
