@@ -676,7 +676,12 @@ bool WineHostProcess::start() {
         }
     }
 
-    if (::access(cfg_.primaryExe.c_str(), R_OK) != 0) {
+    /* Only validate primaryExe as a unix file when it IS a path. A bare program
+     * name (e.g. "msiexec" for the .msi → `msiexec /i` installer route) has no
+     * unix file — wine resolves it from the Windows PATH (C:\windows\system32) —
+     * so the access() check would wrongly fail it. */
+    if (cfg_.primaryExe.find('/') != std::string::npos &&
+        ::access(cfg_.primaryExe.c_str(), R_OK) != 0) {
         LOGE("WineHostProcess: primaryExe %s not readable (%s)",
              cfg_.primaryExe.c_str(), std::strerror(errno));
         return false;

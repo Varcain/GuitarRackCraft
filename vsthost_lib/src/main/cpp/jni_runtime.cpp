@@ -169,6 +169,37 @@ Java_com_varcain_vsthost_NativeBridge_nativeStartInstaller(
         env->ReleaseStringUTFChars(s, c);
         return r;
     };
+    // vstpoc: a .msi is not a PE — `wine foo.msi` can't exec it. Route MSI
+    // packages through `msiexec /i` (the way an MSI is meant to be installed).
+    // This also lets us bypass broken EXE bootstrappers (e.g. Advanced
+    // Installer's opaque "Function failed") by running the extracted MSI
+    // directly. The package path must be a DOS path for msiexec's parser —
+    // wine maps the unix root to Z:\ (the installer exes already load as
+    // Z:\data\user\0\...), so prefix Z: and flip the slashes.
+    std::string exePath = jstr(jExePath);
+    std::string primaryExe = exePath;
+    std::vector<std::string> extraArgs;
+    {
+        std::string ext = exePath.size() >= 4 ? exePath.substr(exePath.size() - 4) : "";
+        for (char& c : ext) c = static_cast<char>(::tolower((unsigned char)c));
+        if (ext == ".msi") {
+            std::string dos = "Z:" + exePath;
+            for (char& c : dos) if (c == '/') c = '\\';
+            // Verbose MSI log (/l*vx) → <cache>/msi_install.log, so an aborted
+            // install sequence (LaunchCondition, custom action, etc.) is fully
+            // diagnosable — `msiexec /i` alone gives no reason on the wine log.
+            std::string logDos = "Z:" + jstr(jCacheDir) + "/msi_install.log";
+            for (char& c : logDos) if (c == '/') c = '\\';
+            primaryExe = "msiexec";
+            // Full UI: the wizard renders correctly once the installer framebuffer
+            // is large enough (see INSTALLER_SCREEN_W/H) — the earlier "black/
+            // invisible buttons" was GDI-surface clipping at 640x480, not a theme
+            // bug (the silent /q levels are ignored by Advanced Installer's custom
+            // UI anyway). AI_BOOTSTRAPPER=1 is the property its EXE normally passes.
+            extraArgs  = { "/i", dos, "AI_BOOTSTRAPPER=1", "/l*vx", logDos };
+            LOGI("nativeStartInstaller: .msi → msiexec /i %s (log %s)", dos.c_str(), logDos.c_str());
+        }
+    }
     WineHostProcess::Config cfg{
         .nativeLibDir       = jstr(jNativeLibDir),
         .cacheDir           = jstr(jCacheDir),
@@ -176,10 +207,11 @@ Java_com_varcain_vsthost_NativeBridge_nativeStartInstaller(
         .wineserverBinary   = jstr(jWineserverBinary),
         .wineDllPath        = jstr(jWineDllPath),
         .winePrefix         = jstr(jPrefixPath),
-        .primaryExe         = jstr(jExePath),
+        .primaryExe         = primaryExe,
         .shmPath            = {},     // no IPC with the installer
         .pickerShmPath      = {},     // wine's builtin FileOpenDialog is fine
         .pluginPaths        = {},
+        .extraArgs          = extraArgs,
         .displayNumber      = static_cast<int>(displayNumber),
         .logSuffix          = "installer",  // → cache/vst_host_installer.log
     };
