@@ -27,6 +27,7 @@ extern "C" {
 #include <memory>
 #include <mutex>
 #include <string>
+#include <fstream>
 #include <sys/mman.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -198,6 +199,26 @@ Java_com_varcain_vsthost_NativeBridge_nativeStartInstaller(
             // UI anyway). AI_BOOTSTRAPPER=1 is the property its EXE normally passes.
             extraArgs  = { "/i", dos, "AI_BOOTSTRAPPER=1", "/l*vx", logDos };
             LOGI("nativeStartInstaller: .msi → msiexec /i %s (log %s)", dos.c_str(), logDos.c_str());
+        }
+        else {
+            /* Optional extra command-line args for direct .exe launches, one
+             * per line in <cache>/exe_args.txt — same no-rebuild spirit as
+             * wine_env.txt. Needed e.g. for Electron-based vendor managers
+             * (IK Product Manager) where '--disable-gpu' forces Chromium's
+             * software compositor when the GPU present path yields nothing.
+             * '#' lines skipped; absent file = no-op. */
+            std::ifstream af(jstr(jCacheDir) + "/exe_args.txt");
+            std::string line;
+            while (std::getline(af, line)) {
+                size_t b = line.find_first_not_of(" \t\r\n");
+                if (b == std::string::npos || line[b] == '#') continue;
+                size_t e = line.find_last_not_of(" \t\r\n");
+                std::string arg = line.substr(b, e - b + 1);
+                if (!arg.empty()) {
+                    extraArgs.push_back(arg);
+                    LOGI("nativeStartInstaller: extra exe arg: %s", arg.c_str());
+                }
+            }
         }
     }
     WineHostProcess::Config cfg{
