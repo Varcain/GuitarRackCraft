@@ -1,0 +1,131 @@
+From: Kamil Lulko <limakzagan@gmail.com>
+Subject: winex11.drv: fix R/B channel swap in the Vulkan readback present
+
+The CPU readback present (patch 0032's vstpoc_on_image) passed the
+AImageReader plane data straight to XPutImage. That buffer is Android
+AIMAGE_FORMAT_RGBA_8888 (R in byte 0), but the X server interprets ZPixmap
+wire data per its visual = standard X11 BGRA (B in byte 0) — the
+red/green/blue masks set on the client-side XImage are NOT transmitted by
+the protocol, so they fixed nothing. Result: every Vulkan-presented editor
+rendered with red and blue swapped (BIAS FX 2's gold/orange UI showed
+blue-ish; TONEX/AmpCraft are dark/grey so nobody noticed). Verified against
+the same plugin on desktop: gold on PC, blue on device.
+
+Swizzle RGBA->BGRA into a per-surface scratch buffer before XPutImage
+(~0.3ms @ 860x650, the loop auto-vectorizes; XPutImage itself is ~2ms).
+The Phase-3 AHB GPU path (patch 0048) is unaffected: EGL imports the AHB
+with its real format, so it samples correct colors zero-copy.
+
+Also adds a once-per-second present-rate log (vstpoc_present: fps +
+getPlaneData/XPutImage averages) — this is the readback path's heartbeat
+and directly measures editor frame delivery; it was what exonerated the
+present path during the BIAS knob-drag latency investigation (idle = 60fps,
+drag = ~20fps with constant per-frame cost => producer-side stall, not
+present).
+
+Slots after patch 0048 (touches the same vstpoc_on_image). Device-validated:
+BIAS FX 2 renders gold/orange correctly on OnePlus 12.
+
+--- a/dlls/winex11.drv/vulkan.c
++++ b/dlls/winex11.drv/vulkan.c
+@@ -33,6 +33,7 @@
+ #include <errno.h>
+ #include <dlfcn.h>
+ #include <unistd.h>
++#include <time.h>
+ #include <sys/socket.h>
+ #include <sys/un.h>
+ 
+@@ -129,6 +130,8 @@
+     uint32_t window_id;   /* x11_window as the side-channel key */
+     int registered;       /* a REGISTER has been sent (size unchanged since) */
+     void *held_image;     /* AImage held until the next present (1-deep, prevents reuse) */
++    uint32_t *swz_buf;    /* RGBA→BGRA conversion buffer for the CPU readback */
++    size_t swz_cap;       /* capacity in pixels */
+ };
+ static struct vstpoc_surface_ctx g_vstpoc_surfaces[16];
+ static struct vstpoc_image_listener g_vstpoc_listeners[16];
+@@ -215,6 +218,12 @@
+ /* AImageReader image-available callback: runs on the reader's own thread.
+  * GPU path (VSTPOC_AHB_PRESENT): ship the AHB over the side-channel. Otherwise
+  * acquire the freshest frame, read its pixels, XPutImage to the editor window. */
++static inline unsigned long long vstpoc_now_us( void )
++{
++    struct timespec ts; clock_gettime( CLOCK_MONOTONIC, &ts );
++    return (unsigned long long)ts.tv_sec * 1000000ull + (unsigned long long)ts.tv_nsec / 1000ull;
++}
++
+ static void vstpoc_on_image( void *context, void *reader )
+ {
+     struct vstpoc_surface_ctx *s = context;
+@@ -224,20 +233,68 @@
+ 
+     if (p_AImageReader_acquireLatestImage( reader, &image ) != 0 || !image) return;
+     uint8_t *data = NULL; int len = 0; int32_t stride = s->width * 4;
++    /* vstpoc gate-measurement: is the full-window CPU readback present the ~30fps
++     * cap during BIAS drags? Time getPlaneData (AHB CPU read) + XPutImage+XFlush
++     * (full-window socket transfer) and log present fps once/sec. */
++    unsigned long long t0 = vstpoc_now_us();
+     if (p_AImage_getPlaneData( image, 0, &data, &len ) == 0 && data)
+     {
+         if (p_AImage_getPlaneRowStride) p_AImage_getPlaneRowStride( image, 0, &stride );
++        unsigned long long t1 = vstpoc_now_us();
++        /* The AHB is AIMAGE_FORMAT_RGBA_8888 (R in byte 0) but the X server
++         * interprets ZPixmap wire data per its visual = BGRA (B in byte 0) —
++         * XImage masks below are NOT transmitted by the protocol, so without a
++         * conversion every Vulkan-presented editor renders with R/B swapped
++         * (BIAS FX 2's gold UI showed blue). Swizzle into a per-surface scratch
++         * buffer (~0.3ms @ 860x650, auto-vectorizes). The Phase-3 AHB GPU path
++         * is unaffected: EGL imports the AHB with its real format. */
++        if ((size_t)s->width * s->height > s->swz_cap)
++        {
++            free( s->swz_buf );
++            s->swz_cap = (size_t)s->width * s->height;
++            s->swz_buf = malloc( s->swz_cap * 4 );
++        }
++        if (s->swz_buf)
++        {
++            int row, col;
++            for (row = 0; row < s->height; row++)
++            {
++                const uint32_t *src = (const uint32_t *)(data + (size_t)row * stride);
++                uint32_t *dst = s->swz_buf + (size_t)row * s->width;
++                for (col = 0; col < s->width; col++)
++                {
++                    uint32_t p = src[col];
++                    dst[col] = (p & 0xff00ff00u) | ((p & 0x000000ffu) << 16) | ((p >> 16) & 0x000000ffu);
++                }
++            }
++        }
+         XImage *xi = XCreateImage( s->dpy, DefaultVisual( s->dpy, DefaultScreen( s->dpy ) ),
+-                                   s->depth, ZPixmap, 0, (char *)data, s->width, s->height, 32, stride );
++                                   s->depth, ZPixmap, 0,
++                                   s->swz_buf ? (char *)s->swz_buf : (char *)data,
++                                   s->width, s->height, 32,
++                                   s->swz_buf ? s->width * 4 : stride );
+         if (xi)
+         {
+             xi->byte_order = LSBFirst;
+-            xi->red_mask = 0x000000ff; xi->green_mask = 0x0000ff00; xi->blue_mask = 0x00ff0000;
++            xi->red_mask = 0x00ff0000; xi->green_mask = 0x0000ff00; xi->blue_mask = 0x000000ff;
+             XPutImage( s->dpy, s->x11_window, s->gc, xi, 0, 0, 0, 0, s->width, s->height );
+             XFlush( s->dpy );
+             xi->data = NULL;
+             XDestroyImage( xi );
+         }
++        unsigned long long t2 = vstpoc_now_us();
++        {
++            static unsigned long long frames = 0, gpd_us = 0, put_us = 0, last_log = 0;
++            frames++; gpd_us += (t1 - t0); put_us += (t2 - t1);
++            if (last_log == 0) last_log = t2;
++            if (t2 - last_log >= 1000000ull)
++            {
++                double secs = (double)(t2 - last_log) / 1e6;
++                fprintf( stderr, "vstpoc_present: %.1f fps  getplane_avg=%lluus  putimage_avg=%lluus  %dx%d\n",
++                         (double)frames / secs, gpd_us / frames, put_us / frames, s->width, s->height );
++                frames = gpd_us = put_us = 0; last_log = t2;
++            }
++        }
+     }
+     p_AImage_delete( image );
+ }
