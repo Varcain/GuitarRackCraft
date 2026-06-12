@@ -803,11 +803,12 @@ struct X11NativeDisplay::Impl {
                     continue;
                 }
             }
-            // Copy framebuffer to staging buffer under lock, then clear dirty BEFORE rendering.
-            // Clearing dirty here (not after swap) prevents a race where PutImage sets dirty=true
-            // during GL render/swap, only to have it clobbered by a post-swap dirty=false.
+            // Clear dirty BEFORE the snapshot+render. The banded copy below widens
+            // the capture window, so clearing first ensures any PutImage during the
+            // snapshot/render re-sets dirty (and re-marks the dirty box) and is
+            // picked up next frame rather than clobbered by a late dirty=false.
+            dirty = false;
             int fw = 0, fh = 0;
-            int cropOffX = 0, cropOffY = 0;
             std::vector<PopupSnapshot> popupSnapshots;
             // Phase A editor-layer upload plan (decided under bufferMutex below):
             //   fullUp  -> glTexImage2D the whole renderBuffer (init/resize/attach)
@@ -820,68 +821,77 @@ struct X11NativeDisplay::Impl {
                 fw = pluginWidth > 0 ? pluginWidth : width;
                 fh = pluginHeight > 0 ? pluginHeight : height;
                 // Stacked-editor render: framebuffer height = pluginHeight * slot_count.
-                // We render the WHOLE stack (letterboxed) into the SurfaceView.
                 if (!pluginSlotWindows.empty()) {
                     fh = pluginHeight * (int)pluginSlotWindows.size();
                 }
-                bool useCrop = false;  // installer auto-crop disabled — see ConfigureWindow note
                 // Phase A: pick the editor-layer upload mode. fbFullUpload covers
                 // init/attach/resume; a texture-size change forces a re-spec; a
-                // framebuffer size that doesn't match fw*fh forces full (keeps the
-                // existing uploadTex(fw,fh) assumption). Otherwise upload only the
+                // framebuffer size mismatch forces full. Otherwise upload just the
                 // accumulated dirty rect, or nothing if the editor didn't change.
                 bool fbSizeOk = (framebuffer.size() == (size_t)fw * fh);
                 fullUp = fbFullUpload.exchange(false) || fbTexW != fw || fbTexH != fh || !fbSizeOk;
                 int bx0 = fbDirtyX0, by0 = fbDirtyY0, bx1 = fbDirtyX1, by1 = fbDirtyY1;
                 fbDirtyX0 = fbDirtyY0 = fbDirtyX1 = fbDirtyY1 = 0;  // reset box (empty)
-                if (!useCrop && width > 0 && height > 0 && !framebuffer.empty()) {
-                    if (fullUp || !kGpuCompositor) {
-                        if (renderBuffer.size() != framebuffer.size()) {
-                            renderBuffer.resize(framebuffer.size());
-                        }
-                        renderBuffer = framebuffer;  // full staging copy
-                    } else if (fbSizeOk && bx1 > bx0 && by1 > by0) {
-                        if (bx0 < 0) bx0 = 0;  if (by0 < 0) by0 = 0;
-                        if (bx1 > fw) bx1 = fw; if (by1 > fh) by1 = fh;
-                        if (bx1 > bx0 && by1 > by0) {
-                            dx0 = bx0; dy0 = by0; dw = bx1 - bx0; dh = by1 - by0;
-                            dirtyStage.resize((size_t)dw * dh);
-                            const uint32_t* fb = framebuffer.data();
-                            for (int row = 0; row < dh; ++row)
-                                memcpy(dirtyStage.data() + (size_t)row * dw,
-                                       fb + (size_t)(dy0 + row) * fw + dx0,
-                                       (size_t)dw * sizeof(uint32_t));
-                            haveRect = true;
-                        }
+                if (width > 0 && height > 0 && !framebuffer.empty() && fbSizeOk &&
+                    !fullUp && kGpuCompositor && bx1 > bx0 && by1 > by0) {
+                    if (bx0 < 0) bx0 = 0;  if (by0 < 0) by0 = 0;
+                    if (bx1 > fw) bx1 = fw; if (by1 > fh) by1 = fh;
+                    if (bx1 > bx0 && by1 > by0) {
+                        dx0 = bx0; dy0 = by0; dw = bx1 - bx0; dh = by1 - by0;
+                        haveRect = true;
                     }
                 }
-                /* Snapshot mapped popup overlays IN X11 STACKING ORDER so
-                 * sub-popups (created after their parent) render ON TOP of
-                 * the parent. windowManager_'s childWindows tracks insertion
-                 * order (oldest first); we iterate it and pick up only
-                 * popup-tagged wids that are currently mapped.
-                 *
-                 * isRenderablePopup() filters wine's thin drop-shadow strips
-                 * (the "white area around popups" band) and unpainted internal
-                 * helper windows; real menu/combo/dialog bodies pass. */
-                {
-                    std::lock_guard<std::mutex> mapLock(windowMapMutex);
-                    for (uint32_t wid : windowManager_.childWindows()) {
-                        if (useCrop && wid == cropWid) continue;
-                        auto it = popupOverlays.find(wid);
-                        if (it == popupOverlays.end()) continue;
-                        const auto& p = it->second;
-                        if (!isRenderablePopup(p)) continue;
-                        if (p.pixels.size() != (size_t)p.w * p.h) continue;
-                        if (useCrop) {
-                            popupSnapshots.push_back({wid,
-                                                      p.x - cropOffX,
-                                                      p.y - cropOffY,
-                                                      p.w, p.h, p.pixels});
-                        } else {
-                            popupSnapshots.push_back({wid, p.x, p.y, p.w, p.h, p.pixels});
-                        }
-                    }
+            }
+            /* Copy framebuffer → staging buffer in row BANDS, releasing bufferMutex
+             * between bands. BIAS FX 2 issues full-window 860x650 CopyArea blits at
+             * ~125/s during a knob drag; the request thread's CopyArea/PutImage used
+             * to block on this whole snapshot for 2-18ms — priority inversion (the
+             * render thread holding the lock got descheduled) that froze the entire
+             * editor. Banding bounds each writer's wait to one band (~0.05ms).
+             * Re-checking framebuffer.size() under each band's lock keeps it safe
+             * against a concurrent ConfigureWindow resize (bail → at worst one torn
+             * frame, never a UAF). A same-frame PutImage may tear one band boundary,
+             * imperceptible at 60fps and corrected next frame. */
+            const int kBandRows = 48;
+            if ((fullUp || !kGpuCompositor) && fw > 0 && fh > 0) {
+                if (renderBuffer.size() != (size_t)fw * fh) renderBuffer.resize((size_t)fw * fh);
+                for (int y = 0; y < fh; ) {
+                    std::lock_guard<std::mutex> lock(bufferMutex);
+                    if (framebuffer.size() != (size_t)fw * fh) { fullUp = false; break; }
+                    int rows = (fh - y) < kBandRows ? (fh - y) : kBandRows;
+                    memcpy(renderBuffer.data() + (size_t)y * fw,
+                           framebuffer.data() + (size_t)y * fw,
+                           (size_t)rows * fw * sizeof(uint32_t));
+                    y += rows;
+                }
+            } else if (haveRect) {
+                dirtyStage.resize((size_t)dw * dh);
+                for (int y = 0; y < dh; ) {
+                    std::lock_guard<std::mutex> lock(bufferMutex);
+                    if (framebuffer.size() != (size_t)fw * fh) { haveRect = false; break; }
+                    int rows = (dh - y) < kBandRows ? (dh - y) : kBandRows;
+                    const uint32_t* fb = framebuffer.data();
+                    for (int r = 0; r < rows; ++r)
+                        memcpy(dirtyStage.data() + (size_t)(y + r) * dw,
+                               fb + (size_t)(dy0 + y + r) * fw + dx0,
+                               (size_t)dw * sizeof(uint32_t));
+                    y += rows;
+                }
+            }
+            /* Snapshot mapped popup overlays in X11 stacking order. Needs only
+             * windowMapMutex (it copies popup pixel buffers, not the framebuffer)
+             * — keep it OFF bufferMutex so it never adds to the request thread's
+             * wait. isRenderablePopup() filters wine's drop-shadow strips and
+             * unpainted internal helper windows; real menu/dialog bodies pass. */
+            {
+                std::lock_guard<std::mutex> mapLock(windowMapMutex);
+                for (uint32_t wid : windowManager_.childWindows()) {
+                    auto it = popupOverlays.find(wid);
+                    if (it == popupOverlays.end()) continue;
+                    const auto& p = it->second;
+                    if (!isRenderablePopup(p)) continue;
+                    if (p.pixels.size() != (size_t)p.w * p.h) continue;
+                    popupSnapshots.push_back({wid, p.x, p.y, p.w, p.h, p.pixels});
                 }
             }
             /* Composite popups onto the staging buffer at their root-relative
@@ -912,7 +922,7 @@ struct X11NativeDisplay::Impl {
                     }
                 }
             }
-            dirty = false;  // Clear after snapshot; new PutImage during render will re-set it
+            // (dirty was cleared before the snapshot above)
 
             // Render from staging buffer (no lock held - PutImage can update framebuffer concurrently).
             // The AHB editor source (ahbEditorActive_) can drive the compositor even with an empty CPU
@@ -1377,6 +1387,10 @@ struct X11NativeDisplay::Impl {
 
     std::chrono::steady_clock::time_point lastExposeFlush = std::chrono::steady_clock::now();
     static constexpr double FLUSH_INTERVAL_SEC = kTouchFlushIntervalSec;
+    /* Throttle drag-move delivery to ~60Hz: forwarding every raw touch sample
+     * (~120-240Hz) floods CEF/Blink and collapses its frame production (measured
+     * 60fps idle -> ~20fps during a BIAS drag). See drainTouchQueue. */
+    std::chrono::steady_clock::time_point lastDragMoveSent_ = std::chrono::steady_clock::now();
 
     // Send event to a specific child window with local coordinates
     void sendEventToChild(uint8_t type, int globalX, int globalY, int button, uint16_t seq, int stateOverride = -1) {
@@ -1409,6 +1423,46 @@ struct X11NativeDisplay::Impl {
             hit = hitTestChildWindow(globalX, globalY);
         }
         sendEvent(type, hit.wid, hit.localX, hit.localY, button, seq, stateOverride);
+    }
+
+    /* Dead-overlay redirect (BIAS FX 2's CEF editor): a tap can hit-test to a
+     * maskless overlay window (BIAS stacks a huge 3072x1620 window with
+     * event-mask=0 over the content) that is a SIBLING of the real editor under
+     * the desktop — wine's libX11 dispatcher then silently drops the
+     * ButtonPress (window selects no input) and, for button 1, the focus-walk
+     * focuses the desktop. If the hit window selects no ButtonPress, retarget
+     * to the real input window: the smallest mapped window that DOES carry
+     * ButtonPressMask and contains the point (where rendering goes). BIAS's CEF
+     * browser window 0x700001 is top-level (parent=root) with mask 0x62c05f and
+     * IS the real target, so a parent=root window is only skipped if it ALSO
+     * lacks ButtonPress (that filters the wine desktop, SubstructureRedirect
+     * only). No-op for normal plugins whose editor selects input. Used by BOTH
+     * the left-click (touch-DOWN) and right-click (action==3) routes — without
+     * it, right-clicks on BIAS hit the dead overlay and the context popup never
+     * appears. */
+    void applyDeadOverlayRedirect(HitResult& hit, int x, int y) {
+        std::lock_guard<std::mutex> mapLock(windowMapMutex);
+        if (windowManager_.getEventMask(hit.wid) & 0x4 /*ButtonPressMask*/) return;
+        uint32_t best = 0; long long bestArea = -1;
+        for (uint32_t cw : windowManager_.childWindows()) {
+            if (windowManager_.isUnmapped(cw)) continue;
+            auto p = windowManager_.getPosition(cw);
+            if (!(windowManager_.getEventMask(cw) & 0x4)) continue;
+            if ((p.parent == 0 || p.parent == kRootWindowId) &&
+                !(windowManager_.getEventMask(cw) & 0x4)) continue;
+            auto ap = windowManager_.getAbsolutePos(cw);
+            auto sz = windowManager_.getSize(cw);
+            if (x < ap.first || x >= ap.first + sz.first ||
+                y < ap.second || y >= ap.second + sz.second) continue;
+            long long area = (long long)sz.first * (long long)sz.second;
+            if (bestArea < 0 || area < bestArea) { best = cw; bestArea = area; }
+        }
+        if (best) {
+            auto ap = windowManager_.getAbsolutePos(best);
+            hit.wid = best;
+            hit.localX = x - ap.first;
+            hit.localY = y - ap.second;
+        }
     }
 
     void drainTouchQueue() {
@@ -1508,49 +1562,7 @@ struct X11NativeDisplay::Impl {
                     hit.localY = t.y;
                     fellBack = true;
                 }
-                /* Dead-overlay redirect (BIAS FX 2's CEF editor): the tap can
-                 * hit-test to a maskless overlay window (BIAS stacks a huge
-                 * 3072x1620 window with event-mask=0 over the content) that is a
-                 * SIBLING of the real editor under the desktop — so neither the
-                 * click nor the focus-walk reaches the editor and wine focuses
-                 * the desktop instead, dropping all keyboard input. If the hit
-                 * window selects no ButtonPress, redirect to the real editor:
-                 * the mapped NON-desktop window (parent != root) that DOES carry
-                 * ButtonPressMask and contains the tap point (where rendering
-                 * goes). No-op for normal plugins whose editor selects input. */
-                if (!fellBack) {
-                    std::lock_guard<std::mutex> mapLock(windowMapMutex);
-                    if (!(windowManager_.getEventMask(hit.wid) & 0x4 /*ButtonPressMask*/)) {
-                        uint32_t best = 0; long long bestArea = -1;
-                        for (uint32_t cw : windowManager_.childWindows()) {
-                            if (windowManager_.isUnmapped(cw)) continue;
-                            auto p = windowManager_.getPosition(cw);
-                            if (!(windowManager_.getEventMask(cw) & 0x4)) continue;
-                            /* Skip the wine DESKTOP (parent=root, no input mask) but
-                             * NOT a legit top-level content window that carries
-                             * ButtonPress — BIAS FX 2's CEF browser window 0x700001 is
-                             * top-level (parent=root) with mask 0x62c05f and IS the real
-                             * input target sitting under a maskless GPU-compositor
-                             * overlay. The ButtonPress check above already excludes the
-                             * desktop (SubstructureRedirect only), so only skip a
-                             * parent=root window if it ALSO lacks ButtonPress. */
-                            if ((p.parent == 0 || p.parent == kRootWindowId) &&
-                                !(windowManager_.getEventMask(cw) & 0x4)) continue;
-                            auto ap = windowManager_.getAbsolutePos(cw);
-                            auto sz = windowManager_.getSize(cw);
-                            if (t.x < ap.first || t.x >= ap.first + sz.first ||
-                                t.y < ap.second || t.y >= ap.second + sz.second) continue;
-                            long long area = (long long)sz.first * (long long)sz.second;
-                            if (bestArea < 0 || area < bestArea) { best = cw; bestArea = area; }
-                        }
-                        if (best) {
-                            auto ap = windowManager_.getAbsolutePos(best);
-                            hit.wid = best;
-                            hit.localX = t.x - ap.first;
-                            hit.localY = t.y - ap.second;
-                        }
-                    }
-                }
+                if (!fellBack) applyDeadOverlayRedirect(hit, t.x, t.y);
                 }  /* end !xgrabSteals */
                 grabWindow = hit.wid;
                 uint32_t hitMask = 0;
@@ -1757,25 +1769,52 @@ struct X11NativeDisplay::Impl {
                     hasPendingDrag = false;
                 }
                 HitResult hit = hitTestChildWindow(t.x, t.y);
+                bool fellBack3 = false;
                 if (slotWid && (hit.wid == 0 || hit.wid == kRootWindowId)) {
                     hit.wid = slotWid;
                     hit.localX = t.x;
                     hit.localY = t.y;
+                    fellBack3 = true;
                 }
+                /* Same dead-overlay retarget as the left-click route — BIAS's
+                 * maskless overlay otherwise swallows the right-click and the
+                 * context popup never shows. */
+                if (!fellBack3) applyDeadOverlayRedirect(hit, t.x, t.y);
+                {
+                    std::lock_guard<std::mutex> mapLock(windowMapMutex);
+                    LOGI("X11 touch RIGHT route display=%d fb=(%d,%d) hit=0x%x local=(%d,%d) mask=0x%x",
+                         displayNumber_, t.x, t.y, hit.wid, hit.localX, hit.localY,
+                         windowManager_.getEventMask(hit.wid));
+                }
+                /* Real mice deliver a MotionNotify positioning the cursor before
+                 * any click; Chromium tracks mouse position from move events, so
+                 * give it one (state=0) at the press point first. */
+                sendEvent(MotionNotify, hit.wid, hit.localX, hit.localY, 0, seq, 0);
                 pointerButton3Down.store(true, std::memory_order_relaxed);
                 sendEvent(ButtonPress, hit.wid, hit.localX, hit.localY, 3, seq);
                 pointerButton3Down.store(false, std::memory_order_relaxed);
                 sendEvent(ButtonRelease, hit.wid, hit.localX, hit.localY, 3, seq);
             } else {
-                // Drag move: send MotionNotify immediately to the grabbed window so
-                // drag-based controls (faders/knobs) track the pointer. The prior
-                // 30fps-buffered flush could drop motion entirely for some plugins
-                // (DeeGain's fader received 0 MotionNotify across 174 moves). injectTouch
-                // already coalesces consecutive moves, so this is ~1 event per drain.
-                static thread_local int dragDbg = 0;
-                if (++dragDbg <= 20)
-                    LOGI("X11 DRAG move (%d,%d) grab=0x%x -> MotionNotify", t.x, t.y, grabWindow);
-                sendEventToChild(MotionNotify, t.x, t.y, 0, seq);
+                // Drag move: coalesce to ~60Hz before handing to the plugin/CEF.
+                // Forwarding every raw touch sample (~120-240Hz) floods CEF/Blink's
+                // input handling and collapses its frame production (measured:
+                // vstpoc_present 60fps idle -> ~20fps during a drag, while the
+                // readback present path stays cheap). 60Hz matches the display and
+                // is what Chromium coalesces to internally anyway. The latest
+                // position is always remembered in pendingDrag and flushed on the
+                // button-up / next button edge (and the 30fps backstop below), so
+                // no plugin loses the final value (the bug that killed the old
+                // buffered flush — DeeGain's fader got 0 of 174 moves).
+                pendingDragX = t.x; pendingDragY = t.y; hasPendingDrag = true;
+                auto nowMv = std::chrono::steady_clock::now();
+                if (std::chrono::duration<double>(nowMv - lastDragMoveSent_).count() >= 1.0 / 60.0) {
+                    static thread_local int dragDbg = 0;
+                    if (++dragDbg <= 20)
+                        LOGI("X11 DRAG move (%d,%d) grab=0x%x -> MotionNotify (60Hz)", t.x, t.y, grabWindow);
+                    sendEventToChild(MotionNotify, t.x, t.y, 0, seq);
+                    lastDragMoveSent_ = nowMv;
+                    hasPendingDrag = false;
+                }
             }
         }
 
@@ -3681,6 +3720,7 @@ struct X11NativeDisplay::Impl {
                     /* --- CopyArea: copy pixels between drawables --- */
                     case 62: { /* CopyArea */
                         /* Request: opcode(1), unused(1), length(2), src(4), dst(4), gc(4), src_x(2), src_y(2), dst_x(2), dst_y(2), width(2), height(2) */
+                        auto caseT0 = std::chrono::steady_clock::now();
                         uint32_t srcId = read32(buf, 4);
                         uint32_t dstId = read32(buf, 8);
                         int srcX = (int)(int16_t)read16(buf, 16);
@@ -3703,7 +3743,10 @@ struct X11NativeDisplay::Impl {
                             }
                         }
 
+                        auto lkT0 = std::chrono::steady_clock::now();
                         std::lock_guard<std::mutex> lock(bufferMutex);
+                        long long lockWaitUs = std::chrono::duration_cast<std::chrono::microseconds>(
+                            std::chrono::steady_clock::now() - lkT0).count();
                         if (srcIsWindow && !framebuffer.empty()) {
                             srcPixels = framebuffer.data();
                             sW = pluginWidth > 0 ? pluginWidth : width;
@@ -3764,27 +3807,26 @@ struct X11NativeDisplay::Impl {
                             std::lock_guard<std::mutex> mapLock(windowMapMutex);
                             sibRects = windowManager_.getMappedSiblingRectsAbove(dstId);
                         }
-                        auto clipped = [&](int dx, int dy) -> bool {
-                            for (auto& r : sibRects) {
-                                if (dx >= r.x1 && dx < r.x2 && dy >= r.y1 && dy < r.y2)
-                                    return true;
-                            }
-                            return false;
-                        };
                         if (srcPixels && dstPixels && cw > 0 && ch > 0) {
                             /* Precompute the in-bounds column span once (same for
-                             * every row): the per-pixel loop's bounds checks ×
-                             * 559k px cost ~18-37ms for an 860x650 full-window
-                             * blit under FEX (BIAS/CEF does one per frame) and
-                             * starve the X server thread → input + repaint back
-                             * up. memmove whole rows; per-pixel only the rare
-                             * rows a mapped sibling-above actually crosses. */
+                             * every row). memmove whole rows; for the rows a mapped
+                             * sibling-above crosses, memmove only the UNCLIPPED
+                             * column spans (subtract the siblings' x-ranges) instead
+                             * of testing every pixel against every sibling rect.
+                             * The old per-pixel clipped path was O(w*h*sibRects) and
+                             * cost 18-23ms on BIAS FX 2's full-window CEF blit (which
+                             * has sibling windows stacked above it), serializing the
+                             * single X-server request thread → the middle effects view
+                             * updated at a few fps while the rest stayed smooth. */
+                            auto cpStart = std::chrono::steady_clock::now();
+                            int rowsClipped = 0;
                             int c0 = 0;
                             if (-srcX > c0) c0 = -srcX;
                             if (-dstX > c0) c0 = -dstX;
                             int c1 = cw;
                             if (sW - srcX < c1) c1 = sW - srcX;
                             if (dW - dstX < c1) c1 = dW - dstX;
+                            std::vector<std::pair<int,int>> rowCuts;  // clipped col-intervals, reused per row
                             for (int row = 0; row < ch; row++) {
                                 int sy = srcY + row, dy = dstY + row;
                                 if (sy < 0 || sy >= sH || dy < 0 || dy >= dH) continue;
@@ -3797,13 +3839,50 @@ struct X11NativeDisplay::Impl {
                                     memmove(&dstPixels[dy * dW + dstX + c0],
                                             &srcPixels[sy * sW + srcX + c0],
                                             (size_t)(c1 - c0) * sizeof(uint32_t));
-                                } else {
-                                    for (int col = c0; col < c1; col++) {
-                                        int sx = srcX + col, dx = dstX + col;
-                                        if (clipped(dx, dy)) continue;
-                                        dstPixels[dy * dW + dx] = srcPixels[sy * sW + sx];
-                                    }
+                                    continue;
                                 }
+                                /* Subtract this row's sibling x-ranges from [c0,c1)
+                                 * and memmove the surviving gaps. O(sibRects log
+                                 * sibRects + cols) instead of O(cols * sibRects). */
+                                ++rowsClipped;
+                                rowCuts.clear();
+                                for (auto& r : sibRects) {
+                                    if (dy < r.y1 || dy >= r.y2) continue;
+                                    int lo = r.x1 - dstX, hi = r.x2 - dstX;
+                                    if (lo < c0) lo = c0;
+                                    if (hi > c1) hi = c1;
+                                    if (hi > lo) rowCuts.push_back({lo, hi});
+                                }
+                                std::sort(rowCuts.begin(), rowCuts.end());
+                                int cur = c0;
+                                for (auto& cut : rowCuts) {
+                                    if (cut.first > cur) {
+                                        memmove(&dstPixels[dy * dW + dstX + cur],
+                                                &srcPixels[sy * sW + srcX + cur],
+                                                (size_t)(cut.first - cur) * sizeof(uint32_t));
+                                    }
+                                    if (cut.second > cur) cur = cut.second;
+                                }
+                                if (cur < c1) {
+                                    memmove(&dstPixels[dy * dW + dstX + cur],
+                                            &srcPixels[sy * sW + srcX + cur],
+                                            (size_t)(c1 - cur) * sizeof(uint32_t));
+                                }
+                            }
+                            /* Confirm cause + fix: log the first handful of copies
+                             * that are large/clipped (silent once warmed up). */
+                            auto cpUs = std::chrono::duration_cast<std::chrono::microseconds>(
+                                std::chrono::steady_clock::now() - cpStart).count();
+                            auto nowDiag = std::chrono::steady_clock::now();
+                            long long totalUs = std::chrono::duration_cast<std::chrono::microseconds>(
+                                nowDiag - caseT0).count();
+                            static auto lastDiag = nowDiag;  // init once
+                            if (totalUs > 4000 &&
+                                std::chrono::duration_cast<std::chrono::milliseconds>(nowDiag - lastDiag).count() >= 100) {
+                                lastDiag = nowDiag;
+                                LOGI("X11Stats: CopyArea %dx%d sibRects=%zu rowsClipped=%d total=%lldus lockWait=%lldus copy=%lldus other=%lldus",
+                                     cw, ch, sibRects.size(), rowsClipped, totalUs, lockWaitUs,
+                                     (long long)cpUs, totalUs - lockWaitUs - (long long)cpUs);
                             }
                             if (dstIsWindow) {
                                 /* Phase A: mark only the copied rect (framebuffer

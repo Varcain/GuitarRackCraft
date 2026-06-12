@@ -132,6 +132,7 @@ object WineSetup {
         seedComClasses(winePrefix)
         seedWow64Emulator(winePrefix)  // wine 11.x: point ARM64EC/wow64 at FEX
         seedDisableCrashDialog(winePrefix)  // no winedbg popup on subprocess crashes
+        seedFontReplacements(winePrefix)  // dwrite family aliases (CEF FontCache CHECK)
         /* Also seed every existing wineprefix_template_<id> dir (installer
          * mode plugins like X50II clone from their own template, not from
          * the base prefix — without this, the RpcSs registration only
@@ -163,6 +164,11 @@ object WineSetup {
             // FX 2 prefix) so a CEF subprocess crash dies cleanly instead of
             // popping a stuck winedbg window. Marker-gated/idempotent.
             seedDisableCrashDialog(p)
+            // dwrite font-family aliases — must reach existing prefixes too
+            // (BIAS FX 2's Add panel crashed both CEF renderers without them).
+            // Marker-gated + skips prefixes that already carry a Replacements
+            // section.
+            seedFontReplacements(p)
         }
         versionFile.writeText(expected)
         Log.i(TAG, "wine install ready in ${System.currentTimeMillis() - t0} ms")
@@ -583,6 +589,88 @@ object WineSetup {
 """
         systemReg.appendText(body)
         Log.i(TAG, "seeded AeDebug no-op (winedbg suppressed) in ${winePrefix.absolutePath}")
+    }
+
+    /** Seed HKCU\Software\Wine\Fonts\Replacements so DirectWrite font-family
+     *  lookups for standard Windows families SUCCEED instead of failing.
+     *
+     *  Why: Blink/Skia (CEF plugins like BIAS FX 2) match fonts through wine's
+     *  dwrite SYSTEM COLLECTION by family name — GDI's FontSubstitutes does NOT
+     *  apply there. Our prefixes only carry Liberation/DejaVu/Tahoma+core
+     *  families, so "Times New Roman", "Microsoft Sans Serif", "Segoe UI",
+     *  emoji/CJK families etc. simply don't exist in the collection. Blink's
+     *  FontCache::GetLastResortFallbackFont tries a hardcoded list of such
+     *  names and hits NOTREACHED()/IMMEDIATE_CRASH when ALL of them fail —
+     *  device-symbolized 2026-06-12 to libcef's FontCache TU (int3 at
+     *  libcef+0x7A26589): clicking BIAS FX 2's "Add" panel (whose content
+     *  forces a fallback for a glyph no shipped font covers) killed both CEF
+     *  renderers → permanent white editor. wine's dwrite reads this key when
+     *  building the system collection (dlls/dwrite/font.c
+     *  fontcollection_add_replacements) and only applies entries whose family
+     *  is absent, so over-seeding is harmless; win32u honors the same key for
+     *  GDI. Mappings are metric-aware (Arial→Liberation Sans etc.); CJK/emoji
+     *  families map to DejaVu Sans so the LOOKUP succeeds (glyphs may render
+     *  as .notdef boxes, but the renderer survives). */
+    private fun seedFontReplacements(winePrefix: File) {
+        val userReg = File(winePrefix, "user.reg")
+        if (!userReg.exists()) return
+        val marker = "vstpoc-font-replacements-v1"
+        val existing = userReg.readText()
+        // Also skip if a Replacements section already exists (e.g. the
+        // hand-seeded debug prefix) — appending a duplicate section would
+        // make wine's registry load order ambiguous.
+        if (existing.contains(marker) ||
+            existing.contains("[Software\\\\Wine\\\\Fonts\\\\Replacements]")) return
+        val body = """
+
+;; $marker
+[Software\\Wine\\Fonts\\Replacements] 1765500000
+"Arial"="Liberation Sans"
+"Arial Black"="Liberation Sans"
+"Arial Unicode MS"="DejaVu Sans"
+"Batang"="DejaVu Serif"
+"Book Antiqua"="Liberation Serif"
+"Calibri"="Liberation Sans"
+"Cambria"="Liberation Serif"
+"Candara"="Liberation Sans"
+"Comic Sans MS"="DejaVu Sans"
+"Consolas"="Liberation Mono"
+"Corbel"="Liberation Sans"
+"Courier New"="Liberation Mono"
+"Franklin Gothic Medium"="Liberation Sans"
+"Garamond"="Liberation Serif"
+"Georgia"="Liberation Serif"
+"Gulim"="DejaVu Sans"
+"Helvetica"="Liberation Sans"
+"Impact"="Liberation Sans"
+"Lucida Console"="Liberation Mono"
+"Lucida Sans Unicode"="DejaVu Sans"
+"MS Gothic"="DejaVu Sans"
+"MS PGothic"="DejaVu Sans"
+"MS UI Gothic"="DejaVu Sans"
+"Malgun Gothic"="DejaVu Sans"
+"Meiryo"="DejaVu Sans"
+"Microsoft JhengHei"="DejaVu Sans"
+"Microsoft JhengHei UI"="DejaVu Sans"
+"Microsoft Sans Serif"="Liberation Sans"
+"Microsoft YaHei"="DejaVu Sans"
+"Microsoft YaHei UI"="DejaVu Sans"
+"PMingLiU"="DejaVu Sans"
+"Palatino Linotype"="Liberation Serif"
+"Segoe UI"="Liberation Sans"
+"Segoe UI Emoji"="DejaVu Sans"
+"Segoe UI Light"="Liberation Sans"
+"Segoe UI Semibold"="Liberation Sans"
+"Segoe UI Symbol"="DejaVu Sans"
+"SimSun"="DejaVu Sans"
+"Times New Roman"="Liberation Serif"
+"Verdana"="DejaVu Sans"
+"Yu Gothic"="DejaVu Sans"
+"Yu Gothic UI"="DejaVu Sans"
+
+"""
+        userReg.appendText(body)
+        Log.i(TAG, "seeded dwrite font Replacements in ${winePrefix.absolutePath}")
     }
 
     private fun seedUserFolders(ctx: Context, winePrefix: File) {
