@@ -1,0 +1,99 @@
+From: Kamil Lulko <limakzagan@gmail.com>
+Subject: iphlpapi: give the synthetic adapter a unicast IP + gateway + DNS
+
+Patch 0004 (the Android synthetic adapter) reports an interface that is
+OperStatus=Up but carries NO addresses. Chromium's NetworkChangeNotifierWin
+classifies an up-but-address-less interface as CONNECTION_NONE, so
+navigator.onLine is false. Electron-based vendor managers (IK Product
+Manager) gate showing their BrowserWindow on connectivity and therefore wait
+forever with a hidden window — "nothing renders".
+
+Attach a unicast address (10.117.31.5/24), a gateway (10.117.31.1, only when
+GAA_FLAG_INCLUDE_GATEWAYS is requested) and a DNS server (8.8.8.8, suppressed
+under GAA_FLAG_SKIP_DNS_SERVER) to the synthesized adapter. The addresses are
+RFC1918/public fiction — real socket traffic never consults them; they only
+make connectivity *classification* sane (DNS/connect still go through the
+host via wine's getaddrinfo passthrough). Node layout mirrors
+unicast_addresses_alloc (HeapAlloc, sockaddr inline after the node) so
+adapters_addresses_size/copy/free handle them unchanged.
+
+Slots after patch 0004 (extends vstpoc_synthesize_fake_adapter).
+Device-validated: IK Product Manager reaches its login UI on OnePlus 12.
+
+--- a/dlls/iphlpapi/iphlpapi_main.c
++++ b/dlls/iphlpapi/iphlpapi_main.c
+@@ -1426,6 +1426,74 @@
+     aa->ReceiveLinkSpeed = 100000000;
+     aa->ConnectionType = NET_IF_CONNECTION_DEDICATED;
+ 
++    /* vstpoc 2026-06-12: give the synthetic adapter a unicast IP + gateway +
++     * DNS server. An "Up" adapter with NO addresses makes Chromium's
++     * NetworkChangeNotifierWin classify connectivity as CONNECTION_NONE →
++     * navigator.onLine=false → Electron-based managers (IK Product Manager)
++     * silently wait for connectivity and never show their window. The
++     * addresses are RFC1918 fiction — real socket traffic never consults
++     * them; they only make connectivity *classification* sane. Node layout
++     * mirrors unicast_addresses_alloc (HeapAlloc, sockaddr inline after the
++     * node) so adapters_addresses_size/copy/free handle them unchanged. */
++    {
++        IP_ADAPTER_UNICAST_ADDRESS *uni;
++
++        uni = HeapAlloc( GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(*uni) + sizeof(SOCKADDR_IN) );
++        if (uni)
++        {
++            SOCKADDR_IN *sin;
++            uni->Length = sizeof(*uni);
++            uni->Address.lpSockaddr = (SOCKADDR *)(uni + 1);
++            uni->Address.iSockaddrLength = sizeof(SOCKADDR_IN);
++            sin = (SOCKADDR_IN *)uni->Address.lpSockaddr;
++            sin->sin_family = AF_INET;
++            sin->sin_addr.S_un.S_un_b.s_b1 = 10;  sin->sin_addr.S_un.S_un_b.s_b2 = 117;
++            sin->sin_addr.S_un.S_un_b.s_b3 = 31;  sin->sin_addr.S_un.S_un_b.s_b4 = 5;
++            uni->PrefixOrigin = IpPrefixOriginManual;
++            uni->SuffixOrigin = IpSuffixOriginManual;
++            uni->DadState = IpDadStatePreferred;
++            uni->ValidLifetime = uni->PreferredLifetime = uni->LeaseLifetime = 0xffffffff;
++            uni->OnLinkPrefixLength = 24;
++            uni->Flags |= IP_ADAPTER_ADDRESS_DNS_ELIGIBLE;
++            aa->FirstUnicastAddress = uni;
++            aa->Ipv4Enabled = TRUE;
++        }
++        if (flags & GAA_FLAG_INCLUDE_GATEWAYS)
++        {
++            IP_ADAPTER_GATEWAY_ADDRESS *gw;
++            gw = HeapAlloc( GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(*gw) + sizeof(SOCKADDR_IN) );
++            if (gw)
++            {
++                SOCKADDR_IN *sin;
++                gw->Length = sizeof(*gw);
++                gw->Address.lpSockaddr = (SOCKADDR *)(gw + 1);
++                gw->Address.iSockaddrLength = sizeof(SOCKADDR_IN);
++                sin = (SOCKADDR_IN *)gw->Address.lpSockaddr;
++                sin->sin_family = AF_INET;
++                sin->sin_addr.S_un.S_un_b.s_b1 = 10;  sin->sin_addr.S_un.S_un_b.s_b2 = 117;
++                sin->sin_addr.S_un.S_un_b.s_b3 = 31;  sin->sin_addr.S_un.S_un_b.s_b4 = 1;
++                aa->FirstGatewayAddress = gw;
++            }
++        }
++        if (!(flags & GAA_FLAG_SKIP_DNS_SERVER))
++        {
++            IP_ADAPTER_DNS_SERVER_ADDRESS *dns;
++            dns = HeapAlloc( GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(*dns) + sizeof(SOCKADDR_IN) );
++            if (dns)
++            {
++                SOCKADDR_IN *sin;
++                dns->Length = sizeof(*dns);
++                dns->Address.lpSockaddr = (SOCKADDR *)(dns + 1);
++                dns->Address.iSockaddrLength = sizeof(SOCKADDR_IN);
++                sin = (SOCKADDR_IN *)dns->Address.lpSockaddr;
++                sin->sin_family = AF_INET;
++                sin->sin_addr.S_un.S_un_b.s_b1 = 8; sin->sin_addr.S_un.S_un_b.s_b2 = 8;
++                sin->sin_addr.S_un.S_un_b.s_b3 = 8; sin->sin_addr.S_un.S_un_b.s_b4 = 8;
++                aa->FirstDnsServerAddress = dns;
++            }
++        }
++    }
++
+     *info = aa;
+     *count = 1;
+     return ERROR_SUCCESS;

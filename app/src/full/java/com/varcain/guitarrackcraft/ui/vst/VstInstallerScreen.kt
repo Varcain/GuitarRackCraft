@@ -13,6 +13,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Keyboard
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -26,6 +27,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.varcain.vsthost.NativeBridge
+import com.varcain.vsthost.ui.EditorViewRegistry
 import com.varcain.vsthost.ui.PluginSurface
 
 /**
@@ -133,17 +135,30 @@ private fun RunningOverlay(mode: VstInstallerViewModel.Mode, onCancel: () -> Uni
             // on dispose so the next install starts from a clean slot.
             destroyOnDispose = true,
         )
-        // Floating Cancel: top-right, 50% black backdrop for visibility
-        // over any wine background. Mirrors the LV2/VST fullscreen exit.
-        IconButton(
-            onClick = onCancel,
-            modifier = Modifier
-                .align(Alignment.TopEnd)
-                .padding(12.dp)
-                .background(Color.Black.copy(alpha = 0.5f), CircleShape),
+        // Floating controls: top-right column, 50% black backdrops for
+        // visibility over any wine background. Close mirrors the LV2/VST
+        // fullscreen exit; the keyboard toggle raises the soft IME against
+        // the installer surface (PluginSurface's EditorSurfaceView routes
+        // commitText/key events into the X server) — needed for installers
+        // and vendor managers with login forms (e.g. IK Product Manager).
+        Column(
+            modifier = Modifier.align(Alignment.TopEnd).padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            Icon(Icons.Default.Close, contentDescription = closeDescription,
-                 tint = Color.White)
+            IconButton(
+                onClick = onCancel,
+                modifier = Modifier.background(Color.Black.copy(alpha = 0.5f), CircleShape),
+            ) {
+                Icon(Icons.Default.Close, contentDescription = closeDescription,
+                     tint = Color.White)
+            }
+            IconButton(
+                onClick = { EditorViewRegistry.showKeyboard(displayNumber) },
+                modifier = Modifier.background(Color.Black.copy(alpha = 0.5f), CircleShape),
+            ) {
+                Icon(Icons.Default.Keyboard, contentDescription = "Toggle keyboard",
+                     tint = Color.White)
+            }
         }
     }
 }
