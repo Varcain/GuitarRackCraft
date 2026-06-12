@@ -963,7 +963,7 @@ object WineSetup {
         val systemReg = File(winePrefix, "system.reg")
         if (!systemReg.exists()) return
         // Marker = the newest-added class; bump when adding more so it re-seeds.
-        val marker = "Classes\\\\CLSID\\\\{e77cc89b-7401-4c04-8ced-149db35add04}]"
+        val marker = "Classes\\\\CLSID\\\\{3ad05575-8857-4850-9277-11b85bdb8e09}]"
         if (systemReg.readText().contains(marker)) return
         val now = System.currentTimeMillis() / 1000
         // clsid, friendly name, providing DLL, ThreadingModel
@@ -983,6 +983,12 @@ object WineSetup {
             Com("bcde0395-e52f-467c-8e3d-c4579291692e", "MMDeviceEnumerator", "mmdevapi.dll", "Both"),
             // Windows Parental Controls (BIAS FX 2 probes it during UI init).
             Com("e77cc89b-7401-4c04-8ced-149db35add04", "WindowsParentalControls", "wpc.dll", "Both"),
+            // Shell IFileOperation — Chromium/Electron's download rename
+            // (intermediate GUID.tmp → target) CoCreates it; unregistered →
+            // EVERY download interrupts at ~40ms with 0 bytes on disk
+            // (IK Product Manager). Desktop wine works because wine.inf
+            // registers it there.
+            Com("3ad05575-8857-4850-9277-11b85bdb8e09", "Copy/Move/Rename/Delete/Link Object", "shell32.dll", "Apartment"),
         )
         val sb = StringBuilder("\n")
         for (c in classes) {
