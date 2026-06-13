@@ -65,7 +65,7 @@ object WineSetup {
      *  (block confirmed in pWindowPosChanging→create_win_data). TEMP.
      *  v12: cwx2 unconditional + create_win_data ENTER marker (v11 size gate
      *  hid markers; disambiguate dispatch vs get_win_data vs create). TEMP. */
-    private const val SETUP_VERSION = 29  // v29: zink uses Turnip via libvulkan_vstpoc shim (adrenotools KGSL); renamed libEGL avoids system shadow
+    private const val SETUP_VERSION = 30  // v30: repackaged mesa-zink-libs.tar.gz with the 6 zink fixes (kopper/swrast dri_target, EGL_OPENGL_API, zink-HW pdev, etc.) — the asset was stale (only device-pushed before); fixes "DRI_SWRast version 5" fatal after a data wipe
 
     data class Setup(
         val wineRoot: File,
