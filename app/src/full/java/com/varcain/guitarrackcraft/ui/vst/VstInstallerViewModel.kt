@@ -178,6 +178,46 @@ class VstInstallerViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /** Run a user-picked installer .exe INSIDE an existing activation environment
+     *  (the manager's prefix) instead of a throwaway template — so the plugin it
+     *  installs lands in the SAME prefix as the manager's licence, and the
+     *  activation catches. This is the bridge for "I have a standalone installer
+     *  AND a manager that activates it": pick the installer, target the env.
+     *
+     *  Mechanically identical to [launchExecutable] (LAUNCH mode → prefix
+     *  preserved; on exit, in-prefix VSTs not yet registered for this prefix are
+     *  discovered and registered with prefixPath = env) except the exe is the
+     *  picked installer rather than the registered manager. The installer runs as
+     *  a top-level wine process (like installFromExe), so OS-spoof etc. behave the
+     *  same as a standalone external install — just into [env]'s prefix. */
+    fun installIntoEnvironment(stagedExePath: String, displayName: String, env: VstExecutableEntry) {
+        if (_state.value != State.IDLE) {
+            Log.w(TAG, "installIntoEnvironment called while state=${_state.value}; ignoring")
+            return
+        }
+        val ctx = getApplication<Application>()
+        _session.value = Session(
+            mode = Mode.LAUNCH,                       // preserve the env prefix; register against it
+            id = env.environmentId ?: env.uuid,
+            displayName = displayName,
+            stagedExePath = stagedExePath,
+            templatePrefixPath = env.prefixPath,
+            displayNumber = INSTALLER_DISPLAY_NUMBER,
+        )
+        _state.value = State.PREPARING
+        watchJob = viewModelScope.launch {
+            withContext(Dispatchers.IO) {
+                // Same wineserver-kill-then-reseed dance as launchExecutable —
+                // a running wineserver would stomp seeds on shutdown.
+                VstHostSetup.killWineserversForPrefix(env.prefixPath)
+                VstHostSetup.applyPluginPrefixSeeds(ctx, File(env.prefixPath))
+            }
+            Log.i(TAG, "installIntoEnv: running '$displayName' in environment ${env.displayName} " +
+                       "prefix=${env.prefixPath}")
+            runWineSession(ctx, stagedExePath, env.prefixPath)
+        }
+    }
+
     /** Common spawn + wait + drain + discover + pick flow. Called by both
      *  installFromExe (after PREPARING) and launchExecutable (no PREPARING). */
     private suspend fun runWineSession(ctx: Context, exePath: String, prefixPath: String) {

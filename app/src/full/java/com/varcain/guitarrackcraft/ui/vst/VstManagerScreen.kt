@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.OpenInNew
@@ -129,6 +130,33 @@ fun VstManagerScreen(onNavigateBack: () -> Unit) {
         }
     }
 
+    // "Install into this environment…" — run a picked installer INSIDE an
+    // existing manager's prefix so the plugin lands where the manager's licence
+    // lives (the activation catches). pendingEnv carries which environment the
+    // per-row button targeted into the picker callback.
+    var pendingEnv by remember { mutableStateOf<VstExecutableEntry?>(null) }
+    val envExePickerLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenMultipleDocuments()
+    ) { uris: List<Uri> ->
+        val env = pendingEnv
+        pendingEnv = null
+        if (uris.isEmpty() || env == null) return@rememberLauncherForActivityResult
+        scope.launch {
+            setupInProgress = true
+            val staged = withContext(Dispatchers.IO) {
+                if (!VstHostSetup.ensureWineRoot(context)) return@withContext null
+                stageInstaller(context, uris)
+            }
+            setupInProgress = false
+            if (staged == null) {
+                Toast.makeText(context, "Couldn't stage the installer file", Toast.LENGTH_LONG).show()
+                return@launch
+            }
+            installerVm.installIntoEnvironment(
+                staged.absolutePath, staged.nameWithoutExtension, env)
+        }
+    }
+
     val pickerLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocument()
     ) { uri: Uri? ->
@@ -235,8 +263,9 @@ fun VstManagerScreen(onNavigateBack: () -> Unit) {
                     Spacer(Modifier.height(4.dp))
                     Text(
                         "Plugin managers (IK Multimedia, Native Access, etc.). Each hosts its " +
-                        "plugins in one prefix so licences stay live — open one to install " +
-                        "more or re-validate; closing it scans the prefix for new plugins.",
+                        "plugins in one prefix so licences stay live. ▶ opens/re-validates; " +
+                        "+ installs an external installer (.exe) straight into the environment " +
+                        "so its activation catches; closing it scans the prefix for new plugins.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -255,6 +284,10 @@ fun VstManagerScreen(onNavigateBack: () -> Unit) {
                         ExecutableRow(
                             entry = e,
                             pluginCount = entries.count { it.prefixPath == e.prefixPath },
+                            onInstallInto = {
+                                pendingEnv = e
+                                envExePickerLauncher.launch(arrayOf("*/*"))
+                            },
                             onLaunch = {
                                 installerVm.launchExecutable(e)
                             },
@@ -366,6 +399,7 @@ private fun ExecutableRow(
     entry: VstExecutableEntry,
     /** Number of plugins running in this activator's environment prefix. */
     pluginCount: Int,
+    onInstallInto: () -> Unit,
     onLaunch: () -> Unit,
     onRemove: () -> Unit,
 ) {
@@ -383,6 +417,10 @@ private fun ExecutableRow(
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+        }
+        IconButton(onClick = onInstallInto) {
+            Icon(Icons.Default.Add,
+                 contentDescription = "Install a plugin into ${entry.displayName}'s environment")
         }
         IconButton(onClick = onLaunch) {
             Icon(Icons.Default.PlayArrow,
