@@ -1,0 +1,129 @@
+From: Kamil Lulko <limakzagan@gmail.com>
+Subject: server: env-gated IOCP completion-port tracing (VSTPOC_ASYNC_TRACE)
+
+Diagnostic-only, OFF unless VSTPOC_ASYNC_TRACE=1 is set in the wineserver
+environment. Traces the I/O-completion path that backs Chromium/Mojo sync
+IPC so a lost wake-up is visible: async HANDOFF / PACKET / SKIPPED in
+server/async.c and completion-queue ADD / POP / GET / SAT in
+server/completion.c (the latter naming the waiting thread id). This is what
+localised the IK Product Manager "spinner" to a lost condition-variable wake
+(fixed in ntdll patch 0015) — kept in-tree, gated, for future lost-wake
+hunts. Zero cost when the env var is unset (one getenv, cached).
+diff --git a/server/async.c b/server/async.c
+index d7f665ba10b..ef008aec53a 100644
+--- a/server/async.c
++++ b/server/async.c
+@@ -33,6 +33,8 @@
+ #include "process.h"
+ #include "handle.h"
+ 
++int vstpoc_async_trace(void);   /* vstpoc: defined below, also used by completion.c */
++
+ struct async_cancel
+ {
+     struct object        obj;                 /* object header */
+@@ -489,6 +491,10 @@ obj_handle_t async_handoff( struct async *async, data_size_t *result, int force_
+         }
+     }
+     async->initial_status = async->iosb->status;
++    if (async->data.apc_context && vstpoc_async_trace())
++        fprintf( stderr, "vstpoc-async: HANDOFF async=%p fd=%p cval=%llx st=%x pend=%u\n",
++                 async, async->fd, (unsigned long long)async->data.apc_context,
++                 async->iosb->status, async->pending );
+     set_error( async->iosb->status );
+     return async->wait_handle;
+ }
+@@ -555,6 +561,16 @@ void async_set_completion_callback( struct async *async, async_completion_callba
+     async->completion_callback_private = private;
+ }
+ 
++/* vstpoc: env-gated tracing for the lost-IOCP-packet hunt (IK PM channel wedge).
++ * Logs every IOCP-relevant async (apc_context set) at handoff + completion so a
++ * skipped packet is visible. Enable with VSTPOC_ASYNC_TRACE=1 in wineserver env. */
++int vstpoc_async_trace(void)
++{
++    static int on = -1;
++    if (on < 0) { const char *e = getenv( "VSTPOC_ASYNC_TRACE" ); on = e && *e != '0'; }
++    return on;
++}
++
+ static void add_async_completion( struct async *async, apc_param_t cvalue, unsigned int status,
+                                   apc_param_t information )
+ {
+@@ -620,8 +636,18 @@ void async_set_result( struct object *obj, unsigned int status, apc_param_t tota
+             else if (async->data.apc_context && (async->pending ||
+                      !(async->comp_flags & FILE_SKIP_COMPLETION_PORT_ON_SUCCESS)))
+             {
++                if (vstpoc_async_trace())
++                    fprintf( stderr, "vstpoc-async: PACKET async=%p fd=%p cval=%llx st=%x tot=%llx pend=%u flags=%x\n",
++                             async, async->fd, (unsigned long long)async->data.apc_context, status,
++                             (unsigned long long)total, async->pending, async->comp_flags );
+                 add_async_completion( async, async->data.apc_context, status, total );
+             }
++            else if (async->data.apc_context && vstpoc_async_trace())
++            {
++                fprintf( stderr, "vstpoc-async: SKIPPED async=%p fd=%p cval=%llx st=%x tot=%llx pend=%u flags=%x\n",
++                         async, async->fd, (unsigned long long)async->data.apc_context, status,
++                         (unsigned long long)total, async->pending, async->comp_flags );
++            }
+ 
+             if (async->event) set_event( async->event );
+             else if (async->fd && !async->is_system) set_fd_signaled( async->fd, 1 );
+diff --git a/server/completion.c b/server/completion.c
+index 8242bf79054..7acf698fa5d 100644
+--- a/server/completion.c
++++ b/server/completion.c
+@@ -151,6 +151,13 @@ static void completion_wait_satisfied( struct object *obj, struct wait_queue_ent
+     list_remove( &msg->queue_entry );
+     if (wait->msg) free( wait->msg );
+     wait->msg = msg;
++    {
++        extern int vstpoc_async_trace(void);
++        if (vstpoc_async_trace())
++            fprintf( stderr, "vstpoc-comp: SAT comp=%p ckey=%llx cval=%llx st=%x tid=%04x\n",
++                     wait->completion, (unsigned long long)msg->ckey, (unsigned long long)msg->cvalue,
++                     msg->status, wait->thread ? wait->thread->id : 0 );
++    }
+ }
+ 
+ static void completion_dump( struct object*, int );
+@@ -310,6 +317,12 @@ void add_completion( struct completion *completion, apc_param_t ckey, apc_param_
+ 
+     list_add_tail( &completion->queue, &msg->queue_entry );
+     completion->depth++;
++    {
++        extern int vstpoc_async_trace(void);
++        if (vstpoc_async_trace())
++            fprintf( stderr, "vstpoc-comp: ADD comp=%p ckey=%llx cval=%llx st=%x depth=%u\n",
++                     completion, (unsigned long long)ckey, (unsigned long long)cvalue, status, completion->depth );
++    }
+     LIST_FOR_EACH_ENTRY( wait, &completion->wait_queue, struct completion_wait, wait_queue_entry )
+     {
+         wake_up( &wait->obj, 1 );
+@@ -410,6 +423,13 @@ DECL_HANDLER(remove_completion)
+         list_remove( entry );
+         completion->depth--;
+         msg = LIST_ENTRY( entry, struct comp_msg, queue_entry );
++        {
++            extern int vstpoc_async_trace(void);
++            if (vstpoc_async_trace())
++                fprintf( stderr, "vstpoc-comp: POP comp=%p ckey=%llx cval=%llx st=%x depth=%u\n",
++                         completion, (unsigned long long)msg->ckey, (unsigned long long)msg->cvalue,
++                         msg->status, completion->depth );
++        }
+         reply->ckey = msg->ckey;
+         reply->cvalue = msg->cvalue;
+         reply->status = msg->status;
+@@ -433,6 +453,12 @@ DECL_HANDLER(get_thread_completion)
+         return;
+     }
+ 
++    {
++        extern int vstpoc_async_trace(void);
++        if (vstpoc_async_trace())
++            fprintf( stderr, "vstpoc-comp: GET ckey=%llx cval=%llx st=%x\n",
++                     (unsigned long long)msg->ckey, (unsigned long long)msg->cvalue, msg->status );
++    }
+     reply->ckey = msg->ckey;
+     reply->cvalue = msg->cvalue;
+     reply->status = msg->status;
