@@ -1,0 +1,11 @@
+prefix=/data/data/com.termux/files/usr
+includedir=${prefix}/include
+libdir=${prefix}/lib
+
+Name: libdrm_etnaviv
+Description: Userspace interface to Tegra kernel DRM services
+Version: 2.4.134
+Requires.private: libdrm
+Libs: -L${libdir} -ldrm_etnaviv
+Libs.private: -pthread
+Cflags: -I${includedir} -I${includedir}/libdrm

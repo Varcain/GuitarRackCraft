@@ -22,6 +22,10 @@ Result on device: GL_VERSION=4.6 (Compatibility Profile) Mesa 24.2.8, JUCE
 desktop-GLSL editors (AmpliTube) render. Env: LIBGL_ALWAYS_SOFTWARE=1 +
 VSTPOC_ZINK_FORCE_HW=1 + MESA_LOADER_DRIVER_OVERRIDE=zink.
 
+  4. detect_os.h - add a MESA_FORCE_LINUX escape hatch to the DETECT_OS_ANDROID
+     definition (inert unless MESA_FORCE_LINUX is defined at build time); kept
+     for parity with the live build tree.
+
 diff --git a/src/egl/main/eglcurrent.h b/src/egl/main/eglcurrent.h
 index e0f6f7b6b12..dccd910dd74 100644
 --- a/src/egl/main/eglcurrent.h
@@ -104,3 +108,16 @@ index 6604afe99f5..1d7d4ceda6b 100644
  
  #if defined(GALLIUM_D3D12)
  DEFINE_LOADER_DRM_ENTRYPOINT(d3d12);
+diff --git a/src/util/detect_os.h b/src/util/detect_os.h
+index 86286dfbe70..972b124af58 100644
+--- a/src/util/detect_os.h
++++ b/src/util/detect_os.h
+@@ -24,7 +24,7 @@
+  * Android defines __linux__, so DETECT_OS_LINUX and DETECT_OS_POSIX will
+  * also be defined.
+  */
+-#if defined(__ANDROID__)
++#if defined(__ANDROID__) && !defined(MESA_FORCE_LINUX) && !defined(MESA_FORCE_LINUX)
+ #define DETECT_OS_ANDROID 1
+ #endif
+ 
