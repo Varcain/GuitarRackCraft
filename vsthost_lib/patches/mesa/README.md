@@ -12,6 +12,16 @@ The built `.so` files live in `toolchain/mesa-zink-libs/` and the packaged
 is the source-of-truth to *regenerate* them. See `project_zink_layer3_state`
 memory for the full root-cause history of each fix.
 
+## ► Just run the script
+`scripts/build-mesa-zink.sh` does everything below and is wired into
+`build-all.sh` (step 8b) — it's the tested, machine-portable path (generates
+the meson cross-file from `$ANDROID_NDK` + repo paths, builds, strips, tars).
+The manual recipe below is kept as reference/history; prefer the script.
+(Corrections the script bakes in vs. an early hand-run: `libexpat.so` is built
+by mesa's expat subproject — not Termux; the link needs `-llog -lsync`; the
+big libs must be `llvm-strip --strip-unneeded` while `libEGL_vstpoc` is left
+as built.)
+
 ## Inputs (all tracked here)
 - `0001-zink-android-desktop-gl-via-turnip.patch` — the 4 Mesa source fixes
   (dri_target kopper/swrast, eglcurrent EGL_OPENGL_API, zink_screen HW-pdev

@@ -86,6 +86,9 @@ run_step build-fex-pe.sh
 step 8  "build-dxvk (DXVK D3D-to-Vulkan translation)"
 run_step build-dxvk.sh
 
+step 8b "build-mesa-zink (desktop-GL libs for JUCE GL editors → mesa-zink-libs.tar.gz)"
+run_step build-mesa-zink.sh
+
 step 9  "build-vst-host (vst_host.exe + vst_host_x86.exe)"
 run_step build-vst-host.sh
 
