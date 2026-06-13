@@ -70,11 +70,6 @@ class VstInstallerViewModel(app: Application) : AndroidViewModel(app) {
         val templatePrefixPath: String,
         val displayNumber: Int,
         val winePid: Int = -1,
-        /** LAUNCH-only: absolute paths of VST DLLs that already existed in the
-         *  prefix when the manager was launched. Used to compute the "new VSTs"
-         *  diff after the manager exits, so the user only sees freshly-installed
-         *  plugins in the PICK list. */
-        val prefixVstSnapshot: Set<String> = emptySet(),
     )
 
     data class DiscoveredPlugin(
@@ -177,10 +172,8 @@ class VstInstallerViewModel(app: Application) : AndroidViewModel(app) {
                 // managers had already been registered).
                 VstHostSetup.applyPluginPrefixSeeds(ctx, File(exe.prefixPath))
             }
-            val snapshot = withContext(Dispatchers.IO) { snapshotPrefixVsts(exe.prefixPath) }
-            _session.value = _session.value?.copy(prefixVstSnapshot = snapshot)
             Log.i(TAG, "launch: starting manager '${exe.displayName}' uuid=${exe.uuid} " +
-                       "prefix=${exe.prefixPath} preexisting VSTs=${snapshot.size}")
+                       "prefix=${exe.prefixPath}")
             runWineSession(ctx, exe.exePath, exe.prefixPath)
         }
     }
@@ -242,7 +235,17 @@ class VstInstallerViewModel(app: Application) : AndroidViewModel(app) {
         _state.value = State.DISCOVERING
         val session = _session.value ?: run { reset(); return }
         val found = withContext(Dispatchers.IO) {
-            discoverItems(session.templatePrefixPath, session.mode, session.prefixVstSnapshot)
+            // LAUNCH: filter against VSTs ALREADY registered for this prefix
+            // (not the pre-launch snapshot) so discarded/wipe-recovered plugins
+            // resurface. INSTALL: empty set (the template starts blank anyway).
+            val alreadyRegistered =
+                if (session.mode == Mode.LAUNCH)
+                    VstRegistry.read(ctx)
+                        .filter { it.prefixPath == session.templatePrefixPath }
+                        .map { it.dllPath }
+                        .toSet()
+                else emptySet()
+            discoverItems(session.templatePrefixPath, session.mode, alreadyRegistered)
         }
         _discovered.value = found
         if (found.isEmpty()) {
@@ -284,18 +287,36 @@ class VstInstallerViewModel(app: Application) : AndroidViewModel(app) {
                 val existingVsts = VstRegistry.read(ctx).toMutableList()
                 val existingExes = VstExecutableRegistry.read(ctx).toMutableList()
                 val sourcePrefix = File(current.templatePrefixPath)
-                for (p in picks) {
-                    when (p.kind) {
-                        Kind.EXECUTABLE -> registerExecutablePick(ctx, sourcePrefix, p, existingExes)
-                        else -> registerVstPick(ctx, sourcePrefix, p, existingVsts)
-                    }
+                val exePicks = picks.filter { it.kind == Kind.EXECUTABLE }
+                val vstPicks = picks.filter { it.kind != Kind.EXECUTABLE }
+
+                // The activation-environment prefix the picked plugins RUN in
+                // (shared, NO per-plugin clone) — null = "no environment, fall
+                // back to legacy clone-per-VST".
+                //   - LAUNCH: the live manager prefix (already exists).
+                //   - INSTALL + manager kept: promote the one-shot template ONCE
+                //     to wineprefix_e<uuid> (the first exe pick defines the
+                //     environment); further exes + all VSTs bind to it.
+                //   - INSTALL + no manager: null.
+                val envPrefix: File? = when {
+                    current.mode == Mode.LAUNCH -> sourcePrefix
+                    exePicks.isNotEmpty() ->
+                        promoteTemplateToEnvironment(ctx, sourcePrefix, exePicks, existingExes)
+                    else -> null
                 }
+
+                for (p in vstPicks) {
+                    if (envPrefix != null) registerVstInEnvironment(envPrefix, p, existingVsts)
+                    else                   registerVstClone(ctx, sourcePrefix, p, existingVsts)
+                }
+
                 VstRegistry.write(ctx, existingVsts)
                 VstExecutableRegistry.write(ctx, existingExes)
 
-                // INSTALL mode: delete the one-shot template (each pick has
-                // its own clone now). LAUNCH mode: preserve the manager's
-                // prefix — it still belongs to the registered manager.
+                // INSTALL mode: the one-shot template is consumed (the
+                // environment, if any, is a separate wineprefix_e clone; legacy
+                // VSTs each cloned). LAUNCH mode: NEVER delete — it's the live
+                // environment that still belongs to its manager + plugins.
                 if (current.mode == Mode.INSTALL) {
                     sourcePrefix.deleteRecursively()
                 }
@@ -305,7 +326,70 @@ class VstInstallerViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    private fun registerVstPick(
+    /** INSTALL mode with kept manager(s): clone the template ONCE to
+     *  wineprefix_e<uuid> (the FIRST exe pick defines the environment; its uuid
+     *  == environmentId — the environment's stable handle). Register every exe
+     *  pick as an activator sharing that prefix + environmentId. Returns the
+     *  environment prefix dir, or null if the clone / first exe failed. */
+    private fun promoteTemplateToEnvironment(
+        ctx: Context,
+        sourcePrefix: File,
+        exePicks: List<DiscoveredPlugin>,
+        outExes: MutableList<VstExecutableEntry>,
+    ): File? {
+        val envId = UUID.randomUUID().toString()
+        val envDir = File(ctx.filesDir, "wineprefix_e$envId")
+        if (envDir.exists()) envDir.deleteRecursively()
+        VstHostSetup.copyPrefix(sourcePrefix, envDir)
+        VstHostSetup.applyPluginPrefixSeeds(ctx, envDir)
+        var registered = 0
+        for ((idx, exe) in exePicks.withIndex()) {
+            val exeInPrefix = File(envDir, exe.relToPrefix)
+            if (!exeInPrefix.exists()) {
+                Log.w(TAG, "promoteTemplate: exe missing after clone (rel=${exe.relToPrefix})")
+                continue
+            }
+            outExes += VstExecutableEntry(
+                uuid = if (idx == 0) envId else UUID.randomUUID().toString(),
+                displayName = exe.displayName,
+                exePath = exeInPrefix.absolutePath,
+                prefixPath = envDir.absolutePath,
+                environmentId = envId,
+            )
+            registered++
+        }
+        if (registered == 0) { envDir.deleteRecursively(); return null }
+        Log.i(TAG, "confirmPicks: environment $envId with $registered activator(s) at $envDir")
+        return envDir
+    }
+
+    /** Register a VST that runs DIRECTLY against the live [envPrefix] (no clone)
+     *  — its license/activation stays in the environment the manager maintains. */
+    private fun registerVstInEnvironment(
+        envPrefix: File,
+        p: DiscoveredPlugin,
+        out: MutableList<VstRegistryEntry>,
+    ) {
+        val pluginInPrefix = File(envPrefix, p.relToPrefix)
+        if (!pluginInPrefix.exists()) {
+            Log.w(TAG, "registerVstInEnvironment: plugin missing in env (rel=${p.relToPrefix})")
+            return
+        }
+        out += VstRegistryEntry(
+            uuid = UUID.randomUUID().toString(),
+            displayName = p.displayName,
+            format = if (p.isVst3) "VST3" else "VST2",
+            dllPath = pluginInPrefix.absolutePath,
+            is64Bit = p.is64Bit,
+            prefixPath = envPrefix.absolutePath,   // <-- shared environment, no clone
+        )
+        Log.i(TAG, "confirmPicks: VST in env ${envPrefix.name} (${p.displayName})")
+    }
+
+    /** Legacy standalone-installer path (no manager kept): each VST gets its own
+     *  full clone of the template into wineprefix_v<uuid> (prefixPath stays
+     *  null → engine derives the prefix from uuid). */
+    private fun registerVstClone(
         ctx: Context,
         sourcePrefix: File,
         p: DiscoveredPlugin,
@@ -318,7 +402,7 @@ class VstInstallerViewModel(app: Application) : AndroidViewModel(app) {
         VstHostSetup.applyPluginPrefixSeeds(ctx, prefixDir)
         val pluginInPrefix = File(prefixDir, p.relToPrefix)
         if (!pluginInPrefix.exists()) {
-            Log.w(TAG, "registerVstPick: plugin missing after clone " +
+            Log.w(TAG, "registerVstClone: plugin missing after clone " +
                        "(uuid=$uuid, rel=${p.relToPrefix})")
             prefixDir.deleteRecursively()
             return
@@ -330,34 +414,7 @@ class VstInstallerViewModel(app: Application) : AndroidViewModel(app) {
             dllPath = pluginInPrefix.absolutePath,
             is64Bit = p.is64Bit,
         )
-        Log.i(TAG, "confirmPicks: VST $uuid (${p.displayName}) at $pluginInPrefix")
-    }
-
-    private fun registerExecutablePick(
-        ctx: Context,
-        sourcePrefix: File,
-        p: DiscoveredPlugin,
-        out: MutableList<VstExecutableEntry>,
-    ) {
-        val uuid = UUID.randomUUID().toString()
-        val prefixDir = File(ctx.filesDir, "wineprefix_e$uuid")
-        if (prefixDir.exists()) prefixDir.deleteRecursively()
-        VstHostSetup.copyPrefix(sourcePrefix, prefixDir)
-        VstHostSetup.applyPluginPrefixSeeds(ctx, prefixDir)
-        val exeInPrefix = File(prefixDir, p.relToPrefix)
-        if (!exeInPrefix.exists()) {
-            Log.w(TAG, "registerExecutablePick: exe missing after clone " +
-                       "(uuid=$uuid, rel=${p.relToPrefix})")
-            prefixDir.deleteRecursively()
-            return
-        }
-        out += VstExecutableEntry(
-            uuid = uuid,
-            displayName = p.displayName,
-            exePath = exeInPrefix.absolutePath,
-            prefixPath = prefixDir.absolutePath,
-        )
-        Log.i(TAG, "confirmPicks: EXE $uuid (${p.displayName}) at $exeInPrefix")
+        Log.i(TAG, "confirmPicks: VST clone $uuid (${p.displayName}) at $pluginInPrefix")
     }
 
     /** Close the wine session — semantics depend on mode + current state.
@@ -474,36 +531,21 @@ class VstInstallerViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    /** Snapshot the set of VST DLL/VST3 absolute paths currently in [prefixPath].
-     *  Used to compute the "newly installed since launch" diff after a LAUNCH
-     *  session ends. Cheap directory walk — no PE inspection (we don't need
-     *  to confirm VST-ness here, just identity for diffing). */
-    private fun snapshotPrefixVsts(prefixPath: String): Set<String> {
-        val driveC = File(prefixPath, "drive_c")
-        if (!driveC.exists()) return emptySet()
-        val out = mutableSetOf<String>()
-        driveC.walkTopDown().forEach { f ->
-            if (!f.isFile) return@forEach
-            val n = f.name.lowercase()
-            if (n.endsWith(".dll") || n.endsWith(".vst3")) {
-                out += f.absolutePath
-            }
-        }
-        return out
-    }
-
     /** Walk the prefix's drive_c/ for VST candidate files AND (in INSTALL mode)
      *  executable candidates. Filters to PE files exporting VSTPluginMain or
      *  GetPluginFactory (for VSTs) or PE EXEs over a small size threshold (for
      *  executables). Skips wine builtins in system32/syswow64.
      *
-     *  In LAUNCH mode: VSTs are filtered against [vstSnapshot] so only NEW
-     *  plugins surface, and executable discovery is skipped (the manager is
-     *  already registered — no need to re-detect it). */
+     *  In LAUNCH mode: VSTs already registered for THIS prefix ([alreadyRegistered]
+     *  = their dllPaths) are filtered out, so discovery surfaces "in-prefix VSTs
+     *  not yet in the rack" rather than "new since launch". This means a plugin
+     *  installed but discarded at a prior PICK — or present after a re-registration
+     *  / data-wipe recovery — still surfaces (a free "rescan environment"). Exe
+     *  discovery is skipped in LAUNCH (the manager is already registered). */
     private fun discoverItems(
         prefixPath: String,
         mode: Mode,
-        vstSnapshot: Set<String>,
+        alreadyRegistered: Set<String>,
     ): List<DiscoveredPlugin> {
         val driveC = File(prefixPath, "drive_c")
         if (!driveC.exists()) return emptyList()
@@ -516,7 +558,7 @@ class VstInstallerViewModel(app: Application) : AndroidViewModel(app) {
 
             when {
                 lowerName.endsWith(".dll") || lowerName.endsWith(".vst3") -> {
-                    if (mode == Mode.LAUNCH && f.absolutePath in vstSnapshot) return@forEach
+                    if (mode == Mode.LAUNCH && f.absolutePath in alreadyRegistered) return@forEach
                     val flags = runCatching {
                         NativeBridge.nativeInspectPluginExports(f.absolutePath)
                     }.getOrDefault(0)

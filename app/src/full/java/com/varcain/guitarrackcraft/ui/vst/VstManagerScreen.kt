@@ -51,16 +51,23 @@ data class VstRegistryEntry(
     val prefixPath: String? = null,
 )
 
-/** One installed "manager" / launcher .exe (IK Multimedia Product Manager,
- *  Native Access, etc.) as persisted in filesDir/vst_plugins/executables.json.
- *  Each registered exe has its own permanent wineprefix at [prefixPath] —
- *  re-launching the manager from VstManagerScreen runs against that prefix so
- *  the manager remembers its login state, downloaded products, etc. */
+/** One installed activator/"manager" .exe (IK Multimedia Product Manager,
+ *  iLok License Manager, Native Access, …) as persisted in
+ *  filesDir/vst_plugins/executables.json. Re-launching it from VstManagerScreen
+ *  runs against [prefixPath] so it remembers login state, downloaded products,
+ *  and (crucially) keeps activations live + re-validatable.
+ *
+ *  An "activation environment" is a [prefixPath] that may host SEVERAL
+ *  activators (sharing one [environmentId]) plus the plugins they license
+ *  (VstRegistryEntry rows whose prefixPath == this prefixPath). [environmentId]
+ *  is null for legacy single-activator rows → each is its own environment,
+ *  keyed by prefixPath. */
 data class VstExecutableEntry(
     val uuid: String,
     val displayName: String,
-    val exePath: String,     // absolute path of the .exe inside its wineprefix
-    val prefixPath: String,  // absolute path of the wineprefix itself
+    val exePath: String,           // absolute path of the .exe inside its wineprefix
+    val prefixPath: String,        // absolute path of the wineprefix itself
+    val environmentId: String? = null,
 )
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -248,10 +255,23 @@ fun VstManagerScreen(onNavigateBack: () -> Unit) {
                             },
                             onRemove = {
                                 scope.launch(Dispatchers.IO) {
-                                    VstExecutableRegistry.remove(context, e.uuid)
+                                    // Returns >0 when the environment prefix still hosts
+                                    // plugins (or sibling activators) and was therefore
+                                    // NOT deleted — the row is gone but the prefix is kept.
+                                    val stillReferenced =
+                                        VstExecutableRegistry.remove(context, e.uuid)
                                     val updated = VstExecutableRegistry.read(context)
                                     withContext(Dispatchers.Main) {
                                         executables = updated
+                                        if (stillReferenced > 0) {
+                                            Toast.makeText(
+                                                context,
+                                                "Removed the manager, but kept its prefix — " +
+                                                    "$stillReferenced plugin(s) still use it. " +
+                                                    "Remove those plugins first to reclaim the space.",
+                                                Toast.LENGTH_LONG
+                                            ).show()
+                                        }
                                     }
                                 }
                             }
@@ -596,8 +616,9 @@ object VstExecutableRegistry {
             val name = extractString(o, "displayName")
             val exe  = extractString(o, "exePath")
             val pre  = extractString(o, "prefixPath")
+            val env  = extractString(o, "environmentId").ifEmpty { null }
             if (uuid.isNotEmpty() && exe.isNotEmpty() && pre.isNotEmpty()) {
-                entries.add(VstExecutableEntry(uuid, name, exe, pre))
+                entries.add(VstExecutableEntry(uuid, name, exe, pre, env))
             }
             i = objEnd + 1
         }
@@ -613,6 +634,8 @@ object VstExecutableRegistry {
             sb.append("\"displayName\":\"${esc(e.displayName)}\",")
             sb.append("\"exePath\":\"${esc(e.exePath)}\",")
             sb.append("\"prefixPath\":\"${esc(e.prefixPath)}\"")
+            // Emit environmentId only when set so legacy registries round-trip byte-identical.
+            if (e.environmentId != null) sb.append(",\"environmentId\":\"${esc(e.environmentId)}\"")
             sb.append("}")
             if (idx < entries.lastIndex) sb.append(",")
             sb.append("\n")
@@ -621,14 +644,30 @@ object VstExecutableRegistry {
         f.writeText(sb.toString())
     }
 
-    fun remove(context: Context, uuid: String) {
+    /** Remove the activator row. Returns the number of plugins still referencing
+     *  the prefix when [force] is false and the prefix is NOT deleted (caller
+     *  should warn/offer cascade); returns 0 when the prefix was deleted.
+     *
+     *  The prefix is deleted only when nothing else references it: no OTHER
+     *  activator shares the prefixPath AND no plugin's prefixPath points at it.
+     *  Otherwise removing one activator would orphan an environment that still
+     *  hosts plugins (or sibling activators) — the destructive bug the shared-
+     *  prefix model introduces. [force]=true cascades (caller is expected to
+     *  have removed the dependent plugins first). */
+    fun remove(context: Context, uuid: String, force: Boolean = false): Int {
         val all = read(context)
-        val target = all.firstOrNull { it.uuid == uuid } ?: return
+        val target = all.firstOrNull { it.uuid == uuid } ?: return 0
         write(context, all.filter { it.uuid != uuid })
-        // The executable's prefix is permanent (unlike installer templates),
-        // so deleting the registry entry also deletes the prefix on disk —
-        // otherwise we'd leak gigabytes of orphaned wineprefix data.
+
+        val otherActivators = all.any { it.uuid != uuid && it.prefixPath == target.prefixPath }
+        val referencingPlugins =
+            VstRegistry.read(context).count { it.prefixPath == target.prefixPath }
+        if (otherActivators) return referencingPlugins  // sibling activator still owns the prefix
+        if (referencingPlugins > 0 && !force) return referencingPlugins  // plugins still live there
+
+        // Safe to reclaim: no sibling activator and (no plugins OR forced cascade).
         File(target.prefixPath).deleteRecursively()
+        return 0
     }
 
     private fun esc(s: String): String =
