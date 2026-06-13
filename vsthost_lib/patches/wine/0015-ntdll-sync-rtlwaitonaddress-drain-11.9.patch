@@ -15,11 +15,21 @@ needs them to break its cross-thread SendMessage deadlock) run normally; only
 the deep runaway is capped, so BIAS FX 2 loads + runs audio instead of
 crashing, with no regression to the other plugins.
 
+
+2026-06-12: the infinite-CV path must NOT re-read the condition-variable
+generation after each 200ms drain tick. Re-reading adopted a generation
+bumped by a signal that fired while the sleeper was between waits (not in the
+futex queue) — that wake reached nobody and the re-read made the next
+compare_addr match, so the thread slept through its own signal FOREVER. Under
+Chromium/Electron (SleepConditionVariableSRW everywhere) this wedged IK
+Product Manager's renderer/IO threads mid sync-IPC (the "spinner"). Keep the
+original `value` across iterations so a signal landing in the drain/gap makes
+the next RtlWaitOnAddress return immediately — the correct CV semantic.
 diff --git a/dlls/ntdll/sync.c b/dlls/ntdll/sync.c
-index e118cbee86a..dd31dc1dc7e 100644
+index e118cbee86a..a3fe6221e84 100644
 --- a/dlls/ntdll/sync.c
 +++ b/dlls/ntdll/sync.c
-@@ -791,18 +791,84 @@ NTSTATUS WINAPI RtlSleepConditionVariableCS( RTL_CONDITION_VARIABLE *variable, R
+@@ -791,18 +791,91 @@ NTSTATUS WINAPI RtlSleepConditionVariableCS( RTL_CONDITION_VARIABLE *variable, R
   * NOTES
   *  the behaviour is undefined if the thread doesn't own the lock.
   */
@@ -97,7 +107,14 @@ index e118cbee86a..dd31dc1dc7e 100644
 +        if (status != STATUS_TIMEOUT) break;
 +        if (vstpoc_is_infinite) {
 +            vstpoc_drain_sent_messages();
-+            value = *(int *)&variable->Ptr;
++            /* Keep the ORIGINAL generation. Re-reading here adopted a
++             * generation bumped by a signal that fired while we were between
++             * waits (not in the futex queue) — that wake targeted nobody and
++             * the re-read made the next compare_addr match ⇒ the thread slept
++             * through its own signal FOREVER. Cost: IK PM renderer/IO threads
++             * wedged mid sync-IPC (the "spinner"). With the original value, a
++             * signal in the drain/gap makes the next WaitOnAddress return
++             * immediately, which is the correct CV semantic. */
 +            continue;
 +        }
 +        break;
@@ -105,7 +122,7 @@ index e118cbee86a..dd31dc1dc7e 100644
  
      if (flags & RTL_CONDITION_VARIABLE_LOCKMODE_SHARED)
          RtlAcquireSRWLockShared( lock );
-@@ -881,6 +947,12 @@ NTSTATUS WINAPI RtlWaitOnAddress( const void *addr, const void *cmp, SIZE_T size
+@@ -881,6 +954,12 @@ NTSTATUS WINAPI RtlWaitOnAddress( const void *addr, const void *cmp, SIZE_T size
      struct futex_queue *queue = get_futex_queue( addr );
      struct futex_entry entry;
      NTSTATUS ret;
@@ -118,7 +135,7 @@ index e118cbee86a..dd31dc1dc7e 100644
  
      TRACE("addr %p cmp %p size %#Ix timeout %s\n", addr, cmp, size, debugstr_timeout( timeout ));
  
-@@ -917,6 +989,15 @@ NTSTATUS WINAPI RtlWaitOnAddress( const void *addr, const void *cmp, SIZE_T size
+@@ -917,6 +996,15 @@ NTSTATUS WINAPI RtlWaitOnAddress( const void *addr, const void *cmp, SIZE_T size
          spin_unlock( &queue->lock );
      }
  
