@@ -201,12 +201,33 @@ Java_com_varcain_vsthost_NativeBridge_nativeStartInstaller(
             LOGI("nativeStartInstaller: .msi → msiexec /i %s (log %s)", dos.c_str(), logDos.c_str());
         }
         else {
-            /* Optional extra command-line args for direct .exe launches, one
-             * per line in <cache>/exe_args.txt — same no-rebuild spirit as
-             * wine_env.txt. Needed e.g. for Electron-based vendor managers
-             * (IK Product Manager) where '--disable-gpu' forces Chromium's
-             * software compositor when the GPU present path yields nothing.
-             * '#' lines skipped; absent file = no-op. */
+            /* vstpoc: Electron/CEF vendor managers (IK Product Manager, Native
+             * Access, …) render a WHITE WINDOW under wine unless Chromium's
+             * display compositor runs in-process — the GPU-process frame handoff
+             * breaks across wine. BAKE the fix (--disable-gpu --in-process-gpu)
+             * for any exe that ships an Electron resources/app.asar sibling, so
+             * it survives a data wipe (cache/exe_args.txt lives in the wiped
+             * cache dir). Plain installers (Inno/NSIS) have no app.asar → no
+             * flags → unaffected. See project_ik_product_manager_bringup. */
+            {
+                const size_t slash = exePath.find_last_of('/');
+                const std::string exeDir =
+                    (slash == std::string::npos) ? std::string(".") : exePath.substr(0, slash);
+                const bool isElectron =
+                    ::access((exeDir + "/resources/app.asar").c_str(), F_OK) == 0 ||
+                    ::access((exeDir + "/resources/electron.asar").c_str(), F_OK) == 0;
+                if (isElectron) {
+                    extraArgs.push_back("--disable-gpu");
+                    extraArgs.push_back("--in-process-gpu");
+                    LOGI("nativeStartInstaller: Electron app (resources/app.asar) "
+                         "→ baked --disable-gpu --in-process-gpu");
+                }
+            }
+            /* Optional EXTRA command-line args, one per line in
+             * <cache>/exe_args.txt — same no-rebuild spirit as wine_env.txt
+             * (e.g. --remote-debugging-port for diagnostics). Adds to the baked
+             * defaults; exact duplicates are skipped. '#' lines skipped; absent
+             * file = no-op. */
             std::ifstream af(jstr(jCacheDir) + "/exe_args.txt");
             std::string line;
             while (std::getline(af, line)) {
@@ -214,10 +235,12 @@ Java_com_varcain_vsthost_NativeBridge_nativeStartInstaller(
                 if (b == std::string::npos || line[b] == '#') continue;
                 size_t e = line.find_last_not_of(" \t\r\n");
                 std::string arg = line.substr(b, e - b + 1);
-                if (!arg.empty()) {
-                    extraArgs.push_back(arg);
-                    LOGI("nativeStartInstaller: extra exe arg: %s", arg.c_str());
-                }
+                if (arg.empty()) continue;
+                bool dup = false;
+                for (const std::string& a : extraArgs) if (a == arg) { dup = true; break; }
+                if (dup) continue;
+                extraArgs.push_back(arg);
+                LOGI("nativeStartInstaller: extra exe arg: %s", arg.c_str());
             }
         }
     }
