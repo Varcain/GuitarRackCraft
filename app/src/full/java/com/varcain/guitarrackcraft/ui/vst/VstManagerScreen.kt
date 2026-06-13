@@ -203,6 +203,10 @@ fun VstManagerScreen(onNavigateBack: () -> Unit) {
                     items(entries, key = { "vst-${it.uuid}" }) { e ->
                         VstRow(
                             entry = e,
+                            environmentLabel = e.prefixPath?.let { p ->
+                                executables.firstOrNull { it.prefixPath == p }?.displayName
+                                    ?: "shared"
+                            },
                             onOpenEditor = {
                                 openVstEditor(context, e.uuid)
                             },
@@ -225,14 +229,14 @@ fun VstManagerScreen(onNavigateBack: () -> Unit) {
                 item {
                     Spacer(Modifier.height(16.dp))
                     Text(
-                        "Executables",
+                        "Activation environments",
                         style = MaterialTheme.typography.titleMedium
                     )
                     Spacer(Modifier.height(4.dp))
                     Text(
-                        "Plugin managers (IK Multimedia, Native Access, etc.). Launch one " +
-                        "to install more plugins; closing the manager scans its prefix and " +
-                        "prompts you to import any newly-installed VSTs.",
+                        "Plugin managers (IK Multimedia, Native Access, etc.). Each hosts its " +
+                        "plugins in one prefix so licences stay live — open one to install " +
+                        "more or re-validate; closing it scans the prefix for new plugins.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -250,6 +254,7 @@ fun VstManagerScreen(onNavigateBack: () -> Unit) {
                     items(executables, key = { "exe-${it.uuid}" }) { e ->
                         ExecutableRow(
                             entry = e,
+                            pluginCount = entries.count { it.prefixPath == e.prefixPath },
                             onLaunch = {
                                 installerVm.launchExecutable(e)
                             },
@@ -325,6 +330,9 @@ fun VstManagerScreen(onNavigateBack: () -> Unit) {
 @Composable
 private fun VstRow(
     entry: VstRegistryEntry,
+    /** Display name of the activation environment this plugin lives in (its
+     *  manager), or null for a standalone (legacy) plugin in its own prefix. */
+    environmentLabel: String?,
     onOpenEditor: () -> Unit,
     onRemove: () -> Unit,
 ) {
@@ -337,6 +345,12 @@ private fun VstRow(
                  maxLines = 1, overflow = TextOverflow.Ellipsis)
             Text("${entry.format} · ${if (entry.is64Bit) "x64" else "x86"}",
                  style = MaterialTheme.typography.bodySmall)
+            if (environmentLabel != null) {
+                Text("in $environmentLabel environment",
+                     style = MaterialTheme.typography.labelSmall,
+                     color = MaterialTheme.colorScheme.primary,
+                     maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
         }
         IconButton(onClick = onOpenEditor) {
             Icon(Icons.Default.OpenInNew, contentDescription = "Open ${entry.displayName} editor")
@@ -350,6 +364,8 @@ private fun VstRow(
 @Composable
 private fun ExecutableRow(
     entry: VstExecutableEntry,
+    /** Number of plugins running in this activator's environment prefix. */
+    pluginCount: Int,
     onLaunch: () -> Unit,
     onRemove: () -> Unit,
 ) {
@@ -360,11 +376,17 @@ private fun ExecutableRow(
         Column(modifier = Modifier.weight(1f)) {
             Text(entry.displayName, style = MaterialTheme.typography.bodyLarge,
                  maxLines = 1, overflow = TextOverflow.Ellipsis)
-            Text("Executable",
-                 style = MaterialTheme.typography.bodySmall)
+            Text(
+                if (pluginCount > 0)
+                    "Activation environment · $pluginCount plugin${if (pluginCount == 1) "" else "s"}"
+                else "Activation environment",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
         IconButton(onClick = onLaunch) {
-            Icon(Icons.Default.PlayArrow, contentDescription = "Launch ${entry.displayName}")
+            Icon(Icons.Default.PlayArrow,
+                 contentDescription = "Open / re-validate ${entry.displayName}")
         }
         IconButton(onClick = onRemove) {
             Icon(Icons.Default.Delete, contentDescription = "Remove ${entry.displayName}")
