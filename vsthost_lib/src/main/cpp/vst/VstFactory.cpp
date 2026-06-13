@@ -31,9 +31,13 @@ namespace {
 // end-to-end (writer is :app Kotlin in Phase D). NOT a general JSON parser.
 // Schema:
 //   {"plugins":[
-//      {"uuid":"...","displayName":"...","format":"VST2","dllPath":"...","is64Bit":true},
+//      {"uuid":"...","displayName":"...","format":"VST2","dllPath":"...",
+//       "prefixPath":"...",  // OPTIONAL — shared environment prefix; omitted => legacy
+//       "is64Bit":true},
 //      ...
 //   ]}
+// NOTE: this naive parser ends each object at the first '}', so values must
+// never contain braces. prefixPath is a plain unix path — keep it that way.
 // We scan for object-open '{' inside "plugins":[ ... ] and pull the next
 // string value for each named key, plus a true/false for is64Bit.
 std::string extractString(const std::string& s, const std::string& key, size_t from) {
@@ -99,6 +103,7 @@ bool VstFactory::loadRegistry() {
         e.displayName = extractString(objStr, "displayName", 0);
         e.format      = extractString(objStr, "format",      0);
         e.dllPath     = extractString(objStr, "dllPath",     0);
+        e.prefixPath  = extractString(objStr, "prefixPath",  0);  // empty => legacy wineprefix_v<uuid>
         e.is64Bit     = extractBool  (objStr, "is64Bit",     0, true);
 
         if (!e.uuid.empty() && !e.dllPath.empty()) {

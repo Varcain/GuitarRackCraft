@@ -17,6 +17,10 @@ struct RegistryEntry {
     std::string displayName;
     std::string format;     // "VST2" or "VST3"
     std::string dllPath;    // absolute path to the imported plugin DLL
+    /** Optional: absolute path of the wineprefix this plugin runs in (its
+     *  shared "activation environment" — the prefix a manager/activator
+     *  installed it into). Empty = legacy derivation wineprefix_v<uuid>. */
+    std::string prefixPath;
     bool is64Bit = true;
 };
 

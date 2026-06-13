@@ -25,6 +25,24 @@
 
 namespace {
 
+// vstpoc: the WM-storm throttle knobs (WINE_VSTPOC_COALESCE_POSTS /
+// USER_STORM_BREAK / POST_GAP_MS) are LOAD-BEARING for JUCE plugin editors
+// (TH-U/X50 WM_USER+123 storms) but a ~100x latency tax for Chromium/Electron
+// managers — their message pump self-wakes by re-posting the same WM, which
+// our coalescer mistakes for a storm (see feedback_wm_throttle_chromium_tax).
+// The knobs are read ONCE by the wineserver, which is SHARED per prefix, so
+// the choice can't be per-flow — only per-prefix-KIND. A v-prefix hosts a
+// standalone plugin (throttles ON); an e-/installer-prefix hosts an Electron
+// manager (+ any plugins installed into that environment) and runs throttles
+// OFF. Residual: a storm-prone JUCE plugin living in an environment runs
+// unthrottled — accepted (VSTPOC_LOAD_ON_EDITOR_THREAD covers the known cases).
+bool vstpocIsPluginPrefix(const std::string& winePrefix) {
+    size_t slash = winePrefix.find_last_of('/');
+    const std::string base =
+        (slash == std::string::npos) ? winePrefix : winePrefix.substr(slash + 1);
+    return base.rfind("wineprefix_v", 0) == 0;
+}
+
 // PerformanceHint API (libandroid.so, API 33+). Resolved at runtime via
 // dlsym since minSdk=27 — we can't link against the symbols directly.
 // All three are no-ops on older Android (the create call returns null).
@@ -449,22 +467,15 @@ void WineHostProcess::setupWineEnvChild(const Config& cfg) {
      * posts per exact (hwnd,msg,wparam,lparam) at this threshold; distinct
      * callback pointers remain queued. Read once by wineserver at start —
      * wineserver MUST be killed for a change to take effect. */
-    ::setenv("WINE_VSTPOC_COALESCE_POSTS", "1", 1);
-    /* vstpoc storm breaker: X50II's JUCE menu self-feeds WM_USER+123 on its
-     * MessageManager thread (distinct lparams, so the coalescer above can't
-     * catch it) → wineserver+guest spin, UI freezes, audio xruns. Duty-cycle:
-     * when a queue delivers >N WM_USER+ posts/second, suppress that channel
-     * for 250ms so input/sent/paint interleave (a dismiss click then kills
-     * the storm at its source). 500/s is ~5x JUCE's legit repaint burst rate.
-     * Read once by wineserver at start. See queue.c vstpoc_storm_account. */
-    ::setenv("WINE_VSTPOC_USER_STORM_BREAK", "500", 1);
-    /* patch 030 ON: time-throttle posted WM_USER+N delivery. TH-U's JUCE
-     * editor-layout WM_USER+123 ping-pong relayouts every child window, each
-     * grabbing win_data_mutex — starving the editor thread that needs one
-     * acquisition to create the editor host window (editor never appears).
-     * 5ms gap leaves win_data_mutex idle windows for the editor to win.
-     * Read once by wineserver at start — kill wineserver to apply. */
-    ::setenv("WINE_VSTPOC_POST_GAP_MS", "50", 1);
+    /* vstpoc patch 028 + storm breaker (0046) + post-gap (030): gate on prefix
+     * KIND — plugin (v) prefixes keep them ON (JUCE storms); manager/Electron
+     * (e/installer) prefixes turn them OFF (the Chromium ~100x msg-pump tax).
+     * See vstpocIsPluginPrefix + feedback_wm_throttle_chromium_tax. Read once
+     * by the shared-per-prefix wineserver — kill wineserver to apply. */
+    const bool vstpocPluginPfx = vstpocIsPluginPrefix(cfg.winePrefix);
+    ::setenv("WINE_VSTPOC_COALESCE_POSTS",   vstpocPluginPfx ? "1"   : "0", 1);
+    ::setenv("WINE_VSTPOC_USER_STORM_BREAK", vstpocPluginPfx ? "500" : "0", 1);
+    ::setenv("WINE_VSTPOC_POST_GAP_MS",      vstpocPluginPfx ? "50"  : "0", 1);
     /* TH-U editor deadlock fix: drop win_data_mutex across the cross-thread send
      * in winex11 WM_STATE/_XEMBED PropertyNotify handlers. Default off in wine;
      * we enable it here. Benign for plugins that don't hit the deadlock. */
@@ -977,13 +988,15 @@ bool WineHostProcess::start() {
          * IS a WM_USER+123 storm livelock (watchdog: 5 threads futex-blocked
          * on win_data_mutex, editor never finishes CreateWindowExA → "Loading
          * editor…"). Coalesce caps the post flood so the lock frees up. */
-        ::setenv("WINE_VSTPOC_COALESCE_POSTS", "1", 1); /* patch 028 ON */
-        /* patch 0046 ON: duty-cycle breaker for sustained WM_USER self-feed
-         * (X50II menu storm). 500/s threshold ≈ 5x JUCE's legit repaint burst
-         * rate; storms run >1000/s. See the setupWineEnvChild copy + queue.c. */
-        ::setenv("WINE_VSTPOC_USER_STORM_BREAK", "500", 1);
+        /* vstpoc: gate the WM-storm throttles on prefix KIND — plugin (v)
+         * prefixes ON (JUCE storms), manager/Electron (e/installer) prefixes
+         * OFF (Chromium msg-pump tax). MUST match the setupWineEnvChild copy
+         * above (the dual-env-block trap). See feedback_wm_throttle_chromium_tax. */
+        const bool vstpocPluginPfx = vstpocIsPluginPrefix(cfg_.winePrefix);
+        ::setenv("WINE_VSTPOC_COALESCE_POSTS",   vstpocPluginPfx ? "1"   : "0", 1);
+        ::setenv("WINE_VSTPOC_USER_STORM_BREAK", vstpocPluginPfx ? "500" : "0", 1);
         ::setenv("WINE_VSTPOC_TIMER_GAP_MS",   "0", 1);  /* patch 029 off (code not ported) */
-        ::setenv("WINE_VSTPOC_POST_GAP_MS",    "50", 1);  /* patch 030 ON: WM_USER+N throttle @50ms (win_data_mutex starvation fix) */
+        ::setenv("WINE_VSTPOC_POST_GAP_MS",      vstpocPluginPfx ? "50"  : "0", 1);
         ::setenv("WINE_VSTPOC_WM_STATE_UNLOCK","1", 1);  /* TH-U editor: drop lock across cross-thread send */
         // vstpoc 2026-05-25 (later 4): patches 031 (defer-focus) and
         // 032 (fingerprint-filter) were added for VST2-era TH-U

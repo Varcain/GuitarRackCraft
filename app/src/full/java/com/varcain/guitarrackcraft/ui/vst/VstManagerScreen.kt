@@ -43,6 +43,12 @@ data class VstRegistryEntry(
     val format: String,   // "VST2" or "VST3"
     val dllPath: String,
     val is64Bit: Boolean,
+    /** Absolute path of the shared "activation environment" wineprefix this
+     *  plugin runs in (a manager's wineprefix_e<uuid> it was installed into).
+     *  null => legacy per-plugin prefix wineprefix_v<uuid> (the engine derives
+     *  it from uuid). Only emitted to JSON when non-null so legacy registries
+     *  round-trip byte-identical. */
+    val prefixPath: String? = null,
 )
 
 /** One installed "manager" / launcher .exe (IK Multimedia Product Manager,
@@ -442,8 +448,9 @@ object VstRegistry {
             val fmt  = extractString(o, "format").ifEmpty { "VST2" }
             val dll  = extractString(o, "dllPath")
             val x64  = extractBool(o, "is64Bit", true)
+            val prefix = extractString(o, "prefixPath").ifEmpty { null }
             if (uuid.isNotEmpty() && dll.isNotEmpty()) {
-                entries.add(VstRegistryEntry(uuid, name, fmt, dll, x64))
+                entries.add(VstRegistryEntry(uuid, name, fmt, dll, x64, prefix))
             }
             i = objEnd + 1
         }
@@ -459,6 +466,8 @@ object VstRegistry {
             sb.append("\"displayName\":\"${esc(e.displayName)}\",")
             sb.append("\"format\":\"${esc(e.format)}\",")
             sb.append("\"dllPath\":\"${esc(e.dllPath)}\",")
+            // Emit prefixPath only when set so legacy registries round-trip byte-identical.
+            if (e.prefixPath != null) sb.append("\"prefixPath\":\"${esc(e.prefixPath)}\",")
             sb.append("\"is64Bit\":${e.is64Bit}")
             sb.append("}")
             if (idx < entries.lastIndex) sb.append(",")

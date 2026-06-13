@@ -64,7 +64,13 @@ void WineVstPlugin::activate(float sampleRate, uint32_t bufferSize) {
     cfg.wineBinary        = wineRoot_ + "/bin/wine";
     cfg.wineserverBinary  = wineRoot_ + "/bin/wineserver";
     cfg.wineDllPath       = wineRoot_ + "/lib/wine/aarch64-windows";
-    cfg.winePrefix        = filesDir_ + "/wineprefix_v" + entry_.uuid;
+    // Shared "activation environment" prefix (manager-installed plugins point
+    // at their environment's wineprefix_e<uuid>); empty => legacy per-plugin
+    // wineprefix_v<uuid>. shm/picker/display stay keyed by uuid (see below) so
+    // two plugins sharing a prefix still get distinct IPC + X11 displays.
+    cfg.winePrefix        = entry_.prefixPath.empty()
+                              ? (filesDir_ + "/wineprefix_v" + entry_.uuid)
+                              : entry_.prefixPath;
     // Use the 64-bit host for x86_64 PE plugins, 32-bit host otherwise.
     cfg.primaryExe        = assetsDir_ + (entry_.is64Bit ? "/vst_host.exe" : "/vst_host_x86.exe");
     cfg.shmPath           = shmPath;
