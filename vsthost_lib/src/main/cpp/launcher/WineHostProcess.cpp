@@ -491,6 +491,19 @@ void WineHostProcess::setupWineEnvChild(const Config& cfg) {
      * wine_env.txt (VSTPOC_REGCACHE=1). Read per process by ntdll; no wineserver
      * restart needed. See feedback_amplitube_registry_heartbeat. */
     ::setenv("VSTPOC_REGCACHE", vstpocPluginPfx ? "0" : "1", 1);
+    /* vstpoc: GPU present (winex11 patch 0048). Ship the editor's rendered
+     * AHardwareBuffer GPU->GPU to the X server over the AHB side-channel +
+     * present fence, composited zero-copy, instead of CPU readback + full-frame
+     * XPutImage over the socket. Removed ~31% of the CPU during BIAS knob-drag
+     * (the VU meters stay fluid; does NOT change the knob fps, which is gated
+     * upstream by the emulated DXVK/Turnip/libcef render pipeline). Only
+     * Vulkan/DXVK editors use this path (GL editors use win32u readback, GDI use
+     * XPutImage — both unaffected); graceful per-frame fallback to readback if
+     * the channel/buffer fails. Scoped to non-plugin (e/installer) prefixes
+     * where BIAS + the managers live (BIAS verified); v-prefix Vulkan editors
+     * (TONEX/TH-U) stay on readback until render-verified. Opt out via
+     * wine_env.txt (VSTPOC_AHB_PRESENT=0). See feedback_bias_knob_drag_gpu_latency. */
+    ::setenv("VSTPOC_AHB_PRESENT", vstpocPluginPfx ? "0" : "1", 1);
     /* TH-U editor deadlock fix: drop win_data_mutex across the cross-thread send
      * in winex11 WM_STATE/_XEMBED PropertyNotify handlers. Default off in wine;
      * we enable it here. Benign for plugins that don't hit the deadlock. */
@@ -1017,6 +1030,11 @@ bool WineHostProcess::start() {
          * setupWineEnvChild copy above (dual-env-block trap). Kills AmpliTube's
          * ~7000/sec registry-IPC heartbeat. See feedback_amplitube_registry_heartbeat. */
         ::setenv("VSTPOC_REGCACHE", vstpocPluginPfx ? "0" : "1", 1);
+        /* vstpoc: GPU present (winex11 patch 0048) — e/installer prefixes ON,
+         * v-prefix OFF. Ships the editor AHB GPU->GPU (zero-copy) vs CPU readback
+         * + XPutImage. MUST match the setupWineEnvChild copy above (dual-block
+         * trap). BIAS verified. See feedback_bias_knob_drag_gpu_latency. */
+        ::setenv("VSTPOC_AHB_PRESENT", vstpocPluginPfx ? "0" : "1", 1);
         ::setenv("WINE_VSTPOC_WM_STATE_UNLOCK","1", 1);  /* TH-U editor: drop lock across cross-thread send */
         // vstpoc 2026-05-25 (later 4): patches 031 (defer-focus) and
         // 032 (fingerprint-filter) were added for VST2-era TH-U
