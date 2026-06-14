@@ -18,12 +18,9 @@
 #   8b. build-mesa-zink.sh    — desktop-GL libs (zink→Turnip) → mesa-zink-libs.tar.gz
 #   8c. fetch-turnip-libs.sh  — Adreno Vulkan driver + Khronos loader → turnip-libs.tar.gz
 #   9.  build-vst-host.sh     — vst_host.exe + vst_host_x86.exe (PE guests)
+#   9b. build-vst3-host.sh    — vst3_host.exe (VST3 hosting; needs vst3sdk submodule)
 #   10. build-uihost-stub.sh  — touch-keyboard COM stubs
 #   11. pack-wine-fex.py      — stage everything into src/main/{jniLibs,assets}
-#
-# Steps not invoked here (run manually if needed):
-#   - build-vst3-host.sh — requires external/vst3sdk/ (not a submodule yet;
-#     fetch from steinbergmedia/vst3sdk if you need VST3 hosting).
 #
 # Requirements (one-time host setup):
 #   - Android NDK r26.1 at $ANDROID_NDK or $HOME/Android/Sdk/ndk/26.1.10909125
@@ -110,6 +107,18 @@ fi
 
 step 9  "build-vst-host (vst_host.exe + vst_host_x86.exe)"
 run_step build-vst-host.sh
+
+step 9b "build-vst3-host (vst3_host.exe — VST3 hosting)"
+# vst3_host.exe is REQUIRED for VST3 plugins (BIAS / AmpliTube / TONEX) and is
+# gitignored. external/vst3sdk is a submodule now, so build it as part of the
+# pipeline; skip gracefully if the submodule wasn't checked out (preserves the
+# old "build-all works without vst3sdk" behavior).
+if [ -d "$REPO/external/vst3sdk/public.sdk" ]; then
+    run_step build-vst3-host.sh
+else
+    echo "  (skipped — external/vst3sdk not checked out; VST3 plugins won't work."
+    echo "   run: git submodule update --init vsthost_lib/external/vst3sdk)"
+fi
 
 step 10 "build-uihost-stub (touch-keyboard COM stubs)"
 run_step build-uihost-stub.sh

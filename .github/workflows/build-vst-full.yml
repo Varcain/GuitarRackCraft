@@ -66,7 +66,8 @@ jobs:
             python3 python3-pip python3-mako \
             ocaml ocamlbuild ocaml-findlib libnum-ocaml-dev faust libboost-dev \
             libx11-dev libxext-dev libxrender-dev libxrandr-dev libxi-dev \
-            libxfixes-dev libxcursor-dev
+            libxfixes-dev libxcursor-dev \
+            fonts-liberation fonts-dejavu   # wine font substitution (fetch-x11-libs copies these)
 
       # ── 3. JDK 17 ────────────────────────────────────────────────────────
       - name: Set up JDK 17
@@ -175,8 +176,10 @@ jobs:
           ccache --set-config=compression=true
           ccache --zero-stats
 
-      # ── 6. Build the vsthost VST stack (wine/FEX/DXVK/Mesa + VST2 host) ───
-      #     12-step pipeline; rebuilds FEX clean from source. NDK 26.1.
+      # ── 6. Build the vsthost VST stack: wine/FEX/DXVK/Mesa-Zink + Turnip +
+      #     the VST2 & VST3 hosts. build-all.sh now also fetches Turnip
+      #     (turnip-libs.tar.gz) and builds vst3_host.exe. FEX rebuilt clean
+      #     from source. NDK 26.1.
       - name: Build vsthost (build-all.sh)
         env:
           ANDROID_NDK: ${{ env.ANDROID_SDK_ROOT }}/ndk/${{ env.NDK_VSTHOST }}
@@ -184,14 +187,7 @@ jobs:
           cd vsthost_lib
           bash scripts/build-all.sh
 
-      # ── 7. Build the VST3 host (NOT in build-all.sh; needs vst3sdk) ───────
-      #     Required for BIAS / AmpliTube / TONEX (VST3). -> assets/vst3_host.exe
-      - name: Build VST3 host
-        run: |
-          cd vsthost_lib
-          bash scripts/build-vst3-host.sh
-
-      # ── 8. Build the LV2/native side (app jniLibs/assets). NDK 27.2. ─────
+      # ── 7. Build the LV2/native side (app jniLibs/assets). NDK 27.2. ─────
       - name: Build native libraries (build.sh full)
         env:
           ANDROID_NDK: ${{ env.ANDROID_SDK_ROOT }}/ndk/${{ env.NDK_NATIVE }}
