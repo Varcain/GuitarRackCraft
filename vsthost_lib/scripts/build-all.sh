@@ -15,6 +15,8 @@
 #   6.  build-wine-android.sh — wine Unix side for arm64 Bionic
 #   7.  build-fex-pe.sh       — FEX-Emu PE DLLs (libarm64ecfex / libwow64fex)
 #   8.  build-dxvk.sh         — DXVK D3D-to-Vulkan translation DLLs
+#   8b. build-mesa-zink.sh    — desktop-GL libs (zink→Turnip) → mesa-zink-libs.tar.gz
+#   8c. fetch-turnip-libs.sh  — Adreno Vulkan driver + Khronos loader → turnip-libs.tar.gz
 #   9.  build-vst-host.sh     — vst_host.exe + vst_host_x86.exe (PE guests)
 #   10. build-uihost-stub.sh  — touch-keyboard COM stubs
 #   11. pack-wine-fex.py      — stage everything into src/main/{jniLibs,assets}
@@ -88,6 +90,23 @@ run_step build-dxvk.sh
 
 step 8b "build-mesa-zink (desktop-GL libs for JUCE GL editors → mesa-zink-libs.tar.gz)"
 run_step build-mesa-zink.sh
+
+step 8c "fetch-turnip (Adreno Vulkan driver + Khronos loader → turnip-libs.tar.gz)"
+run_step fetch-turnip-libs.sh
+# fetch-turnip-libs only STAGES into toolchain/turnip-libs/ (it's a fetch script,
+# like fetch-x11-libs). Bundle that into the runtime asset here, with bare SONAME
+# filenames (no leading dir) so WineSetup.extractTurnipLibs drops them straight
+# into <wine>/turnip/. Without this asset DXVK falls back to the proprietary
+# Adreno driver → D3D11 plugins (BIAS / AmpliTube) render blank.
+turnip_out="$REPO/toolchain/turnip-libs"
+turnip_asset="$REPO/src/main/assets/turnip-libs.tar.gz"
+if [ -d "$turnip_out" ] && [ -n "$(ls -A "$turnip_out" 2>/dev/null)" ]; then
+    ( cd "$turnip_out" && tar czf "$turnip_asset" * )
+    echo "  → $turnip_asset ($(du -h "$turnip_asset" | cut -f1))"
+else
+    echo "build-all FAILED: fetch-turnip-libs produced no files in $turnip_out" >&2
+    exit 1
+fi
 
 step 9  "build-vst-host (vst_host.exe + vst_host_x86.exe)"
 run_step build-vst-host.sh
