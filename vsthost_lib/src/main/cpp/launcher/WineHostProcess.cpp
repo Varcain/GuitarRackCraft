@@ -476,6 +476,21 @@ void WineHostProcess::setupWineEnvChild(const Config& cfg) {
     ::setenv("WINE_VSTPOC_COALESCE_POSTS",   vstpocPluginPfx ? "1"   : "0", 1);
     ::setenv("WINE_VSTPOC_USER_STORM_BREAK", vstpocPluginPfx ? "500" : "0", 1);
     ::setenv("WINE_VSTPOC_POST_GAP_MS",      vstpocPluginPfx ? "50"  : "0", 1);
+    /* vstpoc: registry open-handle cache (ntdll patch 0053). Heavy IK plugins
+     * (AmpliTube 5) re-open the same key chain (HKLM\SOFTWARE\IK Multimedia\
+     * AmpliTube 5) and re-query their license serial ~7000x/sec as a runtime
+     * heartbeat; on Windows that is in-process + free, but under wine every
+     * NtOpenKey/NtClose is a wineserver IPC round-trip, FEX-amplified -> a
+     * constant UI-thread storm (~14000 write-syscalls/sec, idle). The cache
+     * keeps recently-opened key handles alive across the app's close/reopen and
+     * returns them without a server call (NtClose on a cached key handle is a
+     * no-op); it eliminated ~93% of the registry server calls on AmpliTube
+     * (~14000 -> ~1500/sec). Scoped to non-plugin (e/installer) prefixes where
+     * the IK managers + their plugins live; the delicate v-prefix JUCE plugins
+     * are left untouched (cache unvalidated there) and can opt in via
+     * wine_env.txt (VSTPOC_REGCACHE=1). Read per process by ntdll; no wineserver
+     * restart needed. See feedback_amplitube_registry_heartbeat. */
+    ::setenv("VSTPOC_REGCACHE", vstpocPluginPfx ? "0" : "1", 1);
     /* TH-U editor deadlock fix: drop win_data_mutex across the cross-thread send
      * in winex11 WM_STATE/_XEMBED PropertyNotify handlers. Default off in wine;
      * we enable it here. Benign for plugins that don't hit the deadlock. */
@@ -997,6 +1012,11 @@ bool WineHostProcess::start() {
         ::setenv("WINE_VSTPOC_USER_STORM_BREAK", vstpocPluginPfx ? "500" : "0", 1);
         ::setenv("WINE_VSTPOC_TIMER_GAP_MS",   "0", 1);  /* patch 029 off (code not ported) */
         ::setenv("WINE_VSTPOC_POST_GAP_MS",      vstpocPluginPfx ? "50"  : "0", 1);
+        /* vstpoc: registry open-handle cache (ntdll patch 0053) — non-plugin
+         * (e/installer) prefixes ON, v-prefix plugins OFF. MUST match the
+         * setupWineEnvChild copy above (dual-env-block trap). Kills AmpliTube's
+         * ~7000/sec registry-IPC heartbeat. See feedback_amplitube_registry_heartbeat. */
+        ::setenv("VSTPOC_REGCACHE", vstpocPluginPfx ? "0" : "1", 1);
         ::setenv("WINE_VSTPOC_WM_STATE_UNLOCK","1", 1);  /* TH-U editor: drop lock across cross-thread send */
         // vstpoc 2026-05-25 (later 4): patches 031 (defer-focus) and
         // 032 (fingerprint-filter) were added for VST2-era TH-U

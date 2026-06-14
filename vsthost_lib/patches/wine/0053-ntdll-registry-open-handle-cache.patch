@@ -1,0 +1,258 @@
+From: Kamil Lulko <limakzagan@gmail.com>
+Subject: ntdll: optional registry open-handle cache (VSTPOC_REGCACHE)
+
+Heavy plugins re-open the same registry key chain and re-query a value
+thousands of times/sec as a runtime license/component heartbeat, closing the
+handles each cycle. AmpliTube 5 polls HKLM\SOFTWARE\IK Multimedia\AmpliTube 5
+\UserSerial ~7000x/sec while idle: open \Registry\Machine -> SOFTWARE -> IK
+Multimedia -> AmpliTube 5 -> NtQueryValueKey -> close x3 -> repeat. On Windows
+the registry is in-process and this is free; under wine every NtOpenKey/NtClose
+is a wineserver IPC round-trip, wrapped in sigprocmask and FEX-amplified, so it
+became a constant UI-thread storm (~14000 write-syscalls/sec, idle; simpleperf:
+38% of the message thread in wine_server_call -> NtOpenKeyEx/NtQueryValueKey).
+Seeding the missing serial did NOT stop it -- the poll is unconditional.
+
+With VSTPOC_REGCACHE=1 (off by default; opt-in per process) ntdll keeps
+recently-opened key handles alive and returns them on re-open with no server
+call; the matching NtClose on a cached key handle is a no-op (the cache owns the
+handle). Borrow-counted so a handle the app still holds open is never evicted
+from under it; bounded (256), and evicted unborrowed handles are really closed;
+NtDeleteKey drops the handle. Only key HANDLES are cached -- value reads still
+hit the server, so registry contents stay coherent. This eliminated ~93% of the
+registry server calls on AmpliTube (~14000 -> ~1500 write-syscalls/sec) and the
+periodic UI lag. Opens are dominant (re-open + re-close each cycle); not caching
+values keeps correctness simple. Enabled by WineHostProcess for non-plugin
+(e/installer) prefixes only; the delicate v-prefix JUCE plugins are left on the
+stock path (unvalidated) and can opt in via wine_env.txt. (vstpoc)
+
+diff --git a/dlls/ntdll/unix/registry.c b/dlls/ntdll/unix/registry.c
+index da1c2e112c4..922bef279c1 100644
+--- a/dlls/ntdll/unix/registry.c
++++ b/dlls/ntdll/unix/registry.c
+@@ -26,7 +26,9 @@
+ #endif
+ 
+ #include <stdarg.h>
++#include <stdlib.h>
+ #include <string.h>
++#include <pthread.h>
+ 
+ #include "ntstatus.h"
+ #include "winternl.h"
+@@ -39,6 +41,137 @@ WINE_DEFAULT_DEBUG_CHANNEL(reg);
+ #define MAX_VALUE_LENGTH (16383 * sizeof(WCHAR))
+ 
+ 
++/* ====================================================================
++ *  vstpoc registry open-handle cache  (VSTPOC_REGCACHE=1; off by default)
++ *
++ *  Heavy plugins (e.g. AmpliTube 5) re-open the same key chain
++ *  (\Registry\Machine\SOFTWARE\IK Multimedia\AmpliTube 5) and re-query a
++ *  value thousands of times/sec as a license/component heartbeat, closing
++ *  the handles each cycle. On Windows that is in-process and free; under
++ *  wine every NtOpenKey / NtClose is a wineserver IPC round-trip, FEX-
++ *  amplified -> a constant UI-thread storm. When enabled we keep recently
++ *  opened key handles alive and return them on re-open without a server
++ *  call; the matching NtClose becomes a no-op (the cache owns the handle).
++ *  Borrow-counted so a handle the app still holds open is never evicted
++ *  from under it; bounded, evicted unborrowed handles are really closed.
++ *  Handles only — values are not cached (they still hit the server), so
++ *  reads stay coherent. Off by default; opt-in per process via the env var.
++ * ==================================================================== */
++#define REGC_OPEN_MAX  256
++#define REGC_NAME_MAX  256          /* WCHARs (512 bytes); longer names not cached */
++
++struct regc_open
++{
++    int          valid;
++    int          borrowed;          /* # live references the app currently holds */
++    HANDLE       parent;
++    ACCESS_MASK  access;
++    ULONG        attributes;
++    HANDLE       handle;            /* cache-owned, kept open */
++    unsigned int name_len;          /* bytes */
++    WCHAR        name[REGC_NAME_MAX];
++};
++
++static int              regc_mode = -1;
++static pthread_mutex_t  regc_mutex = PTHREAD_MUTEX_INITIALIZER;
++static struct regc_open regc_tab[REGC_OPEN_MAX];
++
++static int regc_on(void)
++{
++    if (regc_mode < 0)
++    {
++        const char *e = getenv( "VSTPOC_REGCACHE" );
++        regc_mode = (e && e[0] == '1') ? 1 : 0;
++    }
++    return regc_mode;
++}
++
++static void regc_server_close( HANDLE handle )
++{
++    SERVER_START_REQ( close_handle )
++    {
++        req->handle = wine_server_obj_handle( handle );
++        wine_server_call( req );
++    }
++    SERVER_END_REQ;
++}
++
++/* caller holds regc_mutex; returns the cached handle (and bumps borrow) or 0 */
++static HANDLE regc_get( HANDLE parent, ACCESS_MASK access, ULONG attributes,
++                        const WCHAR *name, unsigned int name_len )
++{
++    unsigned int i;
++    for (i = 0; i < REGC_OPEN_MAX; i++)
++    {
++        struct regc_open *e = &regc_tab[i];
++        if (e->valid && e->parent == parent && e->access == access &&
++            e->attributes == attributes && e->name_len == name_len &&
++            !memcmp( e->name, name, name_len ))
++        {
++            e->borrowed++;
++            return e->handle;
++        }
++    }
++    return 0;
++}
++
++/* caller holds regc_mutex; cache a freshly-opened handle (borrow=1). If cached
++ * the cache OWNS `handle` (caller must not close it). No-op if no free/unborrowed
++ * slot (caller then keeps + closes it normally). */
++static void regc_put( HANDLE parent, ACCESS_MASK access, ULONG attributes,
++                      const WCHAR *name, unsigned int name_len, HANDLE handle )
++{
++    unsigned int i, victim = REGC_OPEN_MAX;
++    struct regc_open *e;
++    if (name_len > sizeof(regc_tab[0].name)) return;
++    for (i = 0; i < REGC_OPEN_MAX; i++)
++    {
++        if (!regc_tab[i].valid) { victim = i; break; }
++        if (victim == REGC_OPEN_MAX && regc_tab[i].borrowed == 0) victim = i;
++    }
++    if (victim == REGC_OPEN_MAX) return;            /* every slot actively borrowed */
++    e = &regc_tab[victim];
++    if (e->valid) regc_server_close( e->handle );   /* really close the evicted, unborrowed handle */
++    e->valid = 1; e->borrowed = 1;
++    e->parent = parent; e->access = access; e->attributes = attributes;
++    e->handle = handle; e->name_len = name_len;
++    memcpy( e->name, name, name_len );
++}
++
++/* NtClose hook: if `handle` is cache-owned, drop one borrow + keep it alive
++ * (skip the real close). Returns TRUE to tell NtClose to do nothing. */
++BOOL reg_cache_close_hook( HANDLE handle )
++{
++    unsigned int i;
++    if (!regc_on()) return FALSE;
++    pthread_mutex_lock( &regc_mutex );
++    for (i = 0; i < REGC_OPEN_MAX; i++)
++    {
++        struct regc_open *e = &regc_tab[i];
++        if (e->valid && e->handle == handle)
++        {
++            if (e->borrowed > 0) e->borrowed--;
++            pthread_mutex_unlock( &regc_mutex );
++            return TRUE;
++        }
++    }
++    pthread_mutex_unlock( &regc_mutex );
++    return FALSE;
++}
++
++/* forget a handle whose key is being deleted (its handle reverts to the app,
++ * which will close it normally); does not close it here */
++static void regc_drop( HANDLE handle )
++{
++    unsigned int i;
++    if (!regc_on()) return;
++    pthread_mutex_lock( &regc_mutex );
++    for (i = 0; i < REGC_OPEN_MAX; i++)
++        if (regc_tab[i].valid && regc_tab[i].handle == handle) { regc_tab[i].valid = 0; break; }
++    pthread_mutex_unlock( &regc_mutex );
++}
++
++
+ NTSTATUS open_hkcu_key( const char *path, HANDLE *key )
+ {
+     NTSTATUS status;
+@@ -145,6 +278,16 @@ NTSTATUS WINAPI NtOpenKeyEx( HANDLE *key, ACCESS_MASK access, const OBJECT_ATTRI
+ 
+     attributes = attr->Attributes | OBJ_CASE_INSENSITIVE;
+ 
++    if (regc_on() && attr->ObjectName->Length <= REGC_NAME_MAX * sizeof(WCHAR))
++    {
++        HANDLE cached;
++        pthread_mutex_lock( &regc_mutex );
++        cached = regc_get( attr->RootDirectory, access, attributes,
++                           attr->ObjectName->Buffer, attr->ObjectName->Length );
++        pthread_mutex_unlock( &regc_mutex );
++        if (cached) { *key = cached; TRACE("<- %p (cached)\n", *key); return STATUS_SUCCESS; }
++    }
++
+     SERVER_START_REQ( open_key )
+     {
+         req->parent     = wine_server_obj_handle( attr->RootDirectory );
+@@ -155,6 +298,26 @@ NTSTATUS WINAPI NtOpenKeyEx( HANDLE *key, ACCESS_MASK access, const OBJECT_ATTRI
+         *key = wine_server_ptr_handle( reply->hkey );
+     }
+     SERVER_END_REQ;
++
++    if (!ret && regc_on() && attr->ObjectName->Length <= REGC_NAME_MAX * sizeof(WCHAR))
++    {
++        HANDLE existing;
++        pthread_mutex_lock( &regc_mutex );
++        existing = regc_get( attr->RootDirectory, access, attributes,
++                             attr->ObjectName->Buffer, attr->ObjectName->Length );
++        if (existing)   /* lost a race: another thread cached an equivalent handle */
++        {
++            pthread_mutex_unlock( &regc_mutex );
++            regc_server_close( *key );
++            *key = existing;
++        }
++        else
++        {
++            regc_put( attr->RootDirectory, access, attributes,
++                      attr->ObjectName->Buffer, attr->ObjectName->Length, *key );
++            pthread_mutex_unlock( &regc_mutex );
++        }
++    }
+     TRACE("<- %p\n", *key);
+     return ret;
+ }
+@@ -199,6 +362,8 @@ NTSTATUS WINAPI NtDeleteKey( HANDLE key )
+ 
+     TRACE( "(%p)\n", key );
+ 
++    regc_drop( key );   /* key being deleted: stop caching this handle */
++
+     SERVER_START_REQ( delete_key )
+     {
+         req->hkey = wine_server_obj_handle( key );
+diff --git a/dlls/ntdll/unix/server.c b/dlls/ntdll/unix/server.c
+index 730a0cd9a94..62bb94d59d5 100644
+--- a/dlls/ntdll/unix/server.c
++++ b/dlls/ntdll/unix/server.c
+@@ -1952,6 +1952,9 @@ NTSTATUS WINAPI NtClose( HANDLE handle )
+     if (HandleToLong( handle ) >= ~5 && HandleToLong( handle ) <= ~0)
+         return STATUS_SUCCESS;
+ 
++    /* vstpoc: registry open-handle cache owns this key handle — keep it alive */
++    if (reg_cache_close_hook( handle )) return STATUS_SUCCESS;
++
+     /* hold fd_cache_mutex to prevent the fd from being added again between the
+      * call to remove_fd_from_cache and close_handle */
+     server_enter_uninterrupted_section( &fd_cache_mutex, &sigset );
+diff --git a/dlls/ntdll/unix/unix_private.h b/dlls/ntdll/unix/unix_private.h
+index c8ca97d21a0..cc81eb6cf6c 100644
+--- a/dlls/ntdll/unix/unix_private.h
++++ b/dlls/ntdll/unix/unix_private.h
+@@ -355,6 +355,7 @@ extern NTSTATUS get_thread_wow64_context( HANDLE handle, void *ctx, ULONG size )
+ extern NTSTATUS set_thread_wow64_context( HANDLE handle, const void *ctx, ULONG size );
+ extern void fill_vm_counters( VM_COUNTERS_EX *pvmi, int unix_pid );
+ extern NTSTATUS open_hkcu_key( const char *path, HANDLE *key );
++extern BOOL reg_cache_close_hook( HANDLE handle );  /* vstpoc: registry open-handle cache */
+ 
+ extern NTSTATUS sync_ioctl( HANDLE file, ULONG code, void *in_buffer, ULONG in_size,
+                             void *out_buffer, ULONG out_size );

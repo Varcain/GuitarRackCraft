@@ -1,0 +1,87 @@
+From: Kamil Lulko <limakzagan@gmail.com>
+Subject: ntdll: cache get_default_drive_device mount-table resolution
+
+bionic has no getmntent, so wine ships getmntent_replacement which fgets/strsep/
+atoi-parses the WHOLE mount table on every call. get_default_drive_device reads
+/proc/mounts and, for each of its ~190 entries on Android, stat()s the mount dir
+(and often the fsname) to match (st_dev,st_ino) -> the underlying device. That
+runs on every BARE-device NT open (\??\C: etc. -- GetDiskFreeSpace/GetVolume
+Information/GetDiskFreeSpaceEx), i.e. anything that polls volume/free-space info
+on a timer. Under FEX each fgets line + ~2 stat()/entry is hugely amplified:
+AmpliTube 5's idle UI (MessageManager) thread spent ~55% CPU in recurring
+~0.1-0.6s bursts (~1/sec) entirely in this path (simpleperf: 69% libc, leaf
+getmntent_replacement <- get_dos_device <- nt_to_unix_file_name_no_root), which
+the user feels as periodic UI lag.
+
+The mount table is static for a wine session, so cache root->device. Resolve
+once per drive root; subsequent bare-device opens skip the /proc/mounts re-read
+and the per-entry stat storm. Negative-but-stat-failed roots aren't cached (a
+later-mounted drive still resolves). Mirrors the 0036 GetTextMetrics cache:
+memoize a stable, Android/FEX-amplified hot path. (vstpoc)
+
+diff --git a/dlls/ntdll/unix/file.c b/dlls/ntdll/unix/file.c
+index b641e4ca336..add21bbc322 100644
+--- a/dlls/ntdll/unix/file.c
++++ b/dlls/ntdll/unix/file.c
+@@ -874,6 +874,21 @@ static char *parse_mount_entries( FILE *f, dev_t dev, ino_t ino )
+  *
+  * Return the default device to use for a given drive mount point.
+  */
++#ifdef linux
++/* Cache of drive-root -> underlying device. bionic lacks getmntent, so every
++ * bare-device resolution re-reads and re-parses all of /proc/mounts (plus a
++ * stat() per entry). The mount table is static for a wine session, but apps
++ * that poll volume / free-space info hit this on a timer; under emulation the
++ * reparse becomes a periodic multi-tens-of-ms stall. Resolve once and cache. (vstpoc) */
++struct mnt_device_cache
++{
++    struct list entry;
++    char *root;
++    char *device;   /* NULL = root resolves to no device (still cached, to skip rescan) */
++};
++static struct list mnt_device_cache_list = LIST_INIT( mnt_device_cache_list );
++#endif
++
+ static char *get_default_drive_device( const char *root )
+ {
+     char *ret = NULL;
+@@ -883,6 +898,19 @@ static char *get_default_drive_device( const char *root )
+     char *device = NULL;
+     int fd, res = -1;
+     struct stat st;
++    struct mnt_device_cache *cache;
++
++    mutex_lock( &mnt_mutex );
++    LIST_FOR_EACH_ENTRY( cache, &mnt_device_cache_list, struct mnt_device_cache, entry )
++    {
++        if (!strcmp( cache->root, root ))
++        {
++            ret = cache->device ? strdup( cache->device ) : NULL;
++            mutex_unlock( &mnt_mutex );
++            return ret;
++        }
++    }
++    mutex_unlock( &mnt_mutex );
+ 
+     /* try to open it first to force it to get mounted */
+     if ((fd = open( root, O_RDONLY | O_DIRECTORY )) != -1)
+@@ -916,6 +944,19 @@ static char *get_default_drive_device( const char *root )
+     }
+ #endif
+     if (device) ret = strdup( device );
++
++    /* remember the resolution so the next bare-device open skips the rescan */
++    if ((cache = malloc( sizeof(*cache) )))
++    {
++        cache->root = strdup( root );
++        cache->device = device ? strdup( device ) : NULL;
++        if (cache->root) list_add_tail( &mnt_device_cache_list, &cache->entry );
++        else
++        {
++            free( cache->device );
++            free( cache );
++        }
++    }
+     mutex_unlock( &mnt_mutex );
+ 
+ #elif defined(__FreeBSD__) || defined(__FreeBSD_kernel__ ) || defined(__DragonFly__)
