@@ -1,0 +1,224 @@
+# Copyright (C) 2026 Kamil Lulko <kamil.lulko@gmail.com>
+#
+# This file is part of Guitar RackCraft.
+#
+# Guitar RackCraft is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# Builds the COMPLETE full-flavor debug APK for the VST-hosting branch
+# (win_vst_devel): the LV2/native side (./build.sh full) PLUS the wine/FEX/
+# DXVK/Mesa-Zink VST stack and the VST2 + VST3 hosts (vsthost_lib), then
+# assembleFullDebug, and uploads the .apk as a downloadable artifact.
+#
+# Manual only — the cold build is ~4-5h. Reproduces the local build from the
+# committed branch state (patches + scripts); the FEX emulator is rebuilt
+# clean from source. See vsthost_lib/scripts/build-all.sh.
+
+name: Build VST Full APK
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: build-vst-full-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
+  NDK_VSTHOST: 26.1.10909125        # wine/FEX + vsthost_lib gradle
+  NDK_NATIVE: 27.2.12479018         # ./build.sh full + app CMake
+  GRADLE_OPTS: -Dorg.gradle.daemon=false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+
+    steps:
+      # ── 0. Reclaim disk (~14GB free -> ~45GB; KEEP the Android SDK) ───────
+      - name: Free disk space
+        uses: jlumbroso/free-disk-space@main
+        with:
+          android: false        # we need the Android SDK/NDK
+          tool-cache: false     # keep setup-java/etc tool cache
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: true
+          swap-storage: true
+
+      # ── 1. Checkout + submodules (full tree; build configures from them) ──
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      # ── 2. System dependencies (union of ci.yml + vsthost build-all.sh) ──
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            build-essential autoconf automake libtool bison flex gettext gperf \
+            pkg-config cmake ninja-build meson patchelf patch ccache \
+            gcc-mingw-w64-x86-64 gcc-mingw-w64-i686 g++-mingw-w64-x86-64 \
+            python3 python3-pip python3-mako \
+            ocaml ocamlbuild ocaml-findlib libnum-ocaml-dev faust libboost-dev \
+            libx11-dev libxext-dev libxrender-dev libxrandr-dev libxi-dev \
+            libxfixes-dev libxcursor-dev
+
+      # ── 3. JDK 17 ────────────────────────────────────────────────────────
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      # ── 4. Android SDK: BOTH NDKs + cmake + platform/build-tools ─────────
+      - name: Install Android SDK components
+        run: |
+          SDKMGR="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
+          yes | "$SDKMGR" --licenses || true
+          for pkg in \
+            "ndk;${NDK_NATIVE}" \
+            "ndk;${NDK_VSTHOST}" \
+            "cmake;3.22.1" \
+            "platforms;android-34" \
+            "build-tools;34.0.0"; do
+            "$SDKMGR" "$pkg"
+          done
+
+      # ── 5. Caches ────────────────────────────────────────────────────────
+      # 5a. llvm-mingw toolchain install — the ~30-60min build dominator.
+      #     Keyed on the pinned submodule commit (changes rarely).
+      - name: Compute llvm-mingw cache key
+        id: mingw-key
+        run: |
+          COMMIT=$(git -C vsthost_lib/external/llvm-mingw rev-parse HEAD 2>/dev/null || echo none)
+          echo "key=llvm-mingw-${{ runner.os }}-${COMMIT}" >> "$GITHUB_OUTPUT"
+
+      - name: Cache llvm-mingw install
+        uses: actions/cache@v4
+        with:
+          path: vsthost_lib/external/llvm-mingw/install
+          key: ${{ steps.mingw-key.outputs.key }}
+
+      # 5b. ci.yml's native build cache (./build.sh full outputs).
+      - name: Compute native cache key
+        id: native-key
+        run: |
+          FILES_HASH=$(cat \
+            build.sh \
+            $(find cmake -name '*.cmake' -o -name 'CMakeLists.txt' -o -name 'CMakePresets.json' 2>/dev/null | sort) \
+            $(find 3rd_party/patches -name '*.patch' 2>/dev/null | sort) \
+            2>/dev/null | sha256sum | cut -d' ' -f1)
+          SUBMOD_HASH=$(git submodule status | sha256sum | cut -d' ' -f1)
+          echo "key=native-${{ runner.os }}-${FILES_HASH}-${SUBMOD_HASH}" >> "$GITHUB_OUTPUT"
+
+      - name: Cache native build (build.sh)
+        uses: actions/cache@v4
+        with:
+          path: |
+            build/prebuild
+            build/shared
+            build/aidadsp
+            build/aidax_full
+            build/nam
+            build/lv2
+            build/x11_ui
+            build/mesa
+            build/fftw3
+            build/fftw3-codelets
+            build/neuralrack
+            build/impulseloader
+            build/xdarkterror
+            build/xtinyterror
+            build/collisiondrive
+            build/metaltone
+            build/gxcabsim
+            build/modamptk
+            build/fatfrog
+            build/lv2_wrapper
+            app/src/main/jniLibs
+            app/src/full/jniLibs
+            app/src/main/assets
+            app/src/main/cpp/libs
+            gxplugins_pack/src/main/assets/plugins
+            neural_pack/src/main/assets/plugins
+            brummer_pack/src/main/assets/plugins
+          key: ${{ steps.native-key.outputs.key }}
+          restore-keys: |
+            native-${{ runner.os }}-
+
+      # 5c. ccache (C++ for ./build.sh) + Gradle.
+      - name: Cache ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ccache
+          key: ccache-${{ runner.os }}-${{ github.sha }}
+          restore-keys: ccache-${{ runner.os }}-
+
+      - name: Cache Gradle
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+            ~/.gradle/build-cache
+          key: gradle-${{ runner.os }}-${{ hashFiles('**/*.gradle.kts', 'gradle/wrapper/gradle-wrapper.properties') }}
+          restore-keys: gradle-${{ runner.os }}-
+
+      - name: Configure ccache
+        run: |
+          ccache --set-config=max_size=2G
+          ccache --set-config=compression=true
+          ccache --zero-stats
+
+      # ── 6. Build the vsthost VST stack (wine/FEX/DXVK/Mesa + VST2 host) ───
+      #     12-step pipeline; rebuilds FEX clean from source. NDK 26.1.
+      - name: Build vsthost (build-all.sh)
+        env:
+          ANDROID_NDK: ${{ env.ANDROID_SDK_ROOT }}/ndk/${{ env.NDK_VSTHOST }}
+        run: |
+          cd vsthost_lib
+          bash scripts/build-all.sh
+
+      # ── 7. Build the VST3 host (NOT in build-all.sh; needs vst3sdk) ───────
+      #     Required for BIAS / AmpliTube / TONEX (VST3). -> assets/vst3_host.exe
+      - name: Build VST3 host
+        run: |
+          cd vsthost_lib
+          bash scripts/build-vst3-host.sh
+
+      # ── 8. Build the LV2/native side (app jniLibs/assets). NDK 27.2. ─────
+      - name: Build native libraries (build.sh full)
+        env:
+          ANDROID_NDK: ${{ env.ANDROID_SDK_ROOT }}/ndk/${{ env.NDK_NATIVE }}
+        run: ./build.sh full
+
+      - name: Show ccache stats
+        if: always()
+        run: ccache --show-stats || true
+
+      # ── 9. Assemble the full debug APK (debug-signed; no secrets) ────────
+      - name: Build full debug APK
+        run: ./gradlew assembleFullDebug
+
+      # ── 10. Upload the APK as a downloadable artifact ────────────────────
+      - name: Upload full debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: gxrc-full-vst-${{ github.sha }}
+          path: app/build/outputs/apk/full/debug/*.apk
+          if-no-files-found: error
+          retention-days: 90
+
+      # Diagnostics on failure
+      - name: Dump build logs on failure
+        if: failure()
+        run: |
+          for f in build/prebuild/*/src/*/stamp/*-*.log; do
+            [ -f "$f" ] && echo "=== $f ===" && tail -100 "$f"
+          done || true
+          tail -100 vsthost_lib/external/wine-upstream/build-android-arm64/config.log 2>/dev/null || true
