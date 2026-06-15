@@ -1,0 +1,40 @@
+From: Kamil Lulko <limakzagan@gmail.com>
+Subject: wineboot: present PROCESSOR_ARCHITECTURE=AMD64 on aarch64 hosts
+
+We run x86_64 PE software via FEX and present AMD64 everywhere (patches
+0013/0047), but wineboot writes the host arch ("ARM64") into the Session Manager
+Environment PROCESSOR_ARCHITECTURE because it reads it from the un-spoofed
+SystemCpuInformation. PACE's iLok "License Support" installer reads THIS value
+and rejects the platform ("cannot be installed on ... ARM64" / SHA256 popup) on
+anything but AMD64 — proven by a desktop-wine differential (2026-06-15). Only the
+env registry value is changed; the SystemCpuInformation API and CentralProcessor
+Identifier stay ARM64 so 64-bit JUCE plugins still choose their render backend
+correctly (per patch 0013). See memory feedback_ilok_sha256_processor_arch.
+
+diff --git a/programs/wineboot/wineboot.c b/programs/wineboot/wineboot.c
+index 6ffcbe1266c..bd77fde5943 100644
+--- a/programs/wineboot/wineboot.c
++++ b/programs/wineboot/wineboot.c
+@@ -757,7 +757,22 @@ static void create_bios_processor_values( HKEY system_key, const char *buf, UINT
+                                     L"System\\CurrentControlSet\\Control\\Session Manager\\Environment",
+                                     &env_key ))
+         {
++#ifdef __aarch64__
++            /* vstpoc: present AMD64 (the x86-64 emulation arch) in the Session
++             * Manager Environment PROCESSOR_ARCHITECTURE. Our host is ARM64 so
++             * `arch`=="ARM64" here, but we run x86_64 PE software via FEX and
++             * present AMD64 everywhere else (patches 0013/0047). PACE's iLok
++             * "License Support" PreInstallDriverCheck reads THIS value and aborts
++             * ("Installs on Windows 7 require SHA256 support") on anything but
++             * AMD64 — proven by a desktop-wine differential (2026-06-15). Only
++             * this env value lies; CentralProcessor\Identifier and the
++             * SystemCpuInformation API stay ARM64 (64-bit JUCE plugins rely on
++             * the API for render-backend choice, per patch 0013).
++             * See memory feedback_ilok_sha256_processor_arch. */
++            set_reg_value( env_key, L"PROCESSOR_ARCHITECTURE", L"AMD64" );
++#else
+             set_reg_value( env_key, L"PROCESSOR_ARCHITECTURE", arch );
++#endif
+ 
+             swprintf( buffer, ARRAY_SIZE(buffer), L"%s, %s", id, vendorid ? vendorid : L"Unknown" );
+             set_reg_value( env_key, L"PROCESSOR_IDENTIFIER", buffer );

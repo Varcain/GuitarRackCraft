@@ -1,0 +1,35 @@
+From: Kamil Lulko <limakzagan@gmail.com>
+Subject: msi: make StartServices best-effort (services cannot run on Android)
+
+Windows services generally cannot start on wine/Android (no real SCM / kernel
+driver support). The iLok "License Support" installer registers and starts
+PaceLicenseDServices; StartServiceW fails, ITERATE_StartService returns
+ERROR_FUNCTION_FAILED, ACTION_StartServices returns 1627 and the install rolls
+back at InstallFinalize — even though every file was already installed and the
+iLok License Manager works without its background daemon.
+
+Treat any service start/open failure in ITERATE_StartService as best-effort
+success so the install completes instead of rolling back.
+
+diff --git a/dlls/msi/action.c b/dlls/msi/action.c
+index f750b875d6b..a6a51cafd97 100644
+--- a/dlls/msi/action.c
++++ b/dlls/msi/action.c
+@@ -6013,6 +6013,17 @@ static UINT ITERATE_StartService(MSIRECORD *rec, LPVOID param)
+     }
+ 
+ done:
++    /* vstpoc: on wine/Android, Windows services (e.g. PACE's PaceLicenseDServices)
++     * generally cannot start — but a failed StartServices must NOT roll back the
++     * whole install (the iLok License Manager works without its background daemon).
++     * Treat any service start/open failure here as best-effort success. */
++    if (r != ERROR_SUCCESS)
++    {
++        WARN( "vstpoc: ignoring StartServices failure for service %s — continuing install\n",
++             debugstr_w(name) );
++        r = ERROR_SUCCESS;
++    }
++
+     uirow = MSI_CreateRecord( 2 );
+     MSI_RecordSetStringW( uirow, 1, display_name );
+     MSI_RecordSetStringW( uirow, 2, name );

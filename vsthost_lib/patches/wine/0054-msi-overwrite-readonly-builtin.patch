@@ -1,0 +1,134 @@
+From: Kamil Lulko <limakzagan@gmail.com>
+Subject: msi: overwrite read-only builtin files (Android symlinks) during cab extraction
+
+On Android our wine builtins live in the prefix as symlinks to read-only .so
+files inside the APK (/data/app). When an MSI wants to overwrite such a file
+(e.g. the iLok "License Support" installer overwrites the VC++ runtime
+vcruntime140.dll/msvcp140.dll/concrt140.dll into system32), CREATE_ALWAYS
+follows the symlink to the read-only target and fails with ACCESS_DENIED.
+cabinet_copy_file then returns -1, FDICopy aborts with FDIERROR_USER_ABORT,
+ACTION_InstallFiles returns 1603 and the whole install rolls back. The identical
+MSI installs fine on desktop x86-64 wine where those files are writable.
+
+Fix: on ACCESS_DENIED, write the file to a temp sibling and rename() it over the
+path at fdintCLOSE_FILE_INFO. rename() replaces the symlink directory entry
+instead of following it to the read-only target (unlike DeleteFile/CreateFile),
+so the redistributable's own copy is installed. If even that fails, skip the one
+file rather than aborting the entire install. Tracked via two new MSICABDATA
+fields (overwrite_tmp/overwrite_dst); MSICABDATA is now zero-initialised so they
+start NULL on the normal path.
+
+diff --git a/dlls/msi/files.c b/dlls/msi/files.c
+index e7686d07627..31b10d11752 100644
+--- a/dlls/msi/files.c
++++ b/dlls/msi/files.c
+@@ -618,7 +618,7 @@ UINT ACTION_InstallFiles(MSIPACKAGE *package)
+         if (file->Sequence > mi->last_sequence || mi->is_continuous ||
+             (file->IsCompressed && !mi->is_extracted))
+         {
+-            MSICABDATA data;
++            MSICABDATA data = {0};
+             MSIFILE *cursor = file;
+ 
+             data.mi = mi;
+@@ -819,7 +819,7 @@ UINT ACTION_PatchFiles( MSIPACKAGE *package )
+ 
+         if (!patch->extracted)
+         {
+-            MSICABDATA data;
++            MSICABDATA data = {0};
+             MSIFILEPATCH *cursor = patch;
+ 
+             rc = ready_media( package, TRUE, mi );
+diff --git a/dlls/msi/media.c b/dlls/msi/media.c
+index ecc51e60a4e..e07a32ea612 100644
+--- a/dlls/msi/media.c
++++ b/dlls/msi/media.c
+@@ -427,6 +427,44 @@ static INT_PTR cabinet_copy_file(FDINOTIFICATIONTYPE fdint,
+         DWORD err = GetLastError();
+         DWORD attrs2 = msi_get_file_attributes( data->package, path );
+ 
++        /* vstpoc: on Android, system DLLs the MSI wants to overwrite (e.g. the VC++
++         * runtime vcruntime140.dll/msvcp140.dll) are wine builtins symlinked to
++         * read-only files inside the APK (/data/app), so CREATE_ALWAYS follows the
++         * link and fails with ACCESS_DENIED. First try to replace the file by
++         * renaming a freshly-written temp over it (rename() replaces the symlink
++         * entry rather than following it); if even that fails, SKIP the file (return
++         * a 0 handle) rather than aborting the whole install with USER_ABORT — wine's
++         * own builtin stays in place, and the product's own files (which land in
++         * writable dirs) still install. */
++        if (handle == INVALID_HANDLE_VALUE && err == ERROR_ACCESS_DENIED)
++        {
++            WCHAR *tmpW = malloc( (lstrlenW(path) + 16) * sizeof(WCHAR) );
++
++            if (tmpW)
++            {
++                lstrcpyW( tmpW, path );
++                lstrcatW( tmpW, L".vstpoctmp" );
++                handle = msi_create_file( data->package, tmpW, GENERIC_READ | GENERIC_WRITE,
++                                          0, CREATE_ALWAYS, attrs );
++                if (handle != INVALID_HANDLE_VALUE)
++                {
++                    /* FDI writes the decompressed data to this temp handle; stash the
++                     * rename so cabinet_close_file_info commits temp -> path. curfile
++                     * is already set (line above) and is used/freed there. */
++                    data->overwrite_tmp = tmpW;
++                    data->overwrite_dst = wcsdup( path );
++                    TRACE( "vstpoc: overwriting read-only builtin %s via temp+rename\n", debugstr_w(path) );
++                    goto done;
++                }
++                free( tmpW );
++            }
++            WARN( "vstpoc: skipping un-overwritable read-only file %s\n", debugstr_w(path) );
++            free( data->curfile );
++            data->curfile = NULL;
++            handle = 0; /* 0 => FDI skips this file (does not abort) */
++            goto done;
++        }
++
+         if (attrs2 == INVALID_FILE_ATTRIBUTES)
+         {
+             ERR( "failed to create %s (error %lu)\n", debugstr_w(path), err );
+@@ -510,6 +548,27 @@ static INT_PTR cabinet_close_file_info(FDINOTIFICATIONTYPE fdint,
+     }
+ 
+     CloseHandle(handle);
++
++    /* vstpoc: commit a pending read-only-builtin overwrite. The file was written to
++     * overwrite_tmp; rename it over the real path. MoveFileEx(REPLACE_EXISTING) does
++     * an atomic rename() that replaces the symlink directory entry instead of
++     * following it (unlike DeleteFile), so it succeeds where unlink fails. If it
++     * still fails we keep wine's builtin and just drop the temp — never fatal. */
++    if (data->overwrite_tmp)
++    {
++        if (!msi_move_file( data->package, data->overwrite_tmp, data->overwrite_dst,
++                            MOVEFILE_REPLACE_EXISTING ))
++        {
++            WARN( "failed to rename %s over %s (error %lu)\n", debugstr_w(data->overwrite_tmp),
++                  debugstr_w(data->overwrite_dst), GetLastError() );
++            msi_delete_file( data->package, data->overwrite_tmp );
++        }
++        free( data->overwrite_tmp );
++        free( data->overwrite_dst );
++        data->overwrite_tmp = NULL;
++        data->overwrite_dst = NULL;
++    }
++
+     data->cb(data->package, data->curfile, MSICABEXTRACT_FILEEXTRACTED, NULL, NULL, data->user);
+ 
+     free(data->curfile);
+diff --git a/dlls/msi/msipriv.h b/dlls/msi/msipriv.h
+index 0efc367c76d..23f1c74df74 100644
+--- a/dlls/msi/msipriv.h
++++ b/dlls/msi/msipriv.h
+@@ -1128,6 +1128,10 @@ typedef struct
+     PMSICABEXTRACTCB cb;
+     LPWSTR curfile;
+     PVOID user;
++    /* vstpoc: when overwriting a read-only builtin (Android), the file is written
++     * to overwrite_tmp and renamed over overwrite_dst at fdintCLOSE_FILE_INFO. */
++    LPWSTR overwrite_tmp;
++    LPWSTR overwrite_dst;
+ } MSICABDATA;
+ 
+ extern UINT ready_media(MSIPACKAGE *package, BOOL compressed, MSIMEDIAINFO *mi);

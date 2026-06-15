@@ -1,0 +1,198 @@
+[Software\\Microsoft\\Cryptography\\Calais\\Current] 1781488638
+#time=1dcfc6a4c121cae
+
+[Software\\Microsoft\\Cryptography\\Calais\\Readers] 1781488638
+#time=1dcfc6a4c121f9c
+
+[Software\\Microsoft\\Cryptography\\Defaults\\Provider\\Microsoft Base Cryptographic Provider v1.0] 1781488632
+#time=1dcfc6a484e9ca0
+"Image Path"="C:\\windows\\system32\\rsaenh.dll"
+"Signature"=hex:de,ad,be,ef
+"Type"=dword:00000001
+
+[Software\\Microsoft\\Cryptography\\Defaults\\Provider\\Microsoft Base DSS and Diffie-Hellman Cryptographic Provider] 1781488631
+#time=1dcfc6a47955cea
+"Image Path"="C:\\windows\\system32\\dssenh.dll"
+"Type"=dword:0000000d
+
+[Software\\Microsoft\\Cryptography\\Defaults\\Provider\\Microsoft Base DSS Cryptographic Provider] 1781488631
+#time=1dcfc6a47955718
+"Image Path"="C:\\windows\\system32\\dssenh.dll"
+"Type"=dword:00000003
+
+[Software\\Microsoft\\Cryptography\\Defaults\\Provider\\Microsoft DH SChannel Cryptographic Provider] 1781488631
+#time=1dcfc6a4795674e
+"Image Path"="C:\\windows\\system32\\dssenh.dll"
+"Type"=dword:00000012
+
+[Software\\Microsoft\\Cryptography\\Defaults\\Provider\\Microsoft Enhanced Cryptographic Provider v1.0] 1781488632
+#time=1dcfc6a484ea2ae
+"Image Path"="C:\\windows\\system32\\rsaenh.dll"
+"Signature"=hex:de,ad,be,ef
+"Type"=dword:00000001
+
+[Software\\Microsoft\\Cryptography\\Defaults\\Provider\\Microsoft Enhanced DSS and Diffie-Hellman Cryptographic Provider] 1781488631
+#time=1dcfc6a47956280
+"Image Path"="C:\\windows\\system32\\dssenh.dll"
+"Type"=dword:0000000d
+
+[Software\\Microsoft\\Cryptography\\Defaults\\Provider\\Microsoft Enhanced RSA and AES Cryptographic Provider] 1781488632
+#time=1dcfc6a484ea880
+"Image Path"="C:\\windows\\system32\\rsaenh.dll"
+"Signature"=hex:de,ad,be,ef
+"Type"=dword:00000018
+
+[Software\\Microsoft\\Cryptography\\Defaults\\Provider\\Microsoft Enhanced RSA and AES Cryptographic Provider (Prototype)] 1781488632
+#time=1dcfc6a484eae5c
+"Image Path"="C:\\windows\\system32\\rsaenh.dll"
+"Signature"=hex:de,ad,be,ef
+"Type"=dword:00000018
+
+[Software\\Microsoft\\Cryptography\\Defaults\\Provider\\Microsoft RSA SChannel Cryptographic Provider] 1781488632
+#time=1dcfc6a484eb456
+"Image Path"="C:\\windows\\system32\\rsaenh.dll"
+"Signature"=hex:de,ad,be,ef
+"Type"=dword:0000000c
+
+[Software\\Microsoft\\Cryptography\\Defaults\\Provider\\Microsoft Strong Cryptographic Provider] 1781488632
+#time=1dcfc6a484ebe2e
+"Image Path"="C:\\windows\\system32\\rsaenh.dll"
+"Signature"=hex:de,ad,be,ef
+"Type"=dword:00000001
+
+[Software\\Microsoft\\Cryptography\\Defaults\\Provider Types\\Type 001] 1781488632
+#time=1dcfc6a484ec856
+"Name"="Microsoft Enhanced Cryptographic Provider v1.0"
+"TypeName"="RSA Full (Signature and Key Exchange)"
+
+[Software\\Microsoft\\Cryptography\\Defaults\\Provider Types\\Type 003] 1781488631
+#time=1dcfc6a47956e92
+"Name"="Microsoft Base DSS Cryptographic Provider"
+"TypeName"="DSS Signature"
+
+[Software\\Microsoft\\Cryptography\\Defaults\\Provider Types\\Type 012] 1781488632
+#time=1dcfc6a484ecd7e
+"Name"="Microsoft RSA SChannel Cryptographic Provider"
+"TypeName"="RSA SChannel"
+
+[Software\\Microsoft\\Cryptography\\Defaults\\Provider Types\\Type 013] 1781488631
+#time=1dcfc6a47957496
+"Name"="Microsoft Enhanced DSS and Diffie-Hellman Cryptographic Provider"
+"TypeName"="DSS Signature with Diffie-Hellman Key Exchange"
+
+[Software\\Microsoft\\Cryptography\\Defaults\\Provider Types\\Type 018] 1781488631
+#time=1dcfc6a47957978
+"Name"="Microsoft DH SChannel Cryptographic Provider"
+"TypeName"="Diffie-Hellman SChannel"
+
+[Software\\Microsoft\\Cryptography\\Defaults\\Provider Types\\Type 024] 1781488632
+#time=1dcfc6a484ed274
+"Name"="Microsoft Enhanced RSA and AES Cryptographic Provider"
+"TypeName"="RSA Full and AES"
+
+[Software\\Wow6432Node\\Microsoft\\Cryptography\\Calais\\Current] 1781488630
+#time=1dcfc6a46fdb7d2
+#link
+"SymbolicLinkValue"=hex(6):5c,00,52,00,65,00,67,00,69,00,73,00,74,00,72,00,79,\
+  00,5c,00,4d,00,61,00,63,00,68,00,69,00,6e,00,65,00,5c,00,53,00,6f,00,66,00,\
+  74,00,77,00,61,00,72,00,65,00,5c,00,4d,00,69,00,63,00,72,00,6f,00,73,00,6f,\
+  00,66,00,74,00,5c,00,43,00,72,00,79,00,70,00,74,00,6f,00,67,00,72,00,61,00,\
+  70,00,68,00,79,00,5c,00,43,00,61,00,6c,00,61,00,69,00,73,00,5c,00,43,00,75,\
+  00,72,00,72,00,65,00,6e,00,74,00
+
+[Software\\Wow6432Node\\Microsoft\\Cryptography\\Calais\\Readers] 1781488630
+#time=1dcfc6a46fdbb38
+#link
+"SymbolicLinkValue"=hex(6):5c,00,52,00,65,00,67,00,69,00,73,00,74,00,72,00,79,\
+  00,5c,00,4d,00,61,00,63,00,68,00,69,00,6e,00,65,00,5c,00,53,00,6f,00,66,00,\
+  74,00,77,00,61,00,72,00,65,00,5c,00,4d,00,69,00,63,00,72,00,6f,00,73,00,6f,\
+  00,66,00,74,00,5c,00,43,00,72,00,79,00,70,00,74,00,6f,00,67,00,72,00,61,00,\
+  70,00,68,00,79,00,5c,00,43,00,61,00,6c,00,61,00,69,00,73,00,5c,00,52,00,65,\
+  00,61,00,64,00,65,00,72,00,73,00
+
+[Software\\Wow6432Node\\Microsoft\\Cryptography\\Defaults\\Provider\\Microsoft Base Cryptographic Provider v1.0] 1781488640
+#time=1dcfc6a4d5a14ae
+"Image Path"="C:\\windows\\system32\\rsaenh.dll"
+"Signature"=hex:de,ad,be,ef
+"Type"=dword:00000001
+
+[Software\\Wow6432Node\\Microsoft\\Cryptography\\Defaults\\Provider\\Microsoft Base DSS and Diffie-Hellman Cryptographic Provider] 1781488639
+#time=1dcfc6a4cb624ac
+"Image Path"="C:\\windows\\system32\\dssenh.dll"
+"Type"=dword:0000000d
+
+[Software\\Wow6432Node\\Microsoft\\Cryptography\\Defaults\\Provider\\Microsoft Base DSS Cryptographic Provider] 1781488639
+#time=1dcfc6a4cb61fac
+"Image Path"="C:\\windows\\system32\\dssenh.dll"
+"Type"=dword:00000003
+
+[Software\\Wow6432Node\\Microsoft\\Cryptography\\Defaults\\Provider\\Microsoft DH SChannel Cryptographic Provider] 1781488639
+#time=1dcfc6a4cb62f88
+"Image Path"="C:\\windows\\system32\\dssenh.dll"
+"Type"=dword:00000012
+
+[Software\\Wow6432Node\\Microsoft\\Cryptography\\Defaults\\Provider\\Microsoft Enhanced Cryptographic Provider v1.0] 1781488640
+#time=1dcfc6a4d5a1c2e
+"Image Path"="C:\\windows\\system32\\rsaenh.dll"
+"Signature"=hex:de,ad,be,ef
+"Type"=dword:00000001
+
+[Software\\Wow6432Node\\Microsoft\\Cryptography\\Defaults\\Provider\\Microsoft Enhanced DSS and Diffie-Hellman Cryptographic Provider] 1781488639
+#time=1dcfc6a4cb62a92
+"Image Path"="C:\\windows\\system32\\dssenh.dll"
+"Type"=dword:0000000d
+
+[Software\\Wow6432Node\\Microsoft\\Cryptography\\Defaults\\Provider\\Microsoft Enhanced RSA and AES Cryptographic Provider] 1781488640
+#time=1dcfc6a4d5a225a
+"Image Path"="C:\\windows\\system32\\rsaenh.dll"
+"Signature"=hex:de,ad,be,ef
+"Type"=dword:00000018
+
+[Software\\Wow6432Node\\Microsoft\\Cryptography\\Defaults\\Provider\\Microsoft Enhanced RSA and AES Cryptographic Provider (Prototype)] 1781488640
+#time=1dcfc6a4d5a289a
+"Image Path"="C:\\windows\\system32\\rsaenh.dll"
+"Signature"=hex:de,ad,be,ef
+"Type"=dword:00000018
+
+[Software\\Wow6432Node\\Microsoft\\Cryptography\\Defaults\\Provider\\Microsoft RSA SChannel Cryptographic Provider] 1781488640
+#time=1dcfc6a4d5a2fc0
+"Image Path"="C:\\windows\\system32\\rsaenh.dll"
+"Signature"=hex:de,ad,be,ef
+"Type"=dword:0000000c
+
+[Software\\Wow6432Node\\Microsoft\\Cryptography\\Defaults\\Provider\\Microsoft Strong Cryptographic Provider] 1781488640
+#time=1dcfc6a4d5a3704
+"Image Path"="C:\\windows\\system32\\rsaenh.dll"
+"Signature"=hex:de,ad,be,ef
+"Type"=dword:00000001
+
+[Software\\Wow6432Node\\Microsoft\\Cryptography\\Defaults\\Provider Types\\Type 001] 1781488640
+#time=1dcfc6a4d5a4280
+"Name"="Microsoft Enhanced Cryptographic Provider v1.0"
+"TypeName"="RSA Full (Signature and Key Exchange)"
+
+[Software\\Wow6432Node\\Microsoft\\Cryptography\\Defaults\\Provider Types\\Type 003] 1781488639
+#time=1dcfc6a4cb63686
+"Name"="Microsoft Base DSS Cryptographic Provider"
+"TypeName"="DSS Signature"
+
+[Software\\Wow6432Node\\Microsoft\\Cryptography\\Defaults\\Provider Types\\Type 012] 1781488640
+#time=1dcfc6a4d5a4b4a
+"Name"="Microsoft RSA SChannel Cryptographic Provider"
+"TypeName"="RSA SChannel"
+
+[Software\\Wow6432Node\\Microsoft\\Cryptography\\Defaults\\Provider Types\\Type 013] 1781488639
+#time=1dcfc6a4cb63c62
+"Name"="Microsoft Enhanced DSS and Diffie-Hellman Cryptographic Provider"
+"TypeName"="DSS Signature with Diffie-Hellman Key Exchange"
+
+[Software\\Wow6432Node\\Microsoft\\Cryptography\\Defaults\\Provider Types\\Type 018] 1781488639
+#time=1dcfc6a4cb64144
+"Name"="Microsoft DH SChannel Cryptographic Provider"
+"TypeName"="Diffie-Hellman SChannel"
+
+[Software\\Wow6432Node\\Microsoft\\Cryptography\\Defaults\\Provider Types\\Type 024] 1781488640
+#time=1dcfc6a4d5a528e
+"Name"="Microsoft Enhanced RSA and AES Cryptographic Provider"
+"TypeName"="RSA Full and AES"
+

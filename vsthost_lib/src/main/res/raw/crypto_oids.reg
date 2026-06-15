@@ -1,0 +1,1028 @@
+[Software\\Microsoft\\Cryptography\\Defaults\\Provider Types\\Type 001] 1781468576
+#time=1dcfc3b96137714
+"Name"="Microsoft Enhanced Cryptographic Provider v1.0"
+"TypeName"="RSA Full (Signature and Key Exchange)"
+
+[Software\\Microsoft\\Cryptography\\Defaults\\Provider Types\\Type 003] 1781468575
+#time=1dcfc3b955ea078
+"Name"="Microsoft Base DSS Cryptographic Provider"
+"TypeName"="DSS Signature"
+
+[Software\\Microsoft\\Cryptography\\Defaults\\Provider Types\\Type 012] 1781468576
+#time=1dcfc3b96137ce6
+"Name"="Microsoft RSA SChannel Cryptographic Provider"
+"TypeName"="RSA SChannel"
+
+[Software\\Microsoft\\Cryptography\\Defaults\\Provider Types\\Type 013] 1781468575
+#time=1dcfc3b955ea726
+"Name"="Microsoft Enhanced DSS and Diffie-Hellman Cryptographic Provider"
+"TypeName"="DSS Signature with Diffie-Hellman Key Exchange"
+
+[Software\\Microsoft\\Cryptography\\Defaults\\Provider Types\\Type 018] 1781468575
+#time=1dcfc3b955eac94
+"Name"="Microsoft DH SChannel Cryptographic Provider"
+"TypeName"="Diffie-Hellman SChannel"
+
+[Software\\Microsoft\\Cryptography\\Defaults\\Provider Types\\Type 024] 1781468576
+#time=1dcfc3b961382a4
+"Name"="Microsoft Enhanced RSA and AES Cryptographic Provider"
+"TypeName"="RSA Full and AES"
+
+[Software\\Microsoft\\Cryptography\\OID\\EncodingType 0\\CertDllOpenStoreProv\\#16] 1781468577
+#time=1dcfc3b96c8f1c0
+"Dll"="cryptnet.dll"
+"FuncName"="LdapProvOpenStore"
+
+[Software\\Microsoft\\Cryptography\\OID\\EncodingType 0\\CertDllOpenStoreProv\\Ldap] 1781468577
+#time=1dcfc3b96c8ec84
+"Dll"="cryptnet.dll"
+"FuncName"="LdapProvOpenStore"
+
+[Software\\Microsoft\\Cryptography\\OID\\EncodingType 0\\CryptSIPDllCreateIndirectData\\{000C10F1-0000-0000-C000-000000000046}] 1781468583
+#time=1dcfc3b9a3318cc
+"Dll"="MSISIP.DLL"
+"FuncName"="MsiSIPCreateIndirectData"
+
+[Software\\Microsoft\\Cryptography\\OID\\EncodingType 0\\CryptSIPDllCreateIndirectData\\{9BA61D3F-E73A-11D0-8CD2-00C04FC295EE}] 1781468583
+#time=1dcfc3b9a5929a4
+"Dll"="WINTRUST.DLL"
+"FuncName"="CryptSIPCreateIndirectData"
+
+[Software\\Microsoft\\Cryptography\\OID\\EncodingType 0\\CryptSIPDllCreateIndirectData\\{C689AAB8-8E78-11D0-8C47-00C04FC295EE}] 1781468583
+#time=1dcfc3b9a58e700
+"Dll"="WINTRUST.DLL"
+"FuncName"="CryptSIPCreateIndirectData"
+
+[Software\\Microsoft\\Cryptography\\OID\\EncodingType 0\\CryptSIPDllCreateIndirectData\\{C689AAB9-8E78-11D0-8C47-00C04FC295EE}] 1781468583
+#time=1dcfc3b9a58fdd0
+"Dll"="WINTRUST.DLL"
+"FuncName"="CryptSIPCreateIndirectData"
+
+[Software\\Microsoft\\Cryptography\\OID\\EncodingType 0\\CryptSIPDllCreateIndirectData\\{C689AABA-8E78-11D0-8C47-00C04FC295EE}] 1781468583
+#time=1dcfc3b9a58cf7c
+"Dll"="WINTRUST.DLL"
+"FuncName"="CryptSIPCreateIndirectData"
+
+[Software\\Microsoft\\Cryptography\\OID\\EncodingType 0\\CryptSIPDllCreateIndirectData\\{DE351A42-8E59-11D0-8C47-00C04FC295EE}] 1781468583
+#time=1dcfc3b9a58b55a
+"Dll"="WINTRUST.DLL"
+"FuncName"="CryptSIPCreateIndirectData"
+
+[Software\\Microsoft\\Cryptography\\OID\\EncodingType 0\\CryptSIPDllCreateIndirectData\\{DE351A43-8E59-11D0-8C47-00C04FC295EE}] 1781468583
+#time=1dcfc3b9a5910fe
+"Dll"="WINTRUST.DLL"
+"FuncName"="CryptSIPCreateIndirectData"
+
+[Software\\Microsoft\\Cryptography\\OID\\EncodingType 0\\CryptSIPDllGetSignedDataMsg\\{000C10F1-0000-0000-C000-000000000046}] 1781468583
+#time=1dcfc3b9a32f07c
+"Dll"="MSISIP.DLL"
+"FuncName"="MsiSIPGetSignedDataMsg"
+
+[Software\\Microsoft\\Cryptography\\OID\\EncodingType 0\\CryptSIPDllGetSignedDataMsg\\{9BA61D3F-E73A-11D0-8CD2-00C04FC295EE}] 1781468583
+#time=1dcfc3b9a591eb4
+"Dll"="WINTRUST.DLL"
+"FuncName"="CryptSIPGetSignedDataMsg"
+
+[Software\\Microsoft\\Cryptography\\OID\\EncodingType 0\\CryptSIPDllGetSignedDataMsg\\{C689AAB8-8E78-11D0-8C47-00C04FC295EE}] 1781468583
+#time=1dcfc3b9a58db02
+"Dll"="WINTRUST.DLL"
+"FuncName"="CryptSIPGetSignedDataMsg"
+
+[Software\\Microsoft\\Cryptography\\OID\\EncodingType 0\\CryptSIPDllGetSignedDataMsg\\{C689AAB9-8E78-11D0-8C47-00C04FC295EE}] 1781468583
+#time=1dcfc3b9a58f506
+"Dll"="WINTRUST.DLL"
+"FuncName"="CryptSIPGetSignedDataMsg"
+
+[Software\\Microsoft\\Cryptography\\OID\\EncodingType 0\\CryptSIPDllGetSignedDataMsg\\{C689AABA-8E78-11D0-8C47-00C04FC295EE}] 1781468583
+#time=1dcfc3b9a58c7ca
+"Dll"="WINTRUST.DLL"
+"FuncName"="CryptSIPGetSignedDataMsg"
+
+[Software\\Microsoft\\Cryptography\\OID\\EncodingType 0\\CryptSIPDllGetSignedDataMsg\\{DE351A42-8E59-11D0-8C47-00C04FC295EE}] 1781468583
+#time=1dcfc3b9a58ad6c
+"Dll"="WINTRUST.DLL"
+"FuncName"="CryptSIPGetSignedDataMsg"
+
+[Software\\Microsoft\\Cryptography\\OID\\EncodingType 0\\CryptSIPDllGetSignedDataMsg\\{DE351A43-8E59-11D0-8C47-00C04FC295EE}] 1781468583
+#time=1dcfc3b9a590960
+"Dll"="WINTRUST.DLL"
+"FuncName"="CryptSIPGetSignedDataMsg"
+
+[Software\\Microsoft\\Cryptography\\OID\\EncodingType 0\\CryptSIPDllIsMyFileType2\\{000C10F1-0000-0000-C000-000000000046}] 1781468583
+#time=1dcfc3b9a3342ac
+"Dll"="MSISIP.DLL"
+"FuncName"="MsiSIPIsMyTypeOfFile"
+
+[Software\\Microsoft\\Cryptography\\OID\\EncodingType 0\\CryptSIPDllPutSignedDataMsg\\{000C10F1-0000-0000-C000-000000000046}] 1781468583
+#time=1dcfc3b9a32ddd0
+"Dll"="MSISIP.DLL"
+"FuncName"="MsiSIPPutSignedDataMsg"
+
+[Software\\Microsoft\\Cryptography\\OID\\EncodingType 0\\CryptSIPDllPutSignedDataMsg\\{9BA61D3F-E73A-11D0-8CD2-00C04FC295EE}] 1781468583
+#time=1dcfc3b9a5918ba
+"Dll"="WINTRUST.DLL"
+"FuncName"="CryptSIPPutSignedDataMsg"
+
+[Software\\Microsoft\\Cryptography\\OID\\EncodingType 0\\CryptSIPDllPutSignedDataMsg\\{C689AAB8-8E78-11D0-8C47-00C04FC295EE}] 1781468583
+#time=1dcfc3b9a58d72e
+"Dll"="WINTRUST.DLL"
+"FuncName"="CryptSIPPutSignedDataMsg"
+
+[Software\\Microsoft\\Cryptography\\OID\\EncodingType 0\\CryptSIPDllPutSignedDataMsg\\{C689AAB9-8E78-11D0-8C47-00C04FC295EE}] 1781468583
+#time=1dcfc3b9a58f0e2
+"Dll"="WINTRUST.DLL"
+"FuncName"="CryptSIPPutSignedDataMsg"
+
+[Software\\Microsoft\\Cryptography\\OID\\EncodingType 0\\CryptSIPDllPutSignedDataMsg\\{C689AABA-8E78-11D0-8C47-00C04FC295EE}] 1781468583
+#time=1dcfc3b9a58c3b0
+"Dll"="WINTRUST.DLL"
+"FuncName"="CryptSIPPutSignedDataMsg"
+
+[Software\\Microsoft\\Cryptography\\OID\\EncodingType 0\\CryptSIPDllPutSignedDataMsg\\{DE351A42-8E59-11D0-8C47-00C04FC295EE}] 1781468583
+#time=1dcfc3b9a58a8ee
+"Dll"="WINTRUST.DLL"
+"FuncName"="CryptSIPPutSignedDataMsg"
+
+[Software\\Microsoft\\Cryptography\\OID\\EncodingType 0\\CryptSIPDllPutSignedDataMsg\\{DE351A43-8E59-11D0-8C47-00C04FC295EE}] 1781468583
+#time=1dcfc3b9a590582
+"Dll"="WINTRUST.DLL"
+"FuncName"="CryptSIPPutSignedDataMsg"
+
+[Software\\Microsoft\\Cryptography\\OID\\EncodingType 0\\CryptSIPDllRemoveSignedDataMsg\\{000C10F1-0000-0000-C000-000000000046}] 1781468583
+#time=1dcfc3b9a33045e
+"Dll"="MSISIP.DLL"
+"FuncName"="MsiSIPRemoveSignedDataMsg"
+
+[Software\\Microsoft\\Cryptography\\OID\\EncodingType 0\\CryptSIPDllRemoveSignedDataMsg\\{9BA61D3F-E73A-11D0-8CD2-00C04FC295EE}] 1781468583
+#time=1dcfc3b9a5923f0
+"Dll"="WINTRUST.DLL"
+"FuncName"="CryptSIPRemoveSignedDataMsg"
+
+[Software\\Microsoft\\Cryptography\\OID\\EncodingType 0\\CryptSIPDllRemoveSignedDataMsg\\{C689AAB8-8E78-11D0-8C47-00C04FC295EE}] 1781468583
+#time=1dcfc3b9a58e174
+"Dll"="WINTRUST.DLL"
+"FuncName"="CryptSIPRemoveSignedDataMsg"
+
+[Software\\Microsoft\\Cryptography\\OID\\EncodingType 0\\CryptSIPDllRemoveSignedDataMsg\\{C689AAB9-8E78-11D0-8C47-00C04FC295EE}] 1781468583
+#time=1dcfc3b9a58f984
+"Dll"="WINTRUST.DLL"
+"FuncName"="CryptSIPRemoveSignedDataMsg"
+
+[Software\\Microsoft\\Cryptography\\OID\\EncodingType 0\\CryptSIPDllRemoveSignedDataMsg\\{C689AABA-8E78-11D0-8C47-00C04FC295EE}] 1781468583
+#time=1dcfc3b9a58cba8
+"Dll"="WINTRUST.DLL"
+"FuncName"="CryptSIPRemoveSignedDataMsg"
+
+[Software\\Microsoft\\Cryptography\\OID\\EncodingType 0\\CryptSIPDllRemoveSignedDataMsg\\{DE351A42-8E59-11D0-8C47-00C04FC295EE}] 1781468583
+#time=1dcfc3b9a58b190
+"Dll"="WINTRUST.DLL"
+"FuncName"="CryptSIPRemoveSignedDataMsg"
+
+[Software\\Microsoft\\Cryptography\\OID\\EncodingType 0\\CryptSIPDllRemoveSignedDataMsg\\{DE351A43-8E59-11D0-8C47-00C04FC295EE}] 1781468583
+#time=1dcfc3b9a590d34
+"Dll"="WINTRUST.DLL"
+"FuncName"="CryptSIPRemoveSignedDataMsg"
+
+[Software\\Microsoft\\Cryptography\\OID\\EncodingType 0\\CryptSIPDllVerifyIndirectData\\{000C10F1-0000-0000-C000-000000000046}] 1781468583
+#time=1dcfc3b9a332efc
+"Dll"="MSISIP.DLL"
+"FuncName"="MsiSIPVerifyIndirectData"
+
+[Software\\Microsoft\\Cryptography\\OID\\EncodingType 0\\CryptSIPDllVerifyIndirectData\\{9BA61D3F-E73A-11D0-8CD2-00C04FC295EE}] 1781468583
+#time=1dcfc3b9a592e72
+"Dll"="WINTRUST.DLL"
+"FuncName"="CryptSIPVerifyIndirectData"
+
+[Software\\Microsoft\\Cryptography\\OID\\EncodingType 0\\CryptSIPDllVerifyIndirectData\\{C689AAB8-8E78-11D0-8C47-00C04FC295EE}] 1781468583
+#time=1dcfc3b9a58eb4c
+"Dll"="WINTRUST.DLL"
+"FuncName"="CryptSIPVerifyIndirectData"
+
+[Software\\Microsoft\\Cryptography\\OID\\EncodingType 0\\CryptSIPDllVerifyIndirectData\\{C689AAB9-8E78-11D0-8C47-00C04FC295EE}] 1781468583
+#time=1dcfc3b9a5901a4
+"Dll"="WINTRUST.DLL"
+"FuncName"="CryptSIPVerifyIndirectData"
+
+[Software\\Microsoft\\Cryptography\\OID\\EncodingType 0\\CryptSIPDllVerifyIndirectData\\{C689AABA-8E78-11D0-8C47-00C04FC295EE}] 1781468583
+#time=1dcfc3b9a58d350
+"Dll"="WINTRUST.DLL"
+"FuncName"="CryptSIPVerifyIndirectData"
+
+[Software\\Microsoft\\Cryptography\\OID\\EncodingType 0\\CryptSIPDllVerifyIndirectData\\{DE351A42-8E59-11D0-8C47-00C04FC295EE}] 1781468583
+#time=1dcfc3b9a58bd34
+"Dll"="WINTRUST.DLL"
+"FuncName"="CryptSIPVerifyIndirectData"
+
+[Software\\Microsoft\\Cryptography\\OID\\EncodingType 0\\CryptSIPDllVerifyIndirectData\\{DE351A43-8E59-11D0-8C47-00C04FC295EE}] 1781468583
+#time=1dcfc3b9a5914e6
+"Dll"="WINTRUST.DLL"
+"FuncName"="CryptSIPVerifyIndirectData"
+
+[Software\\Microsoft\\Cryptography\\OID\\EncodingType 1\\CertDllVerifyRevocation\\DEFAULT] 1781468577
+#time=1dcfc3b96c8d8e8
+"Dll"=str(7):"cryptnet.dll\0"
+
+[Software\\Microsoft\\Cryptography\\OID\\EncodingType 1\\CryptDllDecodeObject\\#2000] 1781468583
+#time=1dcfc3b9a56bae8
+"Dll"="WINTRUST.DLL"
+"FuncName"="WVTAsn1SpcSpAgencyInfoDecode"
+
+[Software\\Microsoft\\Cryptography\\OID\\EncodingType 1\\CryptDllDecodeObject\\#2001] 1781468583
+#time=1dcfc3b9a56ca42
+"Dll"="WINTRUST.DLL"
+"FuncName"="WVTAsn1SpcMinimalCriteriaInfoDecode"
+
+[Software\\Microsoft\\Cryptography\\OID\\EncodingType 1\\CryptDllDecodeObject\\#2002] 1781468583
+#time=1dcfc3b9a56dd84
+"Dll"="WINTRUST.DLL"
+"FuncName"="WVTAsn1SpcFinancialCriteriaInfoDecode"
+
+[Software\\Microsoft\\Cryptography\\OID\\EncodingType 1\\CryptDllDecodeObject\\#2003] 1781468583
+#time=1dcfc3b9a56ab70
+"Dll"="WINTRUST.DLL"
+"FuncName"="WVTAsn1SpcIndirectDataContentDecode"
+
+[Software\\Microsoft\\Cryptography\\OID\\EncodingType 1\\CryptDllDecodeObject\\#2004] 1781468583
+#time=1dcfc3b9a5653e6
+"Dll"="WINTRUST.DLL"
+"FuncName"="WVTAsn1SpcPeImageDataDecode"
+
+[Software\\Microsoft\\Cryptography\\OID\\EncodingType 1\\CryptDllDecodeObject\\#2005] 1781468583
+#time=1dcfc3b9a56891a
+"Dll"="WINTRUST.DLL"
+"FuncName"="WVTAsn1SpcLinkDecode"
+
+[Software\\Microsoft\\Cryptography\\OID\\EncodingType 1\\CryptDllDecodeObject\\#2006] 1781468583
+#time=1dcfc3b9a56ecb6
+"Dll"="WINTRUST.DLL"
+"FuncName"="WVTAsn1SpcStatementTypeDecode"
+
+[Software\\Microsoft\\Cryptography\\OID\\EncodingType 1\\CryptDllDecodeObject\\#2007] 1781468583
+#time=1dcfc3b9a572226
+"Dll"="WINTRUST.DLL"
+"FuncName"="WVTAsn1SpcSpOpusInfoDecode"
+
+[Software\\Microsoft\\Cryptography\\OID\\EncodingType 1\\CryptDllDecodeObject\\#2008] 1781468583
+#time=1dcfc3b9a566674
+"Dll"="WINTRUST.DLL"
+"FuncName"="WVTAsn1SpcLinkDecode"
+
+[Software\\Microsoft\\Cryptography\\OID\\EncodingType 1\\CryptDllDecodeObject\\#2009] 1781468583
+#time=1dcfc3b9a567948
+"Dll"="WINTRUST.DLL"
+"FuncName"="WVTAsn1SpcLinkDecode"
+
+[Software\\Microsoft\\Cryptography\\OID\\EncodingType 1\\CryptDllDecodeObject\\#2130] 1781468583
+#time=1dcfc3b9a5699c8
+"Dll"="WINTRUST.DLL"
+"FuncName"="WVTAsn1SpcSigInfoDecode"
+
+[Software\\Microsoft\\Cryptography\\OID\\EncodingType 1\\CryptDllDecodeObject\\#2221] 1781468583
+#time=1dcfc3b9a56fbd4
+"Dll"="WINTRUST.DLL"
+"FuncName"="WVTAsn1CatNameValueDecode"
+
+[Software\\Microsoft\\Cryptography\\OID\\EncodingType 1\\CryptDllDecodeObject\\#2222] 1781468583
+#time=1dcfc3b9a570d18
+"Dll"="WINTRUST.DLL"
+"FuncName"="WVTAsn1CatMemberInfoDecode"
+
+[Software\\Microsoft\\Cryptography\\OID\\EncodingType 1\\CryptDllDecodeObject\\1.3.6.1.4.1.311.12.2.1] 1781468583
+#time=1dcfc3b9a56f440
+"Dll"="WINTRUST.DLL"
+"FuncName"="WVTAsn1CatNameValueDecode"
+
+[Software\\Microsoft\\Cryptography\\OID\\EncodingType 1\\CryptDllDecodeObject\\1.3.6.1.4.1.311.12.2.2] 1781468583
+#time=1dcfc3b9a5703d6
+"Dll"="WINTRUST.DLL"
+"FuncName"="WVTAsn1CatMemberInfoDecode"
+
+[Software\\Microsoft\\Cryptography\\OID\\EncodingType 1\\CryptDllDecodeObject\\1.3.6.1.4.1.311.16.1.1] 1781468577
+#time=1dcfc3b96c883de
+"Dll"="cryptdlg.dll"
+"FuncName"="DecodeAttrSequence"
+
+[Software\\Microsoft\\Cryptography\\OID\\EncodingType 1\\CryptDllDecodeObject\\1.3.6.1.4.1.311.16.4] 1781468577
+#time=1dcfc3b96c88870
+"Dll"="cryptdlg.dll"
+"FuncName"="DecodeRecipientID"
+
+[Software\\Microsoft\\Cryptography\\OID\\EncodingType 1\\CryptDllDecodeObject\\1.3.6.1.4.1.311.2.1.10] 1781468583
+#time=1dcfc3b9a56b32c
+"Dll"="WINTRUST.DLL"
+"FuncName"="WVTAsn1SpcSpAgencyInfoDecode"
+
+[Software\\Microsoft\\Cryptography\\OID\\EncodingType 1\\CryptDllDecodeObject\\1.3.6.1.4.1.311.2.1.11] 1781468583
+#time=1dcfc3b9a56e518
+"Dll"="WINTRUST.DLL"
+"FuncName"="WVTAsn1SpcStatementTypeDecode"
+
+[Software\\Microsoft\\Cryptography\\OID\\EncodingType 1\\CryptDllDecodeObject\\1.3.6.1.4.1.311.2.1.12] 1781468583
+#time=1dcfc3b9a5714e8
+"Dll"="WINTRUST.DLL"
+"FuncName"="WVTAsn1SpcSpOpusInfoDecode"
+
+[Software\\Microsoft\\Cryptography\\OID\\EncodingType 1\\CryptDllDecodeObject\\1.3.6.1.4.1.311.2.1.15] 1781468583
+#time=1dcfc3b9a564bee
+"Dll"="WINTRUST.DLL"
+"FuncName"="WVTAsn1SpcPeImageDataDecode"
+
+[Software\\Microsoft\\Cryptography\\OID\\EncodingType 1\\CryptDllDecodeObject\\1.3.6.1.4.1.311.2.1.20] 1781468583
+#time=1dcfc3b9a5670c4
+"Dll"="WINTRUST.DLL"
+"FuncName"="WVTAsn1SpcLinkDecode"
+
+[Software\\Microsoft\\Cryptography\\OID\\EncodingType 1\\CryptDllDecodeObject\\1.3.6.1.4.1.311.2.1.25] 1781468583
+#time=1dcfc3b9a565ba2
+"Dll"="WINTRUST.DLL"
+"FuncName"="WVTAsn1SpcLinkDecode"
+
+[Software\\Microsoft\\Cryptography\\OID\\EncodingType 1\\CryptDllDecodeObject\\1.3.6.1.4.1.311.2.1.26] 1781468583
+#time=1dcfc3b9a56c29a
+"Dll"="WINTRUST.DLL"
+"FuncName"="WVTAsn1SpcMinimalCriteriaInfoDecode"
+
+[Software\\Microsoft\\Cryptography\\OID\\EncodingType 1\\CryptDllDecodeObject\\1.3.6.1.4.1.311.2.1.27] 1781468583
+#time=1dcfc3b9a56d5fa
+"Dll"="WINTRUST.DLL"
+"FuncName"="WVTAsn1SpcFinancialCriteriaInfoDecode"
+
+[Software\\Microsoft\\Cryptography\\OID\\EncodingType 1\\CryptDllDecodeObject\\1.3.6.1.4.1.311.2.1.28] 1781468583
+#time=1dcfc3b9a56819a
+"Dll"="WINTRUST.DLL"
+"FuncName"="WVTAsn1SpcLinkDecode"
+
+[Software\\Microsoft\\Cryptography\\OID\\EncodingType 1\\CryptDllDecodeObject\\1.3.6.1.4.1.311.2.1.30] 1781468583
+#time=1dcfc3b9a56914e
+"Dll"="WINTRUST.DLL"
+"FuncName"="WVTAsn1SpcSigInfoDecode"
+
+[Software\\Microsoft\\Cryptography\\OID\\EncodingType 1\\CryptDllDecodeObject\\1.3.6.1.4.1.311.2.1.4] 1781468583
+#time=1dcfc3b9a56a3be
+"Dll"="WINTRUST.DLL"
+"FuncName"="WVTAsn1SpcIndirectDataContentDecode"
+
+[Software\\Microsoft\\Cryptography\\OID\\EncodingType 1\\CryptDllEncodeObject\\#2000] 1781468583
+#time=1dcfc3b9a56b700
+"Dll"="WINTRUST.DLL"
+"FuncName"="WVTAsn1SpcSpAgencyInfoEncode"
+
+[Software\\Microsoft\\Cryptography\\OID\\EncodingType 1\\CryptDllEncodeObject\\#2001] 1781468583
+#time=1dcfc3b9a56c66e
+"Dll"="WINTRUST.DLL"
+"FuncName"="WVTAsn1SpcMinimalCriteriaInfoEncode"
+
+[Software\\Microsoft\\Cryptography\\OID\\EncodingType 1\\CryptDllEncodeObject\\#2002] 1781468583
+#time=1dcfc3b9a56d9c4
+"Dll"="WINTRUST.DLL"
+"FuncName"="WVTAsn1SpcFinancialCriteriaInfoEncode"
+
+[Software\\Microsoft\\Cryptography\\OID\\EncodingType 1\\CryptDllEncodeObject\\#2003] 1781468583
+#time=1dcfc3b9a56a79c
+"Dll"="WINTRUST.DLL"
+"FuncName"="WVTAsn1SpcIndirectDataContentEncode"
+
+[Software\\Microsoft\\Cryptography\\OID\\EncodingType 1\\CryptDllEncodeObject\\#2004] 1781468583
+#time=1dcfc3b9a564fc2
+"Dll"="WINTRUST.DLL"
+"FuncName"="WVTAsn1SpcPeImageDataEncode"
+
+[Software\\Microsoft\\Cryptography\\OID\\EncodingType 1\\CryptDllEncodeObject\\#2005] 1781468583
+#time=1dcfc3b9a568564
+"Dll"="WINTRUST.DLL"
+"FuncName"="WVTAsn1SpcLinkEncode"
+
+[Software\\Microsoft\\Cryptography\\OID\\EncodingType 1\\CryptDllEncodeObject\\#2006] 1781468583
+#time=1dcfc3b9a56e8ec
+"Dll"="WINTRUST.DLL"
+"FuncName"="WVTAsn1SpcStatementTypeEncode"
+
+[Software\\Microsoft\\Cryptography\\OID\\EncodingType 1\\CryptDllEncodeObject\\#2007] 1781468583
+#time=1dcfc3b9a571dda
+"Dll"="WINTRUST.DLL"
+"FuncName"="WVTAsn1SpcSpOpusInfoEncode"
+
+[Software\\Microsoft\\Cryptography\\OID\\EncodingType 1\\CryptDllEncodeObject\\#2008] 1781468583
+#time=1dcfc3b9a566142
+"Dll"="WINTRUST.DLL"
+"FuncName"="WVTAsn1SpcLinkEncode"
+
+[Software\\Microsoft\\Cryptography\\OID\\EncodingType 1\\CryptDllEncodeObject\\#2009] 1781468583
+#time=1dcfc3b9a56754c
+"Dll"="WINTRUST.DLL"
+"FuncName"="WVTAsn1SpcLinkEncode"
+
+[Software\\Microsoft\\Cryptography\\OID\\EncodingType 1\\CryptDllEncodeObject\\#2130] 1781468583
+#time=1dcfc3b9a5695d6
+"Dll"="WINTRUST.DLL"
+"FuncName"="WVTAsn1SpcSigInfoEncode"
+
+[Software\\Microsoft\\Cryptography\\OID\\EncodingType 1\\CryptDllEncodeObject\\#2221] 1781468583
+#time=1dcfc3b9a56f80a
+"Dll"="WINTRUST.DLL"
+"FuncName"="WVTAsn1CatNameValueEncode"
+
+[Software\\Microsoft\\Cryptography\\OID\\EncodingType 1\\CryptDllEncodeObject\\#2222] 1781468583
+#time=1dcfc3b9a5708c2
+"Dll"="WINTRUST.DLL"
+"FuncName"="WVTAsn1CatMemberInfoEncode"
+
+[Software\\Microsoft\\Cryptography\\OID\\EncodingType 1\\CryptDllEncodeObject\\1.3.6.1.4.1.311.12.2.1] 1781468583
+#time=1dcfc3b9a56f080
+"Dll"="WINTRUST.DLL"
+"FuncName"="WVTAsn1CatNameValueEncode"
+
+[Software\\Microsoft\\Cryptography\\OID\\EncodingType 1\\CryptDllEncodeObject\\1.3.6.1.4.1.311.12.2.2] 1781468583
+#time=1dcfc3b9a56ff9e
+"Dll"="WINTRUST.DLL"
+"FuncName"="WVTAsn1CatMemberInfoEncode"
+
+[Software\\Microsoft\\Cryptography\\OID\\EncodingType 1\\CryptDllEncodeObject\\1.3.6.1.4.1.311.16.1.1] 1781468577
+#time=1dcfc3b96c8632c
+"Dll"="cryptdlg.dll"
+"FuncName"="EncodeAttrSequence"
+
+[Software\\Microsoft\\Cryptography\\OID\\EncodingType 1\\CryptDllEncodeObject\\1.3.6.1.4.1.311.16.4] 1781468577
+#time=1dcfc3b96c869bc
+"Dll"="cryptdlg.dll"
+"FuncName"="EncodeRecipientID"
+
+[Software\\Microsoft\\Cryptography\\OID\\EncodingType 1\\CryptDllEncodeObject\\1.3.6.1.4.1.311.2.1.10] 1781468583
+#time=1dcfc3b9a56af4e
+"Dll"="WINTRUST.DLL"
+"FuncName"="WVTAsn1SpcSpAgencyInfoEncode"
+
+[Software\\Microsoft\\Cryptography\\OID\\EncodingType 1\\CryptDllEncodeObject\\1.3.6.1.4.1.311.2.1.11] 1781468583
+#time=1dcfc3b9a56e14e
+"Dll"="WINTRUST.DLL"
+"FuncName"="WVTAsn1SpcStatementTypeEncode"
+
+[Software\\Microsoft\\Cryptography\\OID\\EncodingType 1\\CryptDllEncodeObject\\1.3.6.1.4.1.311.2.1.12] 1781468583
+#time=1dcfc3b9a571100
+"Dll"="WINTRUST.DLL"
+"FuncName"="WVTAsn1SpcSpOpusInfoEncode"
+
+[Software\\Microsoft\\Cryptography\\OID\\EncodingType 1\\CryptDllEncodeObject\\1.3.6.1.4.1.311.2.1.15] 1781468583
+#time=1dcfc3b9a56481a
+"Dll"="WINTRUST.DLL"
+"FuncName"="WVTAsn1SpcPeImageDataEncode"
+
+[Software\\Microsoft\\Cryptography\\OID\\EncodingType 1\\CryptDllEncodeObject\\1.3.6.1.4.1.311.2.1.20] 1781468583
+#time=1dcfc3b9a566c50
+"Dll"="WINTRUST.DLL"
+"FuncName"="WVTAsn1SpcLinkEncode"
+
+[Software\\Microsoft\\Cryptography\\OID\\EncodingType 1\\CryptDllEncodeObject\\1.3.6.1.4.1.311.2.1.25] 1781468583
+#time=1dcfc3b9a5657ce
+"Dll"="WINTRUST.DLL"
+"FuncName"="WVTAsn1SpcLinkEncode"
+
+[Software\\Microsoft\\Cryptography\\OID\\EncodingType 1\\CryptDllEncodeObject\\1.3.6.1.4.1.311.2.1.26] 1781468583
+#time=1dcfc3b9a56bebc
+"Dll"="WINTRUST.DLL"
+"FuncName"="WVTAsn1SpcMinimalCriteriaInfoEncode"
+
+[Software\\Microsoft\\Cryptography\\OID\\EncodingType 1\\CryptDllEncodeObject\\1.3.6.1.4.1.311.2.1.27] 1781468583
+#time=1dcfc3b9a56d1b8
+"Dll"="WINTRUST.DLL"
+"FuncName"="WVTAsn1SpcFinancialCriteriaInfoEncode"
+
+[Software\\Microsoft\\Cryptography\\OID\\EncodingType 1\\CryptDllEncodeObject\\1.3.6.1.4.1.311.2.1.28] 1781468583
+#time=1dcfc3b9a567d4e
+"Dll"="WINTRUST.DLL"
+"FuncName"="WVTAsn1SpcLinkEncode"
+
+[Software\\Microsoft\\Cryptography\\OID\\EncodingType 1\\CryptDllEncodeObject\\1.3.6.1.4.1.311.2.1.30] 1781468583
+#time=1dcfc3b9a568cee
+"Dll"="WINTRUST.DLL"
+"FuncName"="WVTAsn1SpcSigInfoEncode"
+
+[Software\\Microsoft\\Cryptography\\OID\\EncodingType 1\\CryptDllEncodeObject\\1.3.6.1.4.1.311.2.1.4] 1781468583
+#time=1dcfc3b9a569fcc
+"Dll"="WINTRUST.DLL"
+"FuncName"="WVTAsn1SpcIndirectDataContentEncode"
+
+[Software\\Microsoft\\Cryptography\\OID\\EncodingType 1\\CryptDllFormatObject\\1.3.6.1.5.5.7.3.4] 1781468577
+#time=1dcfc3b96c8a17a
+"Dll"="cryptdlg.dll"
+"FuncName"="FormatPKIXEmailProtection"
+
+[Software\\Microsoft\\Cryptography\\OID\\EncodingType 1\\CryptDllFormatObject\\2.5.29.32] 1781468577
+#time=1dcfc3b96c8a602
+"Dll"="cryptdlg.dll"
+"FuncName"="FormatVerisignExtension"
+
+[Software\\Wow6432Node\\Microsoft\\Cryptography\\Defaults\\Provider Types\\Type 001] 1781468586
+#time=1dcfc3b9bcc9348
+"Name"="Microsoft Enhanced Cryptographic Provider v1.0"
+"TypeName"="RSA Full (Signature and Key Exchange)"
+
+[Software\\Wow6432Node\\Microsoft\\Cryptography\\Defaults\\Provider Types\\Type 003] 1781468585
+#time=1dcfc3b9b22122e
+"Name"="Microsoft Base DSS Cryptographic Provider"
+"TypeName"="DSS Signature"
+
+[Software\\Wow6432Node\\Microsoft\\Cryptography\\Defaults\\Provider Types\\Type 012] 1781468586
+#time=1dcfc3b9bcc9a1e
+"Name"="Microsoft RSA SChannel Cryptographic Provider"
+"TypeName"="RSA SChannel"
+
+[Software\\Wow6432Node\\Microsoft\\Cryptography\\Defaults\\Provider Types\\Type 013] 1781468585
+#time=1dcfc3b9b221b16
+"Name"="Microsoft Enhanced DSS and Diffie-Hellman Cryptographic Provider"
+"TypeName"="DSS Signature with Diffie-Hellman Key Exchange"
+
+[Software\\Wow6432Node\\Microsoft\\Cryptography\\Defaults\\Provider Types\\Type 018] 1781468585
+#time=1dcfc3b9b2220d4
+"Name"="Microsoft DH SChannel Cryptographic Provider"
+"TypeName"="Diffie-Hellman SChannel"
+
+[Software\\Wow6432Node\\Microsoft\\Cryptography\\Defaults\\Provider Types\\Type 024] 1781468586
+#time=1dcfc3b9bcca108
+"Name"="Microsoft Enhanced RSA and AES Cryptographic Provider"
+"TypeName"="RSA Full and AES"
+
+[Software\\Wow6432Node\\Microsoft\\Cryptography\\OID\\EncodingType 0\\CertDllOpenStoreProv\\#16] 1781468587
+#time=1dcfc3b9c66452e
+"Dll"="cryptnet.dll"
+"FuncName"="LdapProvOpenStore"
+
+[Software\\Wow6432Node\\Microsoft\\Cryptography\\OID\\EncodingType 0\\CertDllOpenStoreProv\\Ldap] 1781468587
+#time=1dcfc3b9c66415a
+"Dll"="cryptnet.dll"
+"FuncName"="LdapProvOpenStore"
+
+[Software\\Wow6432Node\\Microsoft\\Cryptography\\OID\\EncodingType 0\\CryptSIPDllCreateIndirectData\\{000C10F1-0000-0000-C000-000000000046}] 1781468587
+#time=1dcfc3b9c75d8a4
+"Dll"="MSISIP.DLL"
+"FuncName"="MsiSIPCreateIndirectData"
+
+[Software\\Wow6432Node\\Microsoft\\Cryptography\\OID\\EncodingType 0\\CryptSIPDllCreateIndirectData\\{9BA61D3F-E73A-11D0-8CD2-00C04FC295EE}] 1781468587
+#time=1dcfc3b9cb413e4
+"Dll"="WINTRUST.DLL"
+"FuncName"="CryptSIPCreateIndirectData"
+
+[Software\\Wow6432Node\\Microsoft\\Cryptography\\OID\\EncodingType 0\\CryptSIPDllCreateIndirectData\\{C689AAB8-8E78-11D0-8C47-00C04FC295EE}] 1781468587
+#time=1dcfc3b9cb3d08c
+"Dll"="WINTRUST.DLL"
+"FuncName"="CryptSIPCreateIndirectData"
+
+[Software\\Wow6432Node\\Microsoft\\Cryptography\\OID\\EncodingType 0\\CryptSIPDllCreateIndirectData\\{C689AAB9-8E78-11D0-8C47-00C04FC295EE}] 1781468587
+#time=1dcfc3b9cb3e4b4
+"Dll"="WINTRUST.DLL"
+"FuncName"="CryptSIPCreateIndirectData"
+
+[Software\\Wow6432Node\\Microsoft\\Cryptography\\OID\\EncodingType 0\\CryptSIPDllCreateIndirectData\\{C689AABA-8E78-11D0-8C47-00C04FC295EE}] 1781468587
+#time=1dcfc3b9cb3bb92
+"Dll"="WINTRUST.DLL"
+"FuncName"="CryptSIPCreateIndirectData"
+
+[Software\\Wow6432Node\\Microsoft\\Cryptography\\OID\\EncodingType 0\\CryptSIPDllCreateIndirectData\\{DE351A42-8E59-11D0-8C47-00C04FC295EE}] 1781468587
+#time=1dcfc3b9cb3a0e4
+"Dll"="WINTRUST.DLL"
+"FuncName"="CryptSIPCreateIndirectData"
+
+[Software\\Wow6432Node\\Microsoft\\Cryptography\\OID\\EncodingType 0\\CryptSIPDllCreateIndirectData\\{DE351A43-8E59-11D0-8C47-00C04FC295EE}] 1781468587
+#time=1dcfc3b9cb3fd00
+"Dll"="WINTRUST.DLL"
+"FuncName"="CryptSIPCreateIndirectData"
+
+[Software\\Wow6432Node\\Microsoft\\Cryptography\\OID\\EncodingType 0\\CryptSIPDllGetSignedDataMsg\\{000C10F1-0000-0000-C000-000000000046}] 1781468587
+#time=1dcfc3b9c75934e
+"Dll"="MSISIP.DLL"
+"FuncName"="MsiSIPGetSignedDataMsg"
+
+[Software\\Wow6432Node\\Microsoft\\Cryptography\\OID\\EncodingType 0\\CryptSIPDllGetSignedDataMsg\\{9BA61D3F-E73A-11D0-8CD2-00C04FC295EE}] 1781468587
+#time=1dcfc3b9cb40b10
+"Dll"="WINTRUST.DLL"
+"FuncName"="CryptSIPGetSignedDataMsg"
+
+[Software\\Wow6432Node\\Microsoft\\Cryptography\\OID\\EncodingType 0\\CryptSIPDllGetSignedDataMsg\\{C689AAB8-8E78-11D0-8C47-00C04FC295EE}] 1781468587
+#time=1dcfc3b9cb3c8da
+"Dll"="WINTRUST.DLL"
+"FuncName"="CryptSIPGetSignedDataMsg"
+
+[Software\\Wow6432Node\\Microsoft\\Cryptography\\OID\\EncodingType 0\\CryptSIPDllGetSignedDataMsg\\{C689AAB9-8E78-11D0-8C47-00C04FC295EE}] 1781468587
+#time=1dcfc3b9cb3dcda
+"Dll"="WINTRUST.DLL"
+"FuncName"="CryptSIPGetSignedDataMsg"
+
+[Software\\Wow6432Node\\Microsoft\\Cryptography\\OID\\EncodingType 0\\CryptSIPDllGetSignedDataMsg\\{C689AABA-8E78-11D0-8C47-00C04FC295EE}] 1781468587
+#time=1dcfc3b9cb3b138
+"Dll"="WINTRUST.DLL"
+"FuncName"="CryptSIPGetSignedDataMsg"
+
+[Software\\Wow6432Node\\Microsoft\\Cryptography\\OID\\EncodingType 0\\CryptSIPDllGetSignedDataMsg\\{DE351A42-8E59-11D0-8C47-00C04FC295EE}] 1781468587
+#time=1dcfc3b9cb398ec
+"Dll"="WINTRUST.DLL"
+"FuncName"="CryptSIPGetSignedDataMsg"
+
+[Software\\Wow6432Node\\Microsoft\\Cryptography\\OID\\EncodingType 0\\CryptSIPDllGetSignedDataMsg\\{DE351A43-8E59-11D0-8C47-00C04FC295EE}] 1781468587
+#time=1dcfc3b9cb3f300
+"Dll"="WINTRUST.DLL"
+"FuncName"="CryptSIPGetSignedDataMsg"
+
+[Software\\Wow6432Node\\Microsoft\\Cryptography\\OID\\EncodingType 0\\CryptSIPDllIsMyFileType2\\{000C10F1-0000-0000-C000-000000000046}] 1781468587
+#time=1dcfc3b9c761260
+"Dll"="MSISIP.DLL"
+"FuncName"="MsiSIPIsMyTypeOfFile"
+
+[Software\\Wow6432Node\\Microsoft\\Cryptography\\OID\\EncodingType 0\\CryptSIPDllPutSignedDataMsg\\{000C10F1-0000-0000-C000-000000000046}] 1781468587
+#time=1dcfc3b9c75666c
+"Dll"="MSISIP.DLL"
+"FuncName"="MsiSIPPutSignedDataMsg"
+
+[Software\\Wow6432Node\\Microsoft\\Cryptography\\OID\\EncodingType 0\\CryptSIPDllPutSignedDataMsg\\{9BA61D3F-E73A-11D0-8CD2-00C04FC295EE}] 1781468587
+#time=1dcfc3b9cb40692
+"Dll"="WINTRUST.DLL"
+"FuncName"="CryptSIPPutSignedDataMsg"
+
+[Software\\Wow6432Node\\Microsoft\\Cryptography\\OID\\EncodingType 0\\CryptSIPDllPutSignedDataMsg\\{C689AAB8-8E78-11D0-8C47-00C04FC295EE}] 1781468587
+#time=1dcfc3b9cb3c4b6
+"Dll"="WINTRUST.DLL"
+"FuncName"="CryptSIPPutSignedDataMsg"
+
+[Software\\Wow6432Node\\Microsoft\\Cryptography\\OID\\EncodingType 0\\CryptSIPDllPutSignedDataMsg\\{C689AAB9-8E78-11D0-8C47-00C04FC295EE}] 1781468587
+#time=1dcfc3b9cb3d82a
+"Dll"="WINTRUST.DLL"
+"FuncName"="CryptSIPPutSignedDataMsg"
+
+[Software\\Wow6432Node\\Microsoft\\Cryptography\\OID\\EncodingType 0\\CryptSIPDllPutSignedDataMsg\\{C689AABA-8E78-11D0-8C47-00C04FC295EE}] 1781468587
+#time=1dcfc3b9cb3ac7e
+"Dll"="WINTRUST.DLL"
+"FuncName"="CryptSIPPutSignedDataMsg"
+
+[Software\\Wow6432Node\\Microsoft\\Cryptography\\OID\\EncodingType 0\\CryptSIPDllPutSignedDataMsg\\{DE351A42-8E59-11D0-8C47-00C04FC295EE}] 1781468587
+#time=1dcfc3b9cb39496
+"Dll"="WINTRUST.DLL"
+"FuncName"="CryptSIPPutSignedDataMsg"
+
+[Software\\Wow6432Node\\Microsoft\\Cryptography\\OID\\EncodingType 0\\CryptSIPDllPutSignedDataMsg\\{DE351A43-8E59-11D0-8C47-00C04FC295EE}] 1781468587
+#time=1dcfc3b9cb3ed24
+"Dll"="WINTRUST.DLL"
+"FuncName"="CryptSIPPutSignedDataMsg"
+
+[Software\\Wow6432Node\\Microsoft\\Cryptography\\OID\\EncodingType 0\\CryptSIPDllRemoveSignedDataMsg\\{000C10F1-0000-0000-C000-000000000046}] 1781468587
+#time=1dcfc3b9c75bd4c
+"Dll"="MSISIP.DLL"
+"FuncName"="MsiSIPRemoveSignedDataMsg"
+
+[Software\\Wow6432Node\\Microsoft\\Cryptography\\OID\\EncodingType 0\\CryptSIPDllRemoveSignedDataMsg\\{9BA61D3F-E73A-11D0-8CD2-00C04FC295EE}] 1781468587
+#time=1dcfc3b9cb40f02
+"Dll"="WINTRUST.DLL"
+"FuncName"="CryptSIPRemoveSignedDataMsg"
+
+[Software\\Wow6432Node\\Microsoft\\Cryptography\\OID\\EncodingType 0\\CryptSIPDllRemoveSignedDataMsg\\{C689AAB8-8E78-11D0-8C47-00C04FC295EE}] 1781468587
+#time=1dcfc3b9cb3ccb8
+"Dll"="WINTRUST.DLL"
+"FuncName"="CryptSIPRemoveSignedDataMsg"
+
+[Software\\Wow6432Node\\Microsoft\\Cryptography\\OID\\EncodingType 0\\CryptSIPDllRemoveSignedDataMsg\\{C689AAB9-8E78-11D0-8C47-00C04FC295EE}] 1781468587
+#time=1dcfc3b9cb3e0e0
+"Dll"="WINTRUST.DLL"
+"FuncName"="CryptSIPRemoveSignedDataMsg"
+
+[Software\\Wow6432Node\\Microsoft\\Cryptography\\OID\\EncodingType 0\\CryptSIPDllRemoveSignedDataMsg\\{C689AABA-8E78-11D0-8C47-00C04FC295EE}] 1781468587
+#time=1dcfc3b9cb3b6ce
+"Dll"="WINTRUST.DLL"
+"FuncName"="CryptSIPRemoveSignedDataMsg"
+
+[Software\\Wow6432Node\\Microsoft\\Cryptography\\OID\\EncodingType 0\\CryptSIPDllRemoveSignedDataMsg\\{DE351A42-8E59-11D0-8C47-00C04FC295EE}] 1781468587
+#time=1dcfc3b9cb39cde
+"Dll"="WINTRUST.DLL"
+"FuncName"="CryptSIPRemoveSignedDataMsg"
+
+[Software\\Wow6432Node\\Microsoft\\Cryptography\\OID\\EncodingType 0\\CryptSIPDllRemoveSignedDataMsg\\{DE351A43-8E59-11D0-8C47-00C04FC295EE}] 1781468587
+#time=1dcfc3b9cb3f814
+"Dll"="WINTRUST.DLL"
+"FuncName"="CryptSIPRemoveSignedDataMsg"
+
+[Software\\Wow6432Node\\Microsoft\\Cryptography\\OID\\EncodingType 0\\CryptSIPDllVerifyIndirectData\\{000C10F1-0000-0000-C000-000000000046}] 1781468587
+#time=1dcfc3b9c75f55a
+"Dll"="MSISIP.DLL"
+"FuncName"="MsiSIPVerifyIndirectData"
+
+[Software\\Wow6432Node\\Microsoft\\Cryptography\\OID\\EncodingType 0\\CryptSIPDllVerifyIndirectData\\{9BA61D3F-E73A-11D0-8CD2-00C04FC295EE}] 1781468587
+#time=1dcfc3b9cb417b8
+"Dll"="WINTRUST.DLL"
+"FuncName"="CryptSIPVerifyIndirectData"
+
+[Software\\Wow6432Node\\Microsoft\\Cryptography\\OID\\EncodingType 0\\CryptSIPDllVerifyIndirectData\\{C689AAB8-8E78-11D0-8C47-00C04FC295EE}] 1781468587
+#time=1dcfc3b9cb3d456
+"Dll"="WINTRUST.DLL"
+"FuncName"="CryptSIPVerifyIndirectData"
+
+[Software\\Wow6432Node\\Microsoft\\Cryptography\\OID\\EncodingType 0\\CryptSIPDllVerifyIndirectData\\{C689AAB9-8E78-11D0-8C47-00C04FC295EE}] 1781468587
+#time=1dcfc3b9cb3e892
+"Dll"="WINTRUST.DLL"
+"FuncName"="CryptSIPVerifyIndirectData"
+
+[Software\\Wow6432Node\\Microsoft\\Cryptography\\OID\\EncodingType 0\\CryptSIPDllVerifyIndirectData\\{C689AABA-8E78-11D0-8C47-00C04FC295EE}] 1781468587
+#time=1dcfc3b9cb3bfde
+"Dll"="WINTRUST.DLL"
+"FuncName"="CryptSIPVerifyIndirectData"
+
+[Software\\Wow6432Node\\Microsoft\\Cryptography\\OID\\EncodingType 0\\CryptSIPDllVerifyIndirectData\\{DE351A42-8E59-11D0-8C47-00C04FC295EE}] 1781468587
+#time=1dcfc3b9cb3a6ac
+"Dll"="WINTRUST.DLL"
+"FuncName"="CryptSIPVerifyIndirectData"
+
+[Software\\Wow6432Node\\Microsoft\\Cryptography\\OID\\EncodingType 0\\CryptSIPDllVerifyIndirectData\\{DE351A43-8E59-11D0-8C47-00C04FC295EE}] 1781468587
+#time=1dcfc3b9cb400f2
+"Dll"="WINTRUST.DLL"
+"FuncName"="CryptSIPVerifyIndirectData"
+
+[Software\\Wow6432Node\\Microsoft\\Cryptography\\OID\\EncodingType 1\\CertDllVerifyRevocation\\DEFAULT] 1781468587
+#time=1dcfc3b9c6627ba
+"Dll"=str(7):"cryptnet.dll\0"
+
+[Software\\Wow6432Node\\Microsoft\\Cryptography\\OID\\EncodingType 1\\CryptDllDecodeObject\\#2000] 1781468587
+#time=1dcfc3b9cb0fbf0
+"Dll"="WINTRUST.DLL"
+"FuncName"="WVTAsn1SpcSpAgencyInfoDecode"
+
+[Software\\Wow6432Node\\Microsoft\\Cryptography\\OID\\EncodingType 1\\CryptDllDecodeObject\\#2001] 1781468587
+#time=1dcfc3b9cb10b90
+"Dll"="WINTRUST.DLL"
+"FuncName"="WVTAsn1SpcMinimalCriteriaInfoDecode"
+
+[Software\\Wow6432Node\\Microsoft\\Cryptography\\OID\\EncodingType 1\\CryptDllDecodeObject\\#2002] 1781468587
+#time=1dcfc3b9cb11b08
+"Dll"="WINTRUST.DLL"
+"FuncName"="WVTAsn1SpcFinancialCriteriaInfoDecode"
+
+[Software\\Wow6432Node\\Microsoft\\Cryptography\\OID\\EncodingType 1\\CryptDllDecodeObject\\#2003] 1781468587
+#time=1dcfc3b9cb0e8fe
+"Dll"="WINTRUST.DLL"
+"FuncName"="WVTAsn1SpcIndirectDataContentDecode"
+
+[Software\\Wow6432Node\\Microsoft\\Cryptography\\OID\\EncodingType 1\\CryptDllDecodeObject\\#2004] 1781468587
+#time=1dcfc3b9cb09552
+"Dll"="WINTRUST.DLL"
+"FuncName"="WVTAsn1SpcPeImageDataDecode"
+
+[Software\\Wow6432Node\\Microsoft\\Cryptography\\OID\\EncodingType 1\\CryptDllDecodeObject\\#2005] 1781468587
+#time=1dcfc3b9cb0ca18
+"Dll"="WINTRUST.DLL"
+"FuncName"="WVTAsn1SpcLinkDecode"
+
+[Software\\Wow6432Node\\Microsoft\\Cryptography\\OID\\EncodingType 1\\CryptDllDecodeObject\\#2006] 1781468587
+#time=1dcfc3b9cb13098
+"Dll"="WINTRUST.DLL"
+"FuncName"="WVTAsn1SpcStatementTypeDecode"
+
+[Software\\Wow6432Node\\Microsoft\\Cryptography\\OID\\EncodingType 1\\CryptDllDecodeObject\\#2007] 1781468587
+#time=1dcfc3b9cb17422
+"Dll"="WINTRUST.DLL"
+"FuncName"="WVTAsn1SpcSpOpusInfoDecode"
+
+[Software\\Wow6432Node\\Microsoft\\Cryptography\\OID\\EncodingType 1\\CryptDllDecodeObject\\#2008] 1781468587
+#time=1dcfc3b9cb0a65a
+"Dll"="WINTRUST.DLL"
+"FuncName"="WVTAsn1SpcLinkDecode"
+
+[Software\\Wow6432Node\\Microsoft\\Cryptography\\OID\\EncodingType 1\\CryptDllDecodeObject\\#2009] 1781468587
+#time=1dcfc3b9cb0b94c
+"Dll"="WINTRUST.DLL"
+"FuncName"="WVTAsn1SpcLinkDecode"
+
+[Software\\Wow6432Node\\Microsoft\\Cryptography\\OID\\EncodingType 1\\CryptDllDecodeObject\\#2130] 1781468587
+#time=1dcfc3b9cb0d9fe
+"Dll"="WINTRUST.DLL"
+"FuncName"="WVTAsn1SpcSigInfoDecode"
+
+[Software\\Wow6432Node\\Microsoft\\Cryptography\\OID\\EncodingType 1\\CryptDllDecodeObject\\#2221] 1781468587
+#time=1dcfc3b9cb14966
+"Dll"="WINTRUST.DLL"
+"FuncName"="WVTAsn1CatNameValueDecode"
+
+[Software\\Wow6432Node\\Microsoft\\Cryptography\\OID\\EncodingType 1\\CryptDllDecodeObject\\#2222] 1781468587
+#time=1dcfc3b9cb16086
+"Dll"="WINTRUST.DLL"
+"FuncName"="WVTAsn1CatMemberInfoDecode"
+
+[Software\\Wow6432Node\\Microsoft\\Cryptography\\OID\\EncodingType 1\\CryptDllDecodeObject\\1.3.6.1.4.1.311.12.2.1] 1781468587
+#time=1dcfc3b9cb138ae
+"Dll"="WINTRUST.DLL"
+"FuncName"="WVTAsn1CatNameValueDecode"
+
+[Software\\Wow6432Node\\Microsoft\\Cryptography\\OID\\EncodingType 1\\CryptDllDecodeObject\\1.3.6.1.4.1.311.12.2.2] 1781468587
+#time=1dcfc3b9cb1560e
+"Dll"="WINTRUST.DLL"
+"FuncName"="WVTAsn1CatMemberInfoDecode"
+
+[Software\\Wow6432Node\\Microsoft\\Cryptography\\OID\\EncodingType 1\\CryptDllDecodeObject\\1.3.6.1.4.1.311.16.1.1] 1781468587
+#time=1dcfc3b9c65d328
+"Dll"="cryptdlg.dll"
+"FuncName"="DecodeAttrSequence"
+
+[Software\\Wow6432Node\\Microsoft\\Cryptography\\OID\\EncodingType 1\\CryptDllDecodeObject\\1.3.6.1.4.1.311.16.4] 1781468587
+#time=1dcfc3b9c65d706
+"Dll"="cryptdlg.dll"
+"FuncName"="DecodeRecipientID"
+
+[Software\\Wow6432Node\\Microsoft\\Cryptography\\OID\\EncodingType 1\\CryptDllDecodeObject\\1.3.6.1.4.1.311.2.1.10] 1781468587
+#time=1dcfc3b9cb0f24a
+"Dll"="WINTRUST.DLL"
+"FuncName"="WVTAsn1SpcSpAgencyInfoDecode"
+
+[Software\\Wow6432Node\\Microsoft\\Cryptography\\OID\\EncodingType 1\\CryptDllDecodeObject\\1.3.6.1.4.1.311.2.1.11] 1781468587
+#time=1dcfc3b9cb124b8
+"Dll"="WINTRUST.DLL"
+"FuncName"="WVTAsn1SpcStatementTypeDecode"
+
+[Software\\Wow6432Node\\Microsoft\\Cryptography\\OID\\EncodingType 1\\CryptDllDecodeObject\\1.3.6.1.4.1.311.2.1.12] 1781468587
+#time=1dcfc3b9cb16aea
+"Dll"="WINTRUST.DLL"
+"FuncName"="WVTAsn1SpcSpOpusInfoDecode"
+
+[Software\\Wow6432Node\\Microsoft\\Cryptography\\OID\\EncodingType 1\\CryptDllDecodeObject\\1.3.6.1.4.1.311.2.1.15] 1781468587
+#time=1dcfc3b9cb08d78
+"Dll"="WINTRUST.DLL"
+"FuncName"="WVTAsn1SpcPeImageDataDecode"
+
+[Software\\Wow6432Node\\Microsoft\\Cryptography\\OID\\EncodingType 1\\CryptDllDecodeObject\\1.3.6.1.4.1.311.2.1.20] 1781468587
+#time=1dcfc3b9cb0b028
+"Dll"="WINTRUST.DLL"
+"FuncName"="WVTAsn1SpcLinkDecode"
+
+[Software\\Wow6432Node\\Microsoft\\Cryptography\\OID\\EncodingType 1\\CryptDllDecodeObject\\1.3.6.1.4.1.311.2.1.25] 1781468587
+#time=1dcfc3b9cb09dfe
+"Dll"="WINTRUST.DLL"
+"FuncName"="WVTAsn1SpcLinkDecode"
+
+[Software\\Wow6432Node\\Microsoft\\Cryptography\\OID\\EncodingType 1\\CryptDllDecodeObject\\1.3.6.1.4.1.311.2.1.26] 1781468587
+#time=1dcfc3b9cb103ca
+"Dll"="WINTRUST.DLL"
+"FuncName"="WVTAsn1SpcMinimalCriteriaInfoDecode"
+
+[Software\\Wow6432Node\\Microsoft\\Cryptography\\OID\\EncodingType 1\\CryptDllDecodeObject\\1.3.6.1.4.1.311.2.1.27] 1781468587
+#time=1dcfc3b9cb1134c
+"Dll"="WINTRUST.DLL"
+"FuncName"="WVTAsn1SpcFinancialCriteriaInfoDecode"
+
+[Software\\Wow6432Node\\Microsoft\\Cryptography\\OID\\EncodingType 1\\CryptDllDecodeObject\\1.3.6.1.4.1.311.2.1.28] 1781468587
+#time=1dcfc3b9cb0c1a8
+"Dll"="WINTRUST.DLL"
+"FuncName"="WVTAsn1SpcLinkDecode"
+
+[Software\\Wow6432Node\\Microsoft\\Cryptography\\OID\\EncodingType 1\\CryptDllDecodeObject\\1.3.6.1.4.1.311.2.1.30] 1781468587
+#time=1dcfc3b9cb0d198
+"Dll"="WINTRUST.DLL"
+"FuncName"="WVTAsn1SpcSigInfoDecode"
+
+[Software\\Wow6432Node\\Microsoft\\Cryptography\\OID\\EncodingType 1\\CryptDllDecodeObject\\1.3.6.1.4.1.311.2.1.4] 1781468587
+#time=1dcfc3b9cb0e188
+"Dll"="WINTRUST.DLL"
+"FuncName"="WVTAsn1SpcIndirectDataContentDecode"
+
+[Software\\Wow6432Node\\Microsoft\\Cryptography\\OID\\EncodingType 1\\CryptDllEncodeObject\\#2000] 1781468587
+#time=1dcfc3b9cb0f74a
+"Dll"="WINTRUST.DLL"
+"FuncName"="WVTAsn1SpcSpAgencyInfoEncode"
+
+[Software\\Wow6432Node\\Microsoft\\Cryptography\\OID\\EncodingType 1\\CryptDllEncodeObject\\#2001] 1781468587
+#time=1dcfc3b9cb1079e
+"Dll"="WINTRUST.DLL"
+"FuncName"="WVTAsn1SpcMinimalCriteriaInfoEncode"
+
+[Software\\Wow6432Node\\Microsoft\\Cryptography\\OID\\EncodingType 1\\CryptDllEncodeObject\\#2002] 1781468587
+#time=1dcfc3b9cb1172a
+"Dll"="WINTRUST.DLL"
+"FuncName"="WVTAsn1SpcFinancialCriteriaInfoEncode"
+
+[Software\\Wow6432Node\\Microsoft\\Cryptography\\OID\\EncodingType 1\\CryptDllEncodeObject\\#2003] 1781468587
+#time=1dcfc3b9cb0e548
+"Dll"="WINTRUST.DLL"
+"FuncName"="WVTAsn1SpcIndirectDataContentEncode"
+
+[Software\\Wow6432Node\\Microsoft\\Cryptography\\OID\\EncodingType 1\\CryptDllEncodeObject\\#2004] 1781468587
+#time=1dcfc3b9cb09160
+"Dll"="WINTRUST.DLL"
+"FuncName"="WVTAsn1SpcPeImageDataEncode"
+
+[Software\\Wow6432Node\\Microsoft\\Cryptography\\OID\\EncodingType 1\\CryptDllEncodeObject\\#2005] 1781468587
+#time=1dcfc3b9cb0c5cc
+"Dll"="WINTRUST.DLL"
+"FuncName"="WVTAsn1SpcLinkEncode"
+
+[Software\\Wow6432Node\\Microsoft\\Cryptography\\OID\\EncodingType 1\\CryptDllEncodeObject\\#2006] 1781468587
+#time=1dcfc3b9cb12c6a
+"Dll"="WINTRUST.DLL"
+"FuncName"="WVTAsn1SpcStatementTypeEncode"
+
+[Software\\Wow6432Node\\Microsoft\\Cryptography\\OID\\EncodingType 1\\CryptDllEncodeObject\\#2007] 1781468587
+#time=1dcfc3b9cb16eaa
+"Dll"="WINTRUST.DLL"
+"FuncName"="WVTAsn1SpcSpOpusInfoEncode"
+
+[Software\\Wow6432Node\\Microsoft\\Cryptography\\OID\\EncodingType 1\\CryptDllEncodeObject\\#2008] 1781468587
+#time=1dcfc3b9cb0a1dc
+"Dll"="WINTRUST.DLL"
+"FuncName"="WVTAsn1SpcLinkEncode"
+
+[Software\\Wow6432Node\\Microsoft\\Cryptography\\OID\\EncodingType 1\\CryptDllEncodeObject\\#2009] 1781468587
+#time=1dcfc3b9cb0b4b0
+"Dll"="WINTRUST.DLL"
+"FuncName"="WVTAsn1SpcLinkEncode"
+
+[Software\\Wow6432Node\\Microsoft\\Cryptography\\OID\\EncodingType 1\\CryptDllEncodeObject\\#2130] 1781468587
+#time=1dcfc3b9cb0d648
+"Dll"="WINTRUST.DLL"
+"FuncName"="WVTAsn1SpcSigInfoEncode"
+
+[Software\\Wow6432Node\\Microsoft\\Cryptography\\OID\\EncodingType 1\\CryptDllEncodeObject\\#2221] 1781468587
+#time=1dcfc3b9cb13eee
+"Dll"="WINTRUST.DLL"
+"FuncName"="WVTAsn1CatNameValueEncode"
+
+[Software\\Wow6432Node\\Microsoft\\Cryptography\\OID\\EncodingType 1\\CryptDllEncodeObject\\#2222] 1781468587
+#time=1dcfc3b9cb15ac8
+"Dll"="WINTRUST.DLL"
+"FuncName"="WVTAsn1CatMemberInfoEncode"
+
+[Software\\Wow6432Node\\Microsoft\\Cryptography\\OID\\EncodingType 1\\CryptDllEncodeObject\\1.3.6.1.4.1.311.12.2.1] 1781468587
+#time=1dcfc3b9cb134a8
+"Dll"="WINTRUST.DLL"
+"FuncName"="WVTAsn1CatNameValueEncode"
+
+[Software\\Wow6432Node\\Microsoft\\Cryptography\\OID\\EncodingType 1\\CryptDllEncodeObject\\1.3.6.1.4.1.311.12.2.2] 1781468587
+#time=1dcfc3b9cb15208
+"Dll"="WINTRUST.DLL"
+"FuncName"="WVTAsn1CatMemberInfoEncode"
+
+[Software\\Wow6432Node\\Microsoft\\Cryptography\\OID\\EncodingType 1\\CryptDllEncodeObject\\1.3.6.1.4.1.311.16.1.1] 1781468587
+#time=1dcfc3b9c65b49c
+"Dll"="cryptdlg.dll"
+"FuncName"="EncodeAttrSequence"
+
+[Software\\Wow6432Node\\Microsoft\\Cryptography\\OID\\EncodingType 1\\CryptDllEncodeObject\\1.3.6.1.4.1.311.16.4] 1781468587
+#time=1dcfc3b9c65b88e
+"Dll"="cryptdlg.dll"
+"FuncName"="EncodeRecipientID"
+
+[Software\\Wow6432Node\\Microsoft\\Cryptography\\OID\\EncodingType 1\\CryptDllEncodeObject\\1.3.6.1.4.1.311.2.1.10] 1781468587
+#time=1dcfc3b9cb0ede0
+"Dll"="WINTRUST.DLL"
+"FuncName"="WVTAsn1SpcSpAgencyInfoEncode"
+
+[Software\\Wow6432Node\\Microsoft\\Cryptography\\OID\\EncodingType 1\\CryptDllEncodeObject\\1.3.6.1.4.1.311.2.1.11] 1781468587
+#time=1dcfc3b9cb11efa
+"Dll"="WINTRUST.DLL"
+"FuncName"="WVTAsn1SpcStatementTypeEncode"
+
+[Software\\Wow6432Node\\Microsoft\\Cryptography\\OID\\EncodingType 1\\CryptDllEncodeObject\\1.3.6.1.4.1.311.2.1.12] 1781468587
+#time=1dcfc3b9cb16716
+"Dll"="WINTRUST.DLL"
+"FuncName"="WVTAsn1SpcSpOpusInfoEncode"
+
+[Software\\Wow6432Node\\Microsoft\\Cryptography\\OID\\EncodingType 1\\CryptDllEncodeObject\\1.3.6.1.4.1.311.2.1.15] 1781468587
+#time=1dcfc3b9cb08990
+"Dll"="WINTRUST.DLL"
+"FuncName"="WVTAsn1SpcPeImageDataEncode"
+
+[Software\\Wow6432Node\\Microsoft\\Cryptography\\OID\\EncodingType 1\\CryptDllEncodeObject\\1.3.6.1.4.1.311.2.1.20] 1781468587
+#time=1dcfc3b9cb0aab0
+"Dll"="WINTRUST.DLL"
+"FuncName"="WVTAsn1SpcLinkEncode"
+
+[Software\\Wow6432Node\\Microsoft\\Cryptography\\OID\\EncodingType 1\\CryptDllEncodeObject\\1.3.6.1.4.1.311.2.1.25] 1781468587
+#time=1dcfc3b9cb09930
+"Dll"="WINTRUST.DLL"
+"FuncName"="WVTAsn1SpcLinkEncode"
+
+[Software\\Wow6432Node\\Microsoft\\Cryptography\\OID\\EncodingType 1\\CryptDllEncodeObject\\1.3.6.1.4.1.311.2.1.26] 1781468587
+#time=1dcfc3b9cb0ffec
+"Dll"="WINTRUST.DLL"
+"FuncName"="WVTAsn1SpcMinimalCriteriaInfoEncode"
+
+[Software\\Wow6432Node\\Microsoft\\Cryptography\\OID\\EncodingType 1\\CryptDllEncodeObject\\1.3.6.1.4.1.311.2.1.27] 1781468587
+#time=1dcfc3b9cb10f6e
+"Dll"="WINTRUST.DLL"
+"FuncName"="WVTAsn1SpcFinancialCriteriaInfoEncode"
+
+[Software\\Wow6432Node\\Microsoft\\Cryptography\\OID\\EncodingType 1\\CryptDllEncodeObject\\1.3.6.1.4.1.311.2.1.28] 1781468587
+#time=1dcfc3b9cb0bd84
+"Dll"="WINTRUST.DLL"
+"FuncName"="WVTAsn1SpcLinkEncode"
+
+[Software\\Wow6432Node\\Microsoft\\Cryptography\\OID\\EncodingType 1\\CryptDllEncodeObject\\1.3.6.1.4.1.311.2.1.30] 1781468587
+#time=1dcfc3b9cb0cde2
+"Dll"="WINTRUST.DLL"
+"FuncName"="WVTAsn1SpcSigInfoEncode"
+
+[Software\\Wow6432Node\\Microsoft\\Cryptography\\OID\\EncodingType 1\\CryptDllEncodeObject\\1.3.6.1.4.1.311.2.1.4] 1781468587
+#time=1dcfc3b9cb0ddd2
+"Dll"="WINTRUST.DLL"
+"FuncName"="WVTAsn1SpcIndirectDataContentEncode"
+
+[Software\\Wow6432Node\\Microsoft\\Cryptography\\OID\\EncodingType 1\\CryptDllFormatObject\\1.3.6.1.5.5.7.3.4] 1781468587
+#time=1dcfc3b9c65f218
+"Dll"="cryptdlg.dll"
+"FuncName"="FormatPKIXEmailProtection"
+
+[Software\\Wow6432Node\\Microsoft\\Cryptography\\OID\\EncodingType 1\\CryptDllFormatObject\\2.5.29.32] 1781468587
+#time=1dcfc3b9c65f60a
+"Dll"="cryptdlg.dll"
+"FuncName"="FormatVerisignExtension"
+

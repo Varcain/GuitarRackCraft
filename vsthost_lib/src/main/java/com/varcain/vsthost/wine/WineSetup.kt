@@ -105,22 +105,15 @@ object WineSetup {
             extractTurnipLibs(ctx, wineRoot)
             extractMesaZinkLibs(ctx, wineRoot)
         }
-        // DO NOT extract wine.inf. When wine finds wine.inf with a newer
-        // mtime than `<prefix>/.update-timestamp`, ntdll's prefix-update
-        // path runs wineboot's update_wineprefix → DefaultInstall section,
-        // which calls menubuilder + winedevice + service start hooks. None
-        // of those work in our Bionic environment (no ntoskrnl.exe, no /data/
-        // .local writable, etc.) and the plugin's vst_host.exe gets stuck
-        // waiting on them — observable as the "still loads, gives a toast"
-        // hang. Keeping wine.inf out of share/wine makes the prefix-update
-        // logic a no-op, which is the behavior the working baseline relied on.
-        // If we ever want to populate proxy/stub registrations, we'll have
-        // to seed them directly in system.reg (see task #126) rather than
-        // letting wineboot do it.
-        // extractWineInf(ctx, wineRoot)
-        // Clean up any wine.inf that an earlier build's extractWineInf
-        // dropped — without this, even after revert wine keeps auto-updating
-        // on every launch.
+        // DO NOT extract wine.inf. Its DefaultInstall → RegisterDlls phase
+        // spins forever under FEX (shell32's DllRegisterServer loops in COM
+        // apartment init), and the parts we actually need aren't in it anyway:
+        // RegisterDlls only registers shell/media/IE/.NET COM classes our VST
+        // hosting never uses, and IRemUnknown (the one cross-process proxy/stub
+        // the iLok install needs) is NOT in wine.inf at all. We seed the few
+        // real OLE/DCOM marshalers directly instead — see seedOleMarshalers().
+        // Keeping wine.inf out of share/wine also makes the lazy prefix-update
+        // path a no-op, the behavior the working baseline relied on.
         File(wineRoot, "share/wine/wine.inf").delete()
         seedWinePrefix(winePrefix)
         seedSystem32(wineRoot, winePrefix)
@@ -129,9 +122,13 @@ object WineSetup {
         seedCommonControlsManifests(winePrefix)
         seedRpcSsService(winePrefix)
         seedCryptoProviders(winePrefix)
+        seedCryptoProvidersFull(ctx, winePrefix)  // full CSP set incl. 32-bit (Wow6432Node) Enhanced RSA+AES — 32-bit installers' SHA256 CryptAcquireContext
+        seedCryptoOids(ctx, winePrefix)  // Cryptography\OID function table (SHA256 catalog verify) for signature-checking installers
+        seedWinTrust(ctx, winePrefix)    // wintrust trust providers + root certs (WinVerifyTrust on signed catalogs / drivers)
         seedComClasses(winePrefix)
         seedWow64Emulator(winePrefix)  // wine 11.x: point ARM64EC/wow64 at FEX
         seedDisableCrashDialog(winePrefix)  // no winedbg popup on subprocess crashes
+        seedOleMarshalers(ctx, winePrefix)  // ole32 PSFactory + OLE/DCOM interface proxy-stubs (IRemUnknown etc.) for cross-process COM (iLok install)
         seedFontReplacements(winePrefix)  // dwrite family aliases (CEF FontCache CHECK)
         /* Also seed every existing wineprefix_template_<id> dir (installer
          * mode plugins like X50II clone from their own template, not from
@@ -160,6 +157,10 @@ object WineSetup {
             f.isDirectory && f.name.startsWith("wineprefix_")
         }?.forEach { p ->
             seedCryptoProviders(p); seedComClasses(p); seedFonts(ctx, p); seedUserFolders(ctx, p)
+            seedOleMarshalers(ctx, p)  // cross-process COM proxy-stubs (reach prefixes cloned before this seed)
+            seedCryptoOids(ctx, p)     // Cryptography\OID table (reach prefixes cloned before this seed)
+            seedWinTrust(ctx, p)       // wintrust providers + root certs (reach prefixes cloned before this seed)
+            seedCryptoProvidersFull(ctx, p)  // full 64+32-bit CSP set (reach prefixes cloned before this seed)
             // Reach prefixes created before this seed existed (e.g. the BIAS
             // FX 2 prefix) so a CEF subprocess crash dies cleanly instead of
             // popping a stuck winedbg window. Marker-gated/idempotent.
@@ -947,6 +948,122 @@ object WineSetup {
         Log.i(TAG, "seeded Microsoft crypto providers in ${winePrefix.name}/system.reg")
     }
 
+    /** Seed the standard OLE/DCOM/Automation interface proxy-stub registrations
+     *  handled by wine's in-box marshalers (ole32 {00000320}, oleaut32, rpcrt4,
+     *  combase) — IRemUnknown, IStream, IDispatch, ITypeInfo, IMoniker, … (879
+     *  interfaces) — plus the marshaler CLSIDs themselves.
+     *
+     *  Same root cause as [seedCryptoProviders]/[seedComClasses]: our prefix never
+     *  runs the COM-core self-registration a full `wineboot -i` would do, so
+     *  HKCR\Interface\{IID}\ProxyStubClsid32 is empty for these. Without them,
+     *  CoUnmarshalInterface returns REGDB_E_IIDNOTREG for ANY cross-process COM
+     *  call — e.g. the InstallShield engine ↔ ISBEW64 worker IPC the iLok
+     *  installer uses: IRemUnknown {00000131} marshaling fails thousands of times
+     *  and the install rolls back at InstallFinalize. (wine.inf's RegisterDlls
+     *  does NOT provide these — IRemUnknown isn't in wine.inf at all; it's a static
+     *  OLE registration.) Data extracted verbatim from a full desktop wine 11.9
+     *  prefix (res/raw/ole_marshalers.reg, wine system.reg format).
+     *
+     *  Marker = IDispatch {00020400} (present only once the full in-box marshaler
+     *  set is seeded; bump to a newer interface if the .reg is ever regenerated
+     *  wider, so prefixes seeded by an older build re-seed). */
+    private fun seedOleMarshalers(ctx: Context, winePrefix: File) {
+        val systemReg = File(winePrefix, "system.reg")
+        if (!systemReg.exists()) return
+        val marker = "Interface\\\\{00020400-0000-0000-C000-000000000046}]"
+        if (systemReg.readText().contains(marker)) return
+        val reg = try {
+            ctx.resources.openRawResource(com.varcain.vsthost.R.raw.ole_marshalers)
+                .bufferedReader().use { it.readText() }
+        } catch (e: Exception) {
+            Log.w(TAG, "seedOleMarshalers: ole_marshalers raw resource missing: ${e.message}")
+            return
+        }
+        // Append the proxy-stub sections (wine system.reg format, headerless). A
+        // leading newline separates them from the file's last section.
+        systemReg.appendText("\n" + reg)
+        Log.i(TAG, "seeded OLE/DCOM marshalers (${reg.length} bytes) in ${winePrefix.name}/system.reg")
+    }
+
+    /** Seed the `Cryptography\OID` function table (+ Provider Types) — 194 OID
+     *  encode/decode/SIP-verify function registrations, including the SHA256
+     *  catalog-verify path (CryptSIPDllVerifyIndirectData). Like [seedOleMarshalers]
+     *  these come from the COM/crypto self-registration our minimal prefix skips,
+     *  so without them any Authenticode/catalog signature check fails — e.g. the
+     *  iLok installer's PreInstallDriverCheck SHA256 probe returns 0 and the MSI
+     *  rolls back before InstallFinalize. (seedCryptoProviders only registers the
+     *  4 CSP name keys, not this OID function map.) Data extracted verbatim from a
+     *  full desktop wine 11.9 prefix (res/raw/crypto_oids.reg).
+     *  Marker = the CertDllOpenStoreProv OID key. */
+    private fun seedCryptoOids(ctx: Context, winePrefix: File) {
+        val systemReg = File(winePrefix, "system.reg")
+        if (!systemReg.exists()) return
+        val marker = "\\\\OID\\\\EncodingType 0\\\\CertDllOpenStoreProv"
+        if (systemReg.readText().contains(marker)) return
+        val reg = try {
+            ctx.resources.openRawResource(com.varcain.vsthost.R.raw.crypto_oids)
+                .bufferedReader().use { it.readText() }
+        } catch (e: Exception) {
+            Log.w(TAG, "seedCryptoOids: crypto_oids raw resource missing: ${e.message}")
+            return
+        }
+        systemReg.appendText("\n" + reg)
+        Log.i(TAG, "seeded Cryptography OID table (${reg.length} bytes) in ${winePrefix.name}/system.reg")
+    }
+
+    /** Seed the wintrust trust-provider registrations (Cryptography\Providers\
+     *  Trust\*) and the trusted ROOT CA certificates (SystemCertificates\Root\
+     *  Certificates\*). Together with [seedCryptoOids] these let WinVerifyTrust
+     *  actually validate a SHA256-signed catalog (the OID table alone only covers
+     *  the capability probe). Our minimal prefix has ZERO trust providers and ZERO
+     *  root certs, so WinVerifyTrust can't verify a driver/Authenticode catalog —
+     *  e.g. the iLok installer's DEFERRED PreInstallDriverCheck (the real
+     *  driver-catalog verify, which InstallShield runs regardless of ADDLOCAL)
+     *  fails → "Windows 7 require SHA256 support" → InstallFinalize rolls back.
+     *  Data extracted verbatim from a full desktop wine 11.9 prefix
+     *  (res/raw/wintrust.reg). Marker = the FinalPolicy trust-provider key. */
+    private fun seedWinTrust(ctx: Context, winePrefix: File) {
+        val systemReg = File(winePrefix, "system.reg")
+        if (!systemReg.exists()) return
+        val marker = "Providers\\\\Trust\\\\FinalPolicy"
+        if (systemReg.readText().contains(marker)) return
+        val reg = try {
+            ctx.resources.openRawResource(com.varcain.vsthost.R.raw.wintrust)
+                .bufferedReader().use { it.readText() }
+        } catch (e: Exception) {
+            Log.w(TAG, "seedWinTrust: wintrust raw resource missing: ${e.message}")
+            return
+        }
+        systemReg.appendText("\n" + reg)
+        Log.i(TAG, "seeded wintrust providers + root certs (${reg.length} bytes) in ${winePrefix.name}/system.reg")
+    }
+
+    /** Seed the FULL Cryptographic Service Provider (CSP) registrations in BOTH
+     *  the 64-bit and Wow6432Node (32-bit) views (Cryptography\Defaults\Provider
+     *  + Provider Types + Calais). [seedCryptoProviders] only writes 4 CSPs in the
+     *  64-bit view; the entire 32-bit view is absent. The iLok installer's SHA256
+     *  driver prerequisite runs in 32-bit InstallScript code, which reads the
+     *  Wow6432Node CSPs — without the 32-bit "Microsoft Enhanced RSA and AES
+     *  Cryptographic Provider" (PROV_RSA_AES, the SHA256-capable CSP),
+     *  CryptAcquireContext fails and PreInstallDriverCheck reports "no SHA256
+     *  support". A full desktop wine 11.9 prefix with these installs the LM fine.
+     *  Data: res/raw/crypto_providers.reg. Marker = the 32-bit Enhanced RSA+AES key. */
+    private fun seedCryptoProvidersFull(ctx: Context, winePrefix: File) {
+        val systemReg = File(winePrefix, "system.reg")
+        if (!systemReg.exists()) return
+        val marker = "Wow6432Node\\\\Microsoft\\\\Cryptography\\\\Defaults\\\\Provider\\\\Microsoft Enhanced RSA"
+        if (systemReg.readText().contains(marker)) return
+        val reg = try {
+            ctx.resources.openRawResource(com.varcain.vsthost.R.raw.crypto_providers)
+                .bufferedReader().use { it.readText() }
+        } catch (e: Exception) {
+            Log.w(TAG, "seedCryptoProvidersFull: crypto_providers raw resource missing: ${e.message}")
+            return
+        }
+        systemReg.appendText("\n" + reg)
+        Log.i(TAG, "seeded full CSP set (both views, ${reg.length} bytes) in ${winePrefix.name}/system.reg")
+    }
+
     /** Register the COM classes (HKCR\CLSID) of a few wine DLLs that plugins
      *  CoCreateInstance but that aren't registered in our prefix.
      *
@@ -1189,7 +1306,7 @@ object WineSetup {
         val systemReg = File(winePrefix, "system.reg")
         if (!systemReg.exists()) return
         val sysText = systemReg.readText()
-        if (sysText.contains("vstpoc-win11-currentversion-v1")) return
+        if (sysText.contains("vstpoc-win11-currentversion-v2")) return
         /* Use wine's internal `hex(4):` format for dword values instead of
          * the plain `dword:` form. wineserver's reg parser strips unknown
          * dword entries during the load/save round-trip (we observed
@@ -1204,10 +1321,39 @@ object WineSetup {
          * dword entries during the load/save round-trip; the hex(4) form
          * is what wineserver itself writes out, so the round-trip
          * preserves it. Win10 build 19045 = 0x4A65. */
+        /* The version block MUST be written to BOTH the 64-bit view above AND the
+         * 32-bit Wow6432Node view below. InstallShield InstallScript MSI engines
+         * (e.g. PACE's iLok "License Support") run 32-bit and read
+         * CurrentMajorVersionNumber + CurrentVersion from
+         * Wow6432Node\Microsoft\Windows NT\CurrentVersion to decide if the OS is
+         * Win10+ (SHA256-capable). On a minimal Android prefix that 32-bit view is
+         * empty (full wineboot, which mirrors it, never runs), so the check reads
+         * NOT_FOUND and shows "Installs on Windows 7 require SHA256 support" and
+         * aborts. Seeding the Wow6432Node view clears it. See memory
+         * feedback_ilok_sha256_processor_arch. */
         val sysBody = """
 
-#vstpoc-win11-currentversion-v1
+#vstpoc-win11-currentversion-v2
 [Software\\Microsoft\\Windows NT\\CurrentVersion]
+"ProductName"="Windows 11 Pro"
+"CurrentVersion"="10.0"
+"CurrentMajorVersionNumber"=hex(4):0a,00,00,00
+"CurrentMinorVersionNumber"=hex(4):00,00,00,00
+"CurrentBuild"="22621"
+"CurrentBuildNumber"="22621"
+"UBR"=hex(4):ce,07,00,00
+"BuildLab"="22621.ni_release.220506-1250"
+"BuildLabEx"="22621.1.amd64fre.ni_release.220506-1250"
+"EditionID"="Professional"
+"InstallationType"="Client"
+"ProductId"="00000-00000-00000-00000"
+"ReleaseId"="2009"
+"DisplayVersion"="22H2"
+"SoftwareType"="System"
+"PathName"="C:\\\\windows"
+"SystemRoot"="C:\\\\windows"
+
+[Software\\Wow6432Node\\Microsoft\\Windows NT\\CurrentVersion]
 "ProductName"="Windows 11 Pro"
 "CurrentVersion"="10.0"
 "CurrentMajorVersionNumber"=hex(4):0a,00,00,00

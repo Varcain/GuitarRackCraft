@@ -574,7 +574,8 @@ class VstInstallerViewModel(app: Application) : AndroidViewModel(app) {
     /** Walk the prefix's drive_c/ for VST candidate files AND (in INSTALL mode)
      *  executable candidates. Filters to PE files exporting VSTPluginMain or
      *  GetPluginFactory (for VSTs) or PE EXEs over a small size threshold (for
-     *  executables). Skips wine builtins in system32/syswow64.
+     *  executables). Skips wine builtins (in system32/syswow64 AND the named
+     *  builtins under windows\ / Program Files) plus windows\temp leftovers.
      *
      *  In LAUNCH mode: VSTs already registered for THIS prefix ([alreadyRegistered]
      *  = their dllPaths) are filtered out, so discovery surfaces "in-prefix VSTs
@@ -594,7 +595,12 @@ class VstInstallerViewModel(app: Application) : AndroidViewModel(app) {
             if (!f.isFile) return@forEach
             val lowerName = f.name.lowercase()
             val rel = f.relativeTo(File(prefixPath)).path
-            if (rel.contains("/system32/") || rel.contains("/syswow64/")) return@forEach
+            val lowerRel = rel.lowercase()
+            if (lowerRel.contains("/system32/") || lowerRel.contains("/syswow64/")) return@forEach
+            // Installer leftovers (bootstrappers, VC_redist, extracted setup stubs,
+            // ISBEWI*.exe) accumulate under windows\temp — never the installed
+            // manager itself. Skipping them keeps the PICK list to real installs.
+            if (lowerRel.contains("/temp/")) return@forEach
 
             when {
                 lowerName.endsWith(".dll") || lowerName.endsWith(".vst3") -> {
@@ -648,11 +654,13 @@ class VstInstallerViewModel(app: Application) : AndroidViewModel(app) {
      *  up — defaulting to unchecked — so the user can scroll the full list
      *  if their actual manager has an unusual name. */
     private fun isLikelyHelperOrUninstaller(lowerName: String): Boolean {
-        return lowerName.startsWith("unins") ||
+        return lowerName in WINE_BUILTIN_EXES ||
+                lowerName.startsWith("unins") ||
                 lowerName.startsWith("uninstall") ||
                 lowerName.startsWith("vc_redist") ||
                 lowerName.startsWith("vcredist") ||
                 lowerName.startsWith("dotnet") ||
+                lowerName.startsWith("isbewi") ||
                 lowerName == "regsvr32.exe" ||
                 lowerName == "rundll32.exe"
     }
@@ -694,5 +702,19 @@ class VstInstallerViewModel(app: Application) : AndroidViewModel(app) {
          *  conservative — drops the smallest helper stubs without hiding
          *  modest single-file managers. */
         private const val EXE_MIN_BYTES = 200L * 1024L
+
+        /** Wine-shipped builtin executables that live OUTSIDE system32/syswow64
+         *  (so the path-prefix skip doesn't catch them) and would otherwise
+         *  flood the PICK list as bogus "manager" candidates. Observed polluting
+         *  the iLok License Support install: every prefix carries these regardless
+         *  of what was installed, so a real manager (e.g. iloktool.exe) gets
+         *  buried among them. Match by exact basename. */
+        private val WINE_BUILTIN_EXES = setOf(
+            "explorer.exe", "regedit.exe", "hh.exe", "notepad.exe",
+            "winhlp32.exe", "winemine.exe", "iexplore.exe", "wmplayer.exe",
+            "wordpad.exe", "winecfg.exe", "wineboot.exe", "control.exe",
+            "taskmgr.exe", "oobe.exe", "msiexec.exe", "spupdsvc.exe",
+            "wusa.exe", "presentationhost.exe",
+        )
     }
 }

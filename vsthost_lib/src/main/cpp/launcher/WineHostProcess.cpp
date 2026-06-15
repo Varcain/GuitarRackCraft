@@ -619,6 +619,55 @@ bool WineHostProcess::bootServicesIfNeeded() {
         return false;
     }
 
+    /* vstpoc 2026-06-15: wineboot just wrote PROCESSOR_ARCHITECTURE to
+     * HKLM\System\...\Session Manager\Environment from the UN-spoofed
+     * SystemCpuInformation = "ARM64" on our ARM64EC build (wine patch 0013
+     * only spoofs AMD64 for is_wow64() 32-bit callers — native wineboot is
+     * excluded by design so 64-bit JUCE plugins still read the real ARM64 from
+     * the SystemCpuInformation API for their render-backend choice). PACE's iLok
+     * "License Support" PreInstallDriverCheck reads this registry value and
+     * aborts ("Installs on Windows 7 require SHA256 support…") on anything but
+     * AMD64 — proven by a desktop-wine differential (AMD64=pass, forced ARM64=
+     * abort at the same custom action). Overwrite it to AMD64 here via the LIVE
+     * wineserver wineboot just started (an offline system.reg edit would lose to
+     * the in-memory copy). Only this Environment value changes; the
+     * SystemCpuInformation API is untouched, so plugin rendering is unaffected.
+     * See memory feedback_ilok_sha256_processor_arch. */
+    {
+        pid_t gp = ::fork();
+        if (gp == 0) {
+            int nfd = ::open("/dev/null", O_WRONLY);
+            if (nfd >= 0) { ::dup2(nfd, 1); ::dup2(nfd, 2); if (nfd > 2) ::close(nfd); }
+            setupWineEnvChild(cfg_);
+            ::setenv("WINEDEBUG", "-all", 1);
+            std::string regExe = cfg_.winePrefix + "/drive_c/windows/system32/reg.exe";
+            std::vector<std::string> a = {
+                cfg_.wineBinary, regExe, "add",
+                "HKLM\\System\\CurrentControlSet\\Control\\Session Manager\\Environment",
+                "/v", "PROCESSOR_ARCHITECTURE", "/t", "REG_SZ", "/d", "AMD64", "/f"
+            };
+            std::vector<char*> argv;
+            for (auto& s : a) argv.push_back(const_cast<char*>(s.c_str()));
+            argv.push_back(nullptr);
+            ::execv(cfg_.wineBinary.c_str(), argv.data());
+            ::_exit(127);
+        }
+        if (gp > 0) {
+            int st = 0, r = -1;
+            for (int i = 0; i < 150; ++i) {  /* up to 15s */
+                r = ::waitpid(gp, &st, WNOHANG);
+                if (r == gp) break;
+                ::usleep(100 * 1000);
+            }
+            if (r != gp) { ::kill(gp, SIGKILL); ::waitpid(gp, &st, 0); }
+            LOGI("WineHostProcess: set Session Manager PROCESSOR_ARCHITECTURE=AMD64 "
+                 "(wineboot had written the host arch)");
+        } else {
+            LOGE("WineHostProcess: PROCESSOR_ARCHITECTURE override fork failed: %s",
+                 std::strerror(errno));
+        }
+    }
+
     /* vstpoc 2026-05-29: explicitly launch rpcss.exe in THIS prefix's
      * wineserver session. wine registers RpcSs as demand-start, but combase's
      * on-demand start fails in our Bionic/FEX env — plugins that do
