@@ -49,7 +49,7 @@ env:
     python3-mako git xz-utils ca-certificates curl
   X11_APT: >-
     libx11-dev libxext-dev libxrender-dev libxrandr-dev libxi-dev
-    libxfixes-dev libxcursor-dev fonts-liberation fonts-dejavu
+    libxfixes-dev libxcursor-dev libfreetype-dev fonts-liberation fonts-dejavu
   NATIVE_APT: >-
     gcc-mingw-w64-x86-64 gcc-mingw-w64-i686 g++-mingw-w64-x86-64
     ocaml ocamlbuild ocaml-findlib libnum-ocaml-dev faust libboost-dev ccache
