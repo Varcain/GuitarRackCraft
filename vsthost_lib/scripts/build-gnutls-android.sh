@@ -27,6 +27,14 @@ export STRIP="$TOOLCHAIN/bin/llvm-strip"
 export CPPFLAGS="-I$PREFIX/include"
 export LDFLAGS="-L$PREFIX/lib"
 export PKG_CONFIG_PATH="$PREFIX/lib/pkgconfig"
+# NDK r26's clang-17 promotes -Wimplicit-function-declaration to an ERROR.
+# gnutls's tools-only gnulib (src/gl/libgnu_gpl, built even with --disable-tools)
+# calls gnulib time helpers (tzalloc/mktime_z/localtime_rz/tzfree) that Bionic
+# lacks and whose gnulib replacements aren't declared on Android → hard error.
+# That convenience lib is NOT linked into libgnutls.so (lib/ uses its own
+# gnulib), so downgrade the error to a warning to let the build complete. Only
+# ever a fresh-build issue — cached builds skip it via the .built.* sentinels.
+export CFLAGS="-Wno-error=implicit-function-declaration"
 
 deps_dir="$repo_root/external/gnutls-deps"
 mkdir -p "$deps_dir"
