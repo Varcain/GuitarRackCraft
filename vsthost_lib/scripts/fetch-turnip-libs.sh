@@ -49,16 +49,19 @@ PKGS=(
 )
 
 idx="$tmp/Packages"
+CURL_ROBUST=(curl -fsSL --retry 5 --retry-delay 2 --retry-all-errors --connect-timeout 30)
 if [ ! -s "$idx" ]; then
   echo "[+] fetch package index"
-  curl -fsSL -o "$idx" "$REPO/dists/stable/main/binary-aarch64/Packages"
+  "${CURL_ROBUST[@]}" -o "$idx.part" "$REPO/dists/stable/main/binary-aarch64/Packages"
+  mv -f "$idx.part" "$idx"
 fi
 
 for pkg in "${PKGS[@]}"; do
   fn=$(awk -v p="^Package: $pkg\$" '$0~p{f=1} f&&/^Filename:/{print $2; exit}' "$idx")
   if [ -z "$fn" ]; then echo "error: package '$pkg' not found in index" >&2; exit 1; fi
   deb="$tmp/$(basename "$fn")"
-  if [ ! -f "$deb" ]; then echo "[+] fetch $pkg ($(basename "$fn"))"; curl -fsSL -o "$deb" "$REPO/$fn"; fi
+  if [ ! -f "$deb" ]; then echo "[+] fetch $pkg ($(basename "$fn"))"; \
+     "${CURL_ROBUST[@]}" -o "$deb.part" "$REPO/$fn" && mv -f "$deb.part" "$deb"; fi
   ar p "$deb" data.tar.xz | tar xJ -C "$tmp" 2>/dev/null
 done
 
@@ -118,7 +121,8 @@ ADRENO_URL="https://github.com/K11MCH1/AdrenoToolsDrivers/releases/download/v26.
 adreno_zip="$tmp/$ADRENO_ZIP"
 if [ ! -f "$adreno_zip" ]; then
   echo "[+] fetch AdrenoTools HAL Turnip ($ADRENO_ZIP)"
-  curl -fSL --retry 3 -o "$adreno_zip" "$ADRENO_URL"
+  "${CURL_ROBUST[@]}" -o "$adreno_zip.part" "$ADRENO_URL"
+  mv -f "$adreno_zip.part" "$adreno_zip"
 fi
 # Extract just vulkan.ad07xx.so (python3 zipfile — no unzip dependency).
 python3 - "$adreno_zip" "$out" <<'PY'

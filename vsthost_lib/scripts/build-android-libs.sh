@@ -39,7 +39,12 @@ fetch_tarball() {
     local name="$1" url="$2"
     if [ ! -f "$cache/$name" ]; then
         echo "[+] fetch $name"
-        curl -fSL --retry 3 -o "$cache/$name" "$url"
+        # Temp file + atomic rename so an interrupted transfer (curl 18) never
+        # leaves a corrupt cached tarball; --retry-all-errors retries partial
+        # transfers that plain --retry ignores.
+        curl -fSL --retry 5 --retry-delay 2 --retry-all-errors \
+             --connect-timeout 30 -o "$cache/$name.part" "$url"
+        mv -f "$cache/$name.part" "$cache/$name"
     fi
 }
 

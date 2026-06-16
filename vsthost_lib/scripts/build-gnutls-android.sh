@@ -38,7 +38,13 @@ fetch_tarball() {
     local name="$1" url="$2"
     if [ ! -f "$name" ]; then
         echo "[+] fetch $name"
-        curl -fSL --retry 3 -o "$name" "$url"
+        # Download to a temp file + atomic rename: an interrupted transfer
+        # (curl 18 "partial file" — seen on CI) must never leave a corrupt
+        # cached tarball that the [ ! -f ] guard would then trust on re-run.
+        # --retry-all-errors retries partial transfers, which plain --retry does not.
+        curl -fSL --retry 5 --retry-delay 2 --retry-all-errors \
+             --connect-timeout 30 -o "$name.part" "$url"
+        mv -f "$name.part" "$name"
     fi
 }
 fetch_tarball gmp-6.3.0.tar.xz         "https://gmplib.org/download/gmp/gmp-6.3.0.tar.xz"

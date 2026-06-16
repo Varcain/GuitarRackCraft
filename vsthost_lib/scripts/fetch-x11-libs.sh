@@ -62,7 +62,10 @@ for line in "${PKG_LIST[@]}"; do
   url_path=$(echo "$line" | awk '{print $2}')
   if [ ! -f "$tmp/$deb" ]; then
     echo "[+] fetch $deb"
-    curl -fsSL -o "$tmp/$deb" "https://packages.termux.dev/apt/termux-main/$url_path"
+    # temp + atomic rename so a partial transfer doesn't poison the cache
+    curl -fsSL --retry 5 --retry-delay 2 --retry-all-errors --connect-timeout 30 \
+         -o "$tmp/$deb.part" "https://packages.termux.dev/apt/termux-main/$url_path"
+    mv -f "$tmp/$deb.part" "$tmp/$deb"
   fi
 done
 
