@@ -447,12 +447,13 @@ jobs:
           ccache --zero-stats
 
       # ── The cheap remainder of the vsthost pipeline against the restored
-      #    component outputs: turnip fetch, vst_host/vst3_host/uihost compiles,
-      #    pack-wine-fex (-> jniLibs + assets), symbol map.
-      - name: Stage vsthost (turnip + hosts + pack)
+      #    component outputs: turnip fetch, libadrenotools (NDK CMake from the
+      #    submodule → the Turnip HAL hook libs), vst_host/vst3_host/uihost
+      #    compiles, pack-wine-fex (-> jniLibs + assets), symbol map.
+      - name: Stage vsthost (turnip + adrenotools + hosts + pack)
         env:
           ANDROID_NDK: ${{ env.ANDROID_SDK_ROOT }}/ndk/${{ env.NDK_VSTHOST }}
-        run: cd vsthost_lib && bash scripts/build-all.sh turnip hosts pack
+        run: cd vsthost_lib && bash scripts/build-all.sh turnip adrenotools hosts pack
 
       - name: Build native libraries (build.sh full)
         env:
