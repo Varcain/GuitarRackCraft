@@ -7,14 +7,26 @@
 # the Free Software Foundation, either version 3 of the License, or
 # (at your option) any later version.
 #
-# Builds the COMPLETE full-flavor debug APK for the VST-hosting branch
-# (win_vst_devel): the LV2/native side (./build.sh full) PLUS the wine/FEX/
-# DXVK/Mesa-Zink VST stack and the VST2 + VST3 hosts (vsthost_lib), then
-# assembleFullDebug, and uploads the .apk as a downloadable artifact.
+# Builds the COMPLETE full-flavor debug APK for the VST-hosting branch, but
+# SPLIT into separately-cacheable jobs so the two long poles — llvm-mingw and
+# wine — are *restored* (not rebuilt) when their inputs are unchanged.
 #
-# Manual only — the cold build is ~4-5h. Reproduces the local build from the
-# committed branch state (patches + scripts); the FEX emulator is rebuilt
-# clean from source. See vsthost_lib/scripts/build-all.sh.
+#   keys ─┬─> llvm ─┬─> wine ──┐
+#         │         ├─> fex ───┤
+#         │         └─> dxvk ──┤
+#         └─> mesa ────────────┤
+#                              v
+#                           assemble ──> APK artifact
+#
+# Each component build maps 1:1 to a `vsthost_lib/scripts/build-all.sh <phase>`
+# invocation and is keyed on (submodule commit + patch/script hashes). On a
+# cache hit the build step is SKIPPED entirely. Handoff to `assemble` is
+# cache-only (no per-run artifacts except the final APK); to stay under the
+# 10 GB/repo cache budget, each cache holds final outputs only — never .o/.a
+# intermediates (wine, the only heavy one, ships a lean .tar minus *.o/*.a).
+#
+# Cold first run is ~4-5h (everything builds); subsequent runs with unchanged
+# wine/llvm/fex/dxvk/mesa drop to ~minutes + the native/gradle steps.
 
 name: Build VST Full APK
 
@@ -27,85 +39,348 @@ concurrency:
 
 env:
   ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
-  NDK_VSTHOST: 26.1.10909125        # wine/FEX + vsthost_lib gradle
+  NDK_VSTHOST: 26.1.10909125        # wine/FEX/mesa + vsthost_lib gradle
   NDK_NATIVE: 27.2.12479018         # ./build.sh full + app CMake
   GRADLE_OPTS: -Dorg.gradle.daemon=false
+  # apt dependency groups, reused across jobs (GitHub Actions has no YAML anchors).
+  COMMON_APT: >-
+    build-essential autoconf automake libtool bison flex gettext gperf
+    pkg-config cmake ninja-build meson patchelf patch python3 python3-pip
+    python3-mako git xz-utils ca-certificates curl
+  X11_APT: >-
+    libx11-dev libxext-dev libxrender-dev libxrandr-dev libxi-dev
+    libxfixes-dev libxcursor-dev fonts-liberation fonts-dejavu
+  NATIVE_APT: >-
+    gcc-mingw-w64-x86-64 gcc-mingw-w64-i686 g++-mingw-w64-x86-64
+    ocaml ocamlbuild ocaml-findlib libnum-ocaml-dev faust libboost-dev ccache
 
 jobs:
-  build:
+  # ── Compute every cache key ONCE so all jobs agree. Needs no submodule
+  #    checkout — `git rev-parse HEAD:<path>` reads the pinned gitlink commit
+  #    straight from the superproject tree. ────────────────────────────────
+  keys:
     runs-on: ubuntu-latest
-    timeout-minutes: 350
-
+    timeout-minutes: 10
+    outputs:
+      llvm: ${{ steps.k.outputs.llvm }}
+      winedeps: ${{ steps.k.outputs.winedeps }}
+      wine: ${{ steps.k.outputs.wine }}
+      fex: ${{ steps.k.outputs.fex }}
+      dxvk: ${{ steps.k.outputs.dxvk }}
+      mesa: ${{ steps.k.outputs.mesa }}
     steps:
-      # ── 0. Reclaim disk (~14GB free -> ~45GB; KEEP the Android SDK) ───────
-      - name: Free disk space
-        uses: jlumbroso/free-disk-space@main
-        with:
-          android: false        # we need the Android SDK/NDK
-          tool-cache: false     # keep setup-java/etc tool cache
-          dotnet: true
-          haskell: true
-          large-packages: true
-          docker-images: true
-          swap-storage: true
-
-      # ── 1. Checkout + submodules (full tree; build configures from them) ──
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          submodules: recursive
-
-      # ── 2. System dependencies (union of ci.yml + vsthost build-all.sh) ──
-      - name: Install system dependencies
+      - uses: actions/checkout@v4    # submodules: false (default) — fast
+      - name: Compute cache keys
+        id: k
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends \
-            build-essential autoconf automake libtool bison flex gettext gperf \
-            pkg-config cmake ninja-build meson patchelf patch ccache \
-            gcc-mingw-w64-x86-64 gcc-mingw-w64-i686 g++-mingw-w64-x86-64 \
-            python3 python3-pip python3-mako \
-            ocaml ocamlbuild ocaml-findlib libnum-ocaml-dev faust libboost-dev \
-            libx11-dev libxext-dev libxrender-dev libxrandr-dev libxi-dev \
-            libxfixes-dev libxcursor-dev \
-            fonts-liberation fonts-dejavu   # wine font substitution (fetch-x11-libs copies these)
+          os=${{ runner.os }}
+          gl()  { git rev-parse "HEAD:$1" 2>/dev/null || echo none; }   # gitlink commit
+          h16() { sha256sum | cut -c1-16; }                              # stdin -> short hash
 
-      # ── 3. JDK 17 ────────────────────────────────────────────────────────
-      - name: Set up JDK 17
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: 17
+          LLVM_C=$(gl vsthost_lib/external/llvm-mingw)
+          echo "llvm=llvm-$os-$LLVM_C" >> "$GITHUB_OUTPUT"
 
-      # ── 4. Android SDK: BOTH NDKs + cmake + platform/build-tools ─────────
-      - name: Install Android SDK components
-        run: |
-          SDKMGR="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
-          yes | "$SDKMGR" --licenses || true
-          for pkg in \
-            "ndk;${NDK_NATIVE}" \
-            "ndk;${NDK_VSTHOST}" \
-            "cmake;3.22.1" \
-            "platforms;android-34" \
-            "build-tools;34.0.0"; do
-            "$SDKMGR" "$pkg"
-          done
+          WD=$(cat vsthost_lib/scripts/fetch-x11-libs.sh \
+                   vsthost_lib/scripts/build-android-libs.sh \
+                   vsthost_lib/scripts/build-gnutls-android.sh | h16)
+          echo "winedeps=winedeps-$os-$WD-ndk${NDK_VSTHOST}" >> "$GITHUB_OUTPUT"
 
-      # ── 5. Caches ────────────────────────────────────────────────────────
-      # 5a. llvm-mingw toolchain install — the ~30-60min build dominator.
-      #     Keyed on the pinned submodule commit (changes rarely).
-      - name: Compute llvm-mingw cache key
-        id: mingw-key
-        run: |
-          COMMIT=$(git -C vsthost_lib/external/llvm-mingw rev-parse HEAD 2>/dev/null || echo none)
-          echo "key=llvm-mingw-${{ runner.os }}-${COMMIT}" >> "$GITHUB_OUTPUT"
+          WINE_C=$(gl vsthost_lib/external/wine-upstream)
+          WINE_H=$( { find vsthost_lib/patches/wine -type f -name '*.patch' | sort | xargs -r cat; \
+                      cat vsthost_lib/scripts/build-wine-pe.sh \
+                          vsthost_lib/scripts/build-wine-android.sh \
+                          vsthost_lib/scripts/apply-wine-patches.sh; } | h16)
+          echo "wine=wine-$os-$WINE_C-$WINE_H-$LLVM_C" >> "$GITHUB_OUTPUT"
 
+          FEX_C=$(gl vsthost_lib/external/fex-upstream)
+          FEX_H=$(cat vsthost_lib/scripts/build-fex-pe.sh | h16)
+          echo "fex=fex-$os-$FEX_C-$FEX_H-$LLVM_C" >> "$GITHUB_OUTPUT"
+
+          DXVK_C=$(gl vsthost_lib/external/dxvk)
+          VKH_C=$(gl vsthost_lib/external/Vulkan-Headers)
+          DXVK_H=$( { find vsthost_lib/patches/dxvk -type f -name '*.patch' 2>/dev/null | sort | xargs -r cat; \
+                      cat vsthost_lib/scripts/build-dxvk.sh; } | h16)
+          echo "dxvk=dxvk-$os-$DXVK_C-$VKH_C-$DXVK_H-$LLVM_C" >> "$GITHUB_OUTPUT"
+
+          MESA_C=$(gl 3rd_party/mesa)
+          MESA_H=$( { find vsthost_lib/patches/mesa -type f -name '*.patch' 2>/dev/null | sort | xargs -r cat; \
+                      cat vsthost_lib/scripts/build-mesa-zink.sh; } | h16)
+          echo "mesa=mesa-$os-$MESA_C-$MESA_H-ndk${NDK_VSTHOST}" >> "$GITHUB_OUTPUT"
+
+          echo "── cache keys ──"; cat "$GITHUB_OUTPUT"
+
+  # ── llvm-mingw: the ~30-60 min toolchain. Cached on its submodule commit;
+  #    rebuilt only when the submodule moves. Shared (via cache) by wine/fex/dxvk.
+  llvm:
+    needs: keys
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
       - name: Cache llvm-mingw install
+        id: cache
         uses: actions/cache@v4
         with:
           path: vsthost_lib/external/llvm-mingw/install
-          key: ${{ steps.mingw-key.outputs.key }}
+          key: ${{ needs.keys.outputs.llvm }}
+      - name: Free disk space
+        if: steps.cache.outputs.cache-hit != 'true'
+        uses: jlumbroso/free-disk-space@main
+        with: { android: true, tool-cache: false, dotnet: true, haskell: true, large-packages: true, docker-images: true, swap-storage: true }
+      - name: Build llvm-mingw
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends $COMMON_APT
+          # setup-fex-pivot.sh verifies wine/fex/llvm-mingw submodules exist
+          # (it only *builds* llvm-mingw). Init the three it checks.
+          git submodule update --init \
+            vsthost_lib/external/llvm-mingw \
+            vsthost_lib/external/wine-upstream \
+            vsthost_lib/external/fex-upstream
+          cd vsthost_lib && bash scripts/build-all.sh llvm
 
-      # 5b. ci.yml's native build cache (./build.sh full outputs).
+  # ── wine: PE (build-arm64ec) + Unix (build-android-arm64). The other long
+  #    pole. Two caches: `winedeps` (x11/png-ft/gnutls, rarely changes) and
+  #    `wine` (a lean tar of build-android-arm64 for the assemble handoff).
+  wine:
+    needs: [keys, llvm]
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+      - name: Cache winedeps (x11 / png+freetype / gnutls)
+        id: winedeps-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            vsthost_lib/toolchain/x11-libs
+            vsthost_lib/toolchain/x11-headers
+            vsthost_lib/toolchain/wine-fonts
+            vsthost_lib/toolchain/android-libs
+            vsthost_lib/toolchain/gnutls-android-arm64
+          key: ${{ needs.keys.outputs.winedeps }}
+      - name: Cache wine output (lean build-android-arm64 tar)
+        id: wine-cache
+        uses: actions/cache@v4
+        with:
+          path: vsthost_lib/wine-android-out.tar
+          key: ${{ needs.keys.outputs.wine }}
+
+      - name: Free disk space
+        if: steps.winedeps-cache.outputs.cache-hit != 'true' || steps.wine-cache.outputs.cache-hit != 'true'
+        uses: jlumbroso/free-disk-space@main
+        with: { android: false, tool-cache: false, dotnet: true, haskell: true, large-packages: true, docker-images: true, swap-storage: true }
+      - name: System deps + NDK
+        if: steps.winedeps-cache.outputs.cache-hit != 'true' || steps.wine-cache.outputs.cache-hit != 'true'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends $COMMON_APT $X11_APT
+          yes | "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
+          "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" "ndk;${NDK_VSTHOST}"
+
+      # winedeps first — wine-android links against them. Network fetch (Termux/upstream).
+      - name: Build winedeps
+        if: steps.winedeps-cache.outputs.cache-hit != 'true'
+        run: cd vsthost_lib && bash scripts/build-all.sh winedeps
+
+      # wine needs the llvm-mingw toolchain (restore the llvm job's cache) + the wine source.
+      - name: Restore llvm-mingw
+        if: steps.wine-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/restore@v4
+        with:
+          path: vsthost_lib/external/llvm-mingw/install
+          key: ${{ needs.keys.outputs.llvm }}
+          fail-on-cache-miss: true
+      - name: Build wine + stage lean output tar
+        if: steps.wine-cache.outputs.cache-hit != 'true'
+        env:
+          ANDROID_NDK: ${{ env.ANDROID_SDK_ROOT }}/ndk/${{ env.NDK_VSTHOST }}
+        run: |
+          git submodule update --init vsthost_lib/external/wine-upstream
+          cd vsthost_lib
+          bash scripts/build-all.sh wine
+          # Lean handoff: only what pack-wine-fex.py reads from build-android-arm64,
+          # minus the .o/.a intermediates (4.0G -> ~1.8G; actions/cache zstd-compresses).
+          tar --exclude='*.o' --exclude='*.a' --exclude='*.cross.o' \
+              -cf wine-android-out.tar -C external/wine-upstream build-android-arm64
+          echo "wine tar: $(du -h wine-android-out.tar | cut -f1)"
+
+  # ── FEX-Emu PE DLLs (libarm64ecfex / libwow64fex). Needs llvm only. ──────
+  fex:
+    needs: [keys, llvm]
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - name: Cache FEX Bin
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            vsthost_lib/external/fex-upstream/build-arm64ec/Bin
+            vsthost_lib/external/fex-upstream/build-wow64/Bin
+          key: ${{ needs.keys.outputs.fex }}
+      - name: Free disk space
+        if: steps.cache.outputs.cache-hit != 'true'
+        uses: jlumbroso/free-disk-space@main
+        with: { android: true, tool-cache: false, dotnet: true, haskell: true, large-packages: true, docker-images: true, swap-storage: true }
+      - name: Restore llvm-mingw
+        if: steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache/restore@v4
+        with:
+          path: vsthost_lib/external/llvm-mingw/install
+          key: ${{ needs.keys.outputs.llvm }}
+          fail-on-cache-miss: true
+      - name: Build FEX
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends $COMMON_APT
+          git submodule update --init --recursive vsthost_lib/external/fex-upstream
+          cd vsthost_lib && bash scripts/build-all.sh fex
+
+  # ── DXVK D3D->Vulkan DLLs -> src/main/assets/dxvk/x64. Needs llvm only. ──
+  dxvk:
+    needs: [keys, llvm]
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Cache DXVK assets
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: vsthost_lib/src/main/assets/dxvk
+          key: ${{ needs.keys.outputs.dxvk }}
+      - name: Free disk space
+        if: steps.cache.outputs.cache-hit != 'true'
+        uses: jlumbroso/free-disk-space@main
+        with: { android: true, tool-cache: false, dotnet: true, haskell: true, large-packages: true, docker-images: true, swap-storage: true }
+      - name: Restore llvm-mingw
+        if: steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache/restore@v4
+        with:
+          path: vsthost_lib/external/llvm-mingw/install
+          key: ${{ needs.keys.outputs.llvm }}
+          fail-on-cache-miss: true
+      - name: Build DXVK
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends $COMMON_APT
+          git submodule update --init --recursive \
+            vsthost_lib/external/dxvk vsthost_lib/external/Vulkan-Headers
+          cd vsthost_lib && bash scripts/build-all.sh dxvk
+
+  # ── Mesa-Zink desktop-GL libs -> mesa-zink-libs.tar.gz. Needs NDK only. ──
+  mesa:
+    needs: keys
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - name: Cache Mesa-Zink asset
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: vsthost_lib/src/main/assets/mesa-zink-libs.tar.gz
+          key: ${{ needs.keys.outputs.mesa }}
+      - name: Free disk space
+        if: steps.cache.outputs.cache-hit != 'true'
+        uses: jlumbroso/free-disk-space@main
+        with: { android: false, tool-cache: false, dotnet: true, haskell: true, large-packages: true, docker-images: true, swap-storage: true }
+      - name: Build Mesa-Zink
+        if: steps.cache.outputs.cache-hit != 'true'
+        env:
+          ANDROID_NDK: ${{ env.ANDROID_SDK_ROOT }}/ndk/${{ env.NDK_VSTHOST }}
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends $COMMON_APT
+          yes | "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
+          "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" "ndk;${NDK_VSTHOST}"
+          git submodule update --init 3rd_party/mesa
+          cd vsthost_lib && bash scripts/build-all.sh mesa
+
+  # ── Assemble: restore every component cache, build the cheap remainder
+  #    (turnip fetch + hosts + pack), build the LV2/native side, assemble the
+  #    APK. This is the only job that needs the full submodule tree + both NDKs.
+  assemble:
+    needs: [keys, wine, fex, dxvk, mesa]
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - name: Free disk space
+        uses: jlumbroso/free-disk-space@main
+        with: { android: false, tool-cache: false, dotnet: true, haskell: true, large-packages: true, docker-images: true, swap-storage: true }
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: System dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends $COMMON_APT $X11_APT $NATIVE_APT
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: 17 }
+
+      - name: Install Android SDK components (both NDKs)
+        run: |
+          SDKMGR="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
+          yes | "$SDKMGR" --licenses >/dev/null || true
+          for pkg in "ndk;${NDK_NATIVE}" "ndk;${NDK_VSTHOST}" \
+                     "cmake;3.22.1" "platforms;android-34" "build-tools;34.0.0"; do
+            "$SDKMGR" "$pkg"
+          done
+
+      # ── Restore each component cache (read-only; fail fast if a build job
+      #    didn't populate it). These ARE the wine/FEX/DXVK/Mesa build outputs.
+      - name: Restore winedeps
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            vsthost_lib/toolchain/x11-libs
+            vsthost_lib/toolchain/x11-headers
+            vsthost_lib/toolchain/wine-fonts
+            vsthost_lib/toolchain/android-libs
+            vsthost_lib/toolchain/gnutls-android-arm64
+          key: ${{ needs.keys.outputs.winedeps }}
+          fail-on-cache-miss: true
+      - name: Restore wine output tar
+        uses: actions/cache/restore@v4
+        with:
+          path: vsthost_lib/wine-android-out.tar
+          key: ${{ needs.keys.outputs.wine }}
+          fail-on-cache-miss: true
+      - name: Restore FEX Bin
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            vsthost_lib/external/fex-upstream/build-arm64ec/Bin
+            vsthost_lib/external/fex-upstream/build-wow64/Bin
+          key: ${{ needs.keys.outputs.fex }}
+          fail-on-cache-miss: true
+      - name: Restore DXVK assets
+        uses: actions/cache/restore@v4
+        with:
+          path: vsthost_lib/src/main/assets/dxvk
+          key: ${{ needs.keys.outputs.dxvk }}
+          fail-on-cache-miss: true
+      - name: Restore Mesa-Zink asset
+        uses: actions/cache/restore@v4
+        with:
+          path: vsthost_lib/src/main/assets/mesa-zink-libs.tar.gz
+          key: ${{ needs.keys.outputs.mesa }}
+          fail-on-cache-miss: true
+
+      - name: Unpack wine output into build dir
+        run: |
+          tar -xf vsthost_lib/wine-android-out.tar -C vsthost_lib/external/wine-upstream
+          test -x vsthost_lib/external/wine-upstream/build-android-arm64/loader/wine
+
+      # ── Native (build.sh full) cache + ccache + gradle — same scheme as ci.yml.
       - name: Compute native cache key
         id: native-key
         run: |
@@ -116,7 +391,6 @@ jobs:
             2>/dev/null | sha256sum | cut -d' ' -f1)
           SUBMOD_HASH=$(git submodule status | sha256sum | cut -d' ' -f1)
           echo "key=native-${{ runner.os }}-${FILES_HASH}-${SUBMOD_HASH}" >> "$GITHUB_OUTPUT"
-
       - name: Cache native build (build.sh)
         uses: actions/cache@v4
         with:
@@ -151,15 +425,12 @@ jobs:
           key: ${{ steps.native-key.outputs.key }}
           restore-keys: |
             native-${{ runner.os }}-
-
-      # 5c. ccache (C++ for ./build.sh) + Gradle.
       - name: Cache ccache
         uses: actions/cache@v4
         with:
           path: ~/.cache/ccache
           key: ccache-${{ runner.os }}-${{ github.sha }}
           restore-keys: ccache-${{ runner.os }}-
-
       - name: Cache Gradle
         uses: actions/cache@v4
         with:
@@ -169,25 +440,20 @@ jobs:
             ~/.gradle/build-cache
           key: gradle-${{ runner.os }}-${{ hashFiles('**/*.gradle.kts', 'gradle/wrapper/gradle-wrapper.properties') }}
           restore-keys: gradle-${{ runner.os }}-
-
       - name: Configure ccache
         run: |
           ccache --set-config=max_size=2G
           ccache --set-config=compression=true
           ccache --zero-stats
 
-      # ── 6. Build the vsthost VST stack: wine/FEX/DXVK/Mesa-Zink + Turnip +
-      #     the VST2 & VST3 hosts. build-all.sh now also fetches Turnip
-      #     (turnip-libs.tar.gz) and builds vst3_host.exe. FEX rebuilt clean
-      #     from source. NDK 26.1.
-      - name: Build vsthost (build-all.sh)
+      # ── The cheap remainder of the vsthost pipeline against the restored
+      #    component outputs: turnip fetch, vst_host/vst3_host/uihost compiles,
+      #    pack-wine-fex (-> jniLibs + assets), symbol map.
+      - name: Stage vsthost (turnip + hosts + pack)
         env:
           ANDROID_NDK: ${{ env.ANDROID_SDK_ROOT }}/ndk/${{ env.NDK_VSTHOST }}
-        run: |
-          cd vsthost_lib
-          bash scripts/build-all.sh
+        run: cd vsthost_lib && bash scripts/build-all.sh turnip hosts pack
 
-      # ── 7. Build the LV2/native side (app jniLibs/assets). NDK 27.2. ─────
       - name: Build native libraries (build.sh full)
         env:
           ANDROID_NDK: ${{ env.ANDROID_SDK_ROOT }}/ndk/${{ env.NDK_NATIVE }}
@@ -197,11 +463,9 @@ jobs:
         if: always()
         run: ccache --show-stats || true
 
-      # ── 9. Assemble the full debug APK (debug-signed; no secrets) ────────
       - name: Build full debug APK
         run: ./gradlew assembleFullDebug
 
-      # ── 10. Upload the APK as a downloadable artifact ────────────────────
       - name: Upload full debug APK
         uses: actions/upload-artifact@v4
         with:
@@ -210,7 +474,6 @@ jobs:
           if-no-files-found: error
           retention-days: 90
 
-      # Diagnostics on failure
       - name: Dump build logs on failure
         if: failure()
         run: |
