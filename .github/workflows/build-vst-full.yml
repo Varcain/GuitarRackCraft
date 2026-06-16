@@ -98,9 +98,10 @@ jobs:
 
           DXVK_C=$(gl vsthost_lib/external/dxvk)
           VKH_C=$(gl vsthost_lib/external/Vulkan-Headers)
+          GLSLANG_C=$(gl vsthost_lib/external/glslang)   # build-dxvk.sh builds the glslang compiler
           DXVK_H=$( { find vsthost_lib/patches/dxvk -type f -name '*.patch' 2>/dev/null | sort | xargs -r cat; \
                       cat vsthost_lib/scripts/build-dxvk.sh; } | h16)
-          echo "dxvk=dxvk-$os-$DXVK_C-$VKH_C-$DXVK_H-$LLVM_C" >> "$GITHUB_OUTPUT"
+          echo "dxvk=dxvk-$os-$DXVK_C-$VKH_C-$GLSLANG_C-$DXVK_H-$LLVM_C" >> "$GITHUB_OUTPUT"
 
           MESA_C=$(gl 3rd_party/mesa)
           MESA_H=$( { find vsthost_lib/patches/mesa -type f -name '*.patch' 2>/dev/null | sort | xargs -r cat; \
@@ -270,7 +271,8 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends $COMMON_APT
           git submodule update --init --recursive \
-            vsthost_lib/external/dxvk vsthost_lib/external/Vulkan-Headers
+            vsthost_lib/external/dxvk vsthost_lib/external/Vulkan-Headers \
+            vsthost_lib/external/glslang
           cd vsthost_lib && bash scripts/build-all.sh dxvk
 
   # ── Mesa-Zink desktop-GL libs -> mesa-zink-libs.tar.gz. Needs NDK only. ──
