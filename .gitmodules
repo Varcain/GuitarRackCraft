@@ -137,3 +137,6 @@
 [submodule "vsthost_lib/external/glslang"]
 	path = vsthost_lib/external/glslang
 	url = https://github.com/KhronosGroup/glslang.git
+[submodule "vsthost_lib/external/libadrenotools"]
+	path = vsthost_lib/external/libadrenotools
+	url = https://github.com/bylaws/libadrenotools.git

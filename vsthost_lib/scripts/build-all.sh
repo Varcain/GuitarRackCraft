@@ -23,6 +23,7 @@
 #   fex       build-fex-pe.sh          — FEX-Emu PE DLLs (libarm64ecfex / libwow64fex)
 #   dxvk      build-dxvk.sh            — DXVK D3D-to-Vulkan translation DLLs
 #   mesa      build-mesa-zink.sh       — desktop-GL libs (zink→Turnip) → mesa-zink-libs.tar.gz
+#   adrenotools build-adrenotools.sh   — libadrenotools + hook libs (Turnip HAL loader → jniLibs)
 #   turnip    fetch-turnip-libs.sh     — Adreno Vulkan driver + Khronos loader → turnip-libs.tar.gz
 #   hosts     build-vst-host.sh        — vst_host.exe + vst_host_x86.exe (PE guests)
 #             build-vst3-host.sh       — vst3_host.exe (VST3 hosting; needs vst3sdk submodule)
@@ -115,6 +116,11 @@ phase_mesa() {
     run_step build-mesa-zink.sh
 }
 
+phase_adrenotools() {
+    step 8d "build-adrenotools (libadrenotools + hook libs — Turnip HAL loader)"
+    run_step build-adrenotools.sh
+}
+
 phase_turnip() {
     step 8c "fetch-turnip (Adreno Vulkan driver + Khronos loader → turnip-libs.tar.gz)"
     run_step fetch-turnip-libs.sh
@@ -170,7 +176,7 @@ phase_pack() {
 # Phase dispatch
 # ===========================================================================
 
-ALL_PHASES=(llvm winedeps wine fex dxvk mesa turnip hosts pack)
+ALL_PHASES=(llvm winedeps wine fex dxvk mesa adrenotools turnip hosts pack)
 
 usage() {
     echo "usage: build-all.sh [phase...]" >&2

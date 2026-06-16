@@ -99,9 +99,45 @@ json.dump(d,open(p,"w"),indent=4)
 PY
 fi
 
+# --- AdrenoTools HAL-format Turnip (the PRIMARY GPU path) --------------------
+# libvulkan_freedreno.so above is a Khronos ICD (exports vk_icd*), loaded by DXVK
+# via the bundled Khronos loader + VK_ICD_FILENAMES — that is the FALLBACK path.
+# The PRIMARY path (WineHostProcess VSTPOC_ADRENOTOOLS_* → win32u/vulkan.c + the
+# mesa vkshim) loads Turnip as an ANDROID-HAL driver through libadrenotools, a
+# Winlator-style linker-namespace hook that gives the driver /dev/kgsl access on
+# untrusted_app (renderD128/DRM is SELinux-denied to us). That needs a HAL build
+# exporting HMI (hw_module_t), NOT an ICD. Mesa-Zink's desktop GL (AmpliTube's
+# editor) goes ONLY through this path and has no Khronos-loader fallback, so the
+# HAL driver is mandatory. Stage the proven AdrenoTools build under the soname
+# WineHostProcess sets as VSTPOC_ADRENOTOOLS_DRIVERNAME (vulkan.ad07xx.so).
+# Missing it → adrenotools_open_libvulkan returns NULL → zink "failed to choose
+# pdev" → BLACK editor. This file is NOT in the Termux packages, so fetch it
+# separately. See feedback_amplitube_turnip_driver_name_regression.
+ADRENO_ZIP="Turnip_v26.0.0_R8.zip"
+ADRENO_URL="https://github.com/K11MCH1/AdrenoToolsDrivers/releases/download/v26.0.0-rc08/${ADRENO_ZIP}"
+adreno_zip="$tmp/$ADRENO_ZIP"
+if [ ! -f "$adreno_zip" ]; then
+  echo "[+] fetch AdrenoTools HAL Turnip ($ADRENO_ZIP)"
+  curl -fSL --retry 3 -o "$adreno_zip" "$ADRENO_URL"
+fi
+# Extract just vulkan.ad07xx.so (python3 zipfile — no unzip dependency).
+python3 - "$adreno_zip" "$out" <<'PY'
+import sys, zipfile, os
+with zipfile.ZipFile(sys.argv[1]) as zf, \
+     open(os.path.join(sys.argv[2], "vulkan.ad07xx.so"), "wb") as d:
+    d.write(zf.read("vulkan.ad07xx.so"))
+PY
+# Sanity: a HAL driver exports HMI (hw_module_t). An ICD here would dlopen fine
+# but fail device enumeration (the regression's "failed to choose pdev").
+if command -v llvm-readelf >/dev/null 2>&1; then
+  llvm-readelf --dyn-syms "$out/vulkan.ad07xx.so" 2>/dev/null | grep -q ' HMI$' \
+    || echo "WARN: $out/vulkan.ad07xx.so does not export HMI — not a HAL build?" >&2
+fi
+
 echo
 echo "[+] staged $(ls "$out" | wc -l) Turnip files in $out/"
-echo "    Turnip:   $(ls -la "$out"/libvulkan_freedreno.so 2>/dev/null | awk '{print $5}') bytes"
+echo "    Turnip ICD:  $(ls -la "$out"/libvulkan_freedreno.so 2>/dev/null | awk '{print $5}') bytes (DXVK Khronos-loader fallback)"
+echo "    Turnip HAL:  $(ls -la "$out"/vulkan.ad07xx.so 2>/dev/null | awk '{print $5}') bytes (adrenotools primary path / zink)"
 echo "    manifest: $(cat "$out"/freedreno_icd.aarch64.json 2>/dev/null | tr -d '\n' | head -c 120)"
 echo
 echo "NOTE: libc++_shared.so comes from the NDK (already shipped). All others"

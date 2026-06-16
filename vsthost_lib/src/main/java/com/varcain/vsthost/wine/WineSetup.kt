@@ -65,7 +65,8 @@ object WineSetup {
      *  (block confirmed in pWindowPosChanging→create_win_data). TEMP.
      *  v12: cwx2 unconditional + create_win_data ENTER marker (v11 size gate
      *  hid markers; disambiguate dispatch vs get_win_data vs create). TEMP. */
-    private const val SETUP_VERSION = 30  // v30: repackaged mesa-zink-libs.tar.gz with the 6 zink fixes (kopper/swrast dri_target, EGL_OPENGL_API, zink-HW pdev, etc.) — the asset was stale (only device-pushed before); fixes "DRI_SWRast version 5" fatal after a data wipe
+    private const val SETUP_VERSION = 31  // v31: turnip-libs.tar.gz now bundles the AdrenoTools HAL Turnip (vulkan.ad07xx.so, exports HMI) alongside the Khronos ICD — the HAL driver is the adrenotools/zink PRIMARY GPU path (kgsl) and was previously only device-pushed (lost on clean reinstall → AmpliTube black). See feedback_amplitube_turnip_driver_name_regression
+    // v30: repackaged mesa-zink-libs.tar.gz with the 6 zink fixes (kopper/swrast dri_target, EGL_OPENGL_API, zink-HW pdev, etc.) — the asset was stale (only device-pushed before); fixes "DRI_SWRast version 5" fatal after a data wipe
 
     data class Setup(
         val wineRoot: File,

@@ -151,6 +151,22 @@ def iter_build_outputs(build_root: Path, fex_arm64ec: Path, fex_wow64: Path) -> 
     if gnutls_lib.exists():
         yield gnutls_lib, "_X11_RAW_/libgnutls.so"
 
+    # libadrenotools + its 4 namespace-bypass hook libs (built by
+    # scripts/build-adrenotools.sh into toolchain/adrenotools-libs). These are
+    # the Winlator-style hook that loads Turnip as an Android-HAL GPU driver
+    # (vulkan.ad07xx.so → /dev/kgsl). win32u/vulkan.c + the mesa vkshim dlopen
+    # libadrenotools.so by name and adrenotools loads the hook libs by soname
+    # from the APK nativeLibraryDir, so all 5 ship under their real names.
+    # Without them the adrenotools path can't load → GL editors render black.
+    adreno_lib_dir = repo_root / "toolchain/adrenotools-libs"
+    for so_name in [
+        "libadrenotools.so", "libhook_impl.so", "libmain_hook.so",
+        "libfile_redirect_hook.so", "libgsl_alloc_hook.so",
+    ]:
+        src = adreno_lib_dir / so_name
+        if src.exists():
+            yield src, f"_X11_RAW_/{so_name}"
+
 
 def strip_symbol_versions(path: Path) -> None:
     """Zero the DT_VERSYM / DT_VERNEED / DT_VERNEEDNUM dynamic-section
@@ -305,7 +321,9 @@ def main() -> int:
                        "libXrandr.so", "libXcursor.so", "libXxf86vm.so",
                        "libandroid-support.so",
                        "libfreetype.so", "libpng16.so",
-                       "libgnutls.so"):
+                       "libgnutls.so",
+                       "libadrenotools.so", "libhook_impl.so", "libmain_hook.so",
+                       "libfile_redirect_hook.so", "libgsl_alloc_hook.so"):
         stale = out_jni / stale_name
         if stale.exists():
             stale.unlink()
