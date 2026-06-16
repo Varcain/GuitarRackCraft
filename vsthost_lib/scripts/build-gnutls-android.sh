@@ -55,7 +55,9 @@ fetch_tarball() {
         mv -f "$name.part" "$name"
     fi
 }
-fetch_tarball gmp-6.3.0.tar.xz         "https://gmplib.org/download/gmp/gmp-6.3.0.tar.xz"
+# gmp from ftp.gnu.org (GNU mirror), not gmplib.org — the latter intermittently
+# times out / blocks CI runners (curl 28). Same host as the other deps below.
+fetch_tarball gmp-6.3.0.tar.xz         "https://ftp.gnu.org/gnu/gmp/gmp-6.3.0.tar.xz"
 fetch_tarball nettle-3.10.tar.gz       "https://ftp.gnu.org/gnu/nettle/nettle-3.10.tar.gz"
 fetch_tarball libtasn1-4.20.0.tar.gz   "https://ftp.gnu.org/gnu/libtasn1/libtasn1-4.20.0.tar.gz"
 fetch_tarball libunistring-1.2.tar.xz  "https://ftp.gnu.org/gnu/libunistring/libunistring-1.2.tar.xz"
