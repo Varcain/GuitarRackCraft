@@ -51,6 +51,12 @@ set -euo pipefail
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO"
 
+# Every phase writes into these (gitignored) output dirs. On a fresh clone —
+# e.g. the per-component CI jobs, each a clean checkout — they don't exist yet,
+# and a script that redirects a tarball into a missing dir fails ("No such file
+# or directory"). Create them up front so any phase can run standalone.
+mkdir -p "$REPO/src/main/assets" "$REPO/src/main/jniLibs/arm64-v8a"
+
 # --- output a clearly-labelled timestamped step header ---------------------
 step() {
     local n="$1" name="$2"

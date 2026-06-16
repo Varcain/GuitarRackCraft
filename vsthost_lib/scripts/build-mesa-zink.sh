@@ -127,6 +127,7 @@ m.strip_symbol_versions(Path(sys.argv[1]))
 PY
 
 echo "[+] tar → src/main/assets/mesa-zink-libs.tar.gz"
+mkdir -p "$repo_root/src/main/assets"   # may not exist on a fresh clone (gitignored)
 ( cd "$OUT" && tar czf - libgbm.so libexpat.so libdrm.so libvulkan_vstpoc.so \
     libglapi.so "$(basename "$GALLIUM")" libEGL_vstpoc.so dri/zink_dri.so ) \
   > "$repo_root/src/main/assets/mesa-zink-libs.tar.gz"
