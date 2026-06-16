@@ -1,0 +1,47 @@
+From: Kamil Lulko <limakzagan@gmail.com>
+Subject: [PARKED PROTOTYPE] FEX ARM64EC: fix x4 for variadic calls on DLL-load gap
+
+★ Apply to external/fex-upstream, then rebuild libarm64ecfex.dll. ★
+
+Generalizes the Hangover #225 wine workaround to ALL variadic ARM64EC entry
+thunks (the compiler-generated ones the wine ndr_stubless fix cannot reach).
+When emulated x86_64 calls a variadic ARM64EC function and the call lazy-loads a
+DLL, FEX's ExitFunctionEC leaves x4 (the entry thunk's stack-param base = caller
+original SP) 0x20 too low; a {args,len} descriptor with len==0x10 lands at x4+0x28
+where the entry thunk's +0x20 shadow-space skip reads it. We detect that and undo
+the gap. VALIDATED: clears the PACE pace_wrapping_fi crash and lets LDSvc.exe run
+all of PACE init (5.5KB -> 3.1MB log).
+
+⚠ PARKED — NOT shipped. Issues to harden before trusting it:
+  - layout-SENSITIVE: VSTPOC_STACK_PCT (bigger stack) re-breaks it → the 0x28
+    offset / gap size is not robust across stack layouts.
+  - GLOBAL change to every emulated->ARM64EC call → regression risk on other
+    plugins (BIAS/TONEX/…) UNVERIFIED.
+  - reveals a deeper PACE crash (null-read exception loop -> INVALID_DISPOSITION
+    -> stack overflow further in init).
+Upstream-worthy: this is the FEX-side fix AndreRH asked for in Hangover #225 and
+that nobody has written. File it with FEX to have them harden the offset.
+diff --git a/Source/Windows/ARM64EC/Module.S b/Source/Windows/ARM64EC/Module.S
+index 365931332..9777d0501 100644
+--- a/Source/Windows/ARM64EC/Module.S
++++ b/Source/Windows/ARM64EC/Module.S
+@@ -86,6 +86,19 @@ ExitFunctionSuspendResumePoint:
+   ldr lr, [x4], #0x8 // Pop the return address into lr.
+   mov sp, x4
+ 
++  // vstpoc: generalize Hangover #225 to ALL variadic entry thunks. When an
++  // x86_64->ARM64EC call lazy-loads a DLL, an extra 0x20 gap is left on the stack so
++  // x4 (= caller's original SP, the entry thunk's stack-param base) is 0x20 too low;
++  // a {args,len} descriptor whose len==0x10 sits at x4+0x28 (where the variadic entry
++  // thunk's +0x20 shadow-space skip lands). Detect that and undo the gap, so the
++  // entry thunk reads the real overflow args instead of the descriptor (fixes PACE/
++  // iLok LDSvc + the compiler-generated thunks the wine ndr_stubless fix can't reach).
++  // x16 is a free intra-procedure scratch register here.
++  ldr x16, [x4, #0x28]
++  cmp x16, #0x10
++  b.ne ret_sp_aligned
++  add x4, x4, #0x20
++
+ ret_sp_aligned:
+   br x17
+ 

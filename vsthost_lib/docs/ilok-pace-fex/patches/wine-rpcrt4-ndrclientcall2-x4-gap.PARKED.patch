@@ -1,0 +1,52 @@
+From: Kamil Lulko <limakzagan@gmail.com>
+Subject: [PARKED] rpcrt4 ARM64EC NdrClientCall2/NdrAsyncClientCall x4-gap fix (Hangover #225)
+
+★ Apply to external/wine-upstream. ★
+
+Port of Hangover issue #225 / commit cc6dbd8 (Michael-Ost-BoseProfessional/wine).
+The hand-written ARM64EC variadic thunks NdrClientCall2 + NdrAsyncClientCall detect
+FEX's DLL-load x4 gap (*(x4+8)==0x10) and add 0x20 to reach the real overflow args.
+VALIDATED: clears the PACE rpcrt4 NdrContextHandleUnmarshall crash (c0000005 write
+to 0x10). Low-risk + upstream-aligned, but PARKED with the rest of the iLok-under-FEX
+work because alone (without the FEX ExitFunctionEC fix) it gives no user-facing
+benefit (iLok plugins still crash in pace_wrapping_fi). Re-apply as patches/wine/0057
+when resuming. The clean general fix is the FEX-side one above.
+diff --git a/dlls/rpcrt4/ndr_stubless.c b/dlls/rpcrt4/ndr_stubless.c
+index ec09fefc0d7..8b45233cfba 100644
+--- a/dlls/rpcrt4/ndr_stubless.c
++++ b/dlls/rpcrt4/ndr_stubless.c
+@@ -1004,6 +1004,19 @@ CLIENT_CALL_RETURN __attribute__((naked)) NdrClientCall2( PMIDL_STUB_DESC desc,
+          "stp x29, x30, [sp, #-0x20]!\n\t"
+          ".seh_save_fplr_x 0x20\n\t"
+          ".seh_endprologue\n\t"
++         /* vstpoc: when this variadic ARM64EC proxy is called from x86_64 code
++          * emulated by FEX, FEX's ExitFunctionEC leaves x4 0x20 short of the 5th
++          * argument (pointing at a {args,len} descriptor / just past the return
++          * address rather than at the overflow args). NdrpClientCall2 then reads a
++          * garbage stack_top and PACE's RPC client (e.g. LDSvc.exe via
++          * NdrContextHandleUnmarshall) faults on a 0x10 pointer. Detect the gap
++          * (*(x4+8)==0x10) and step x4 to the real args. See Hangover issue #225. */
++         "cbz x4, 1f\n\t"
++         "ldr x16, [x4, #0x08]\n\t"
++         "cmp x16, #0x10\n\t"
++         "b.ne 1f\n\t"
++         "add x4, x4, #0x20\n\t"
++         "1:\n\t"
+          "stp x2, x3, [x4, #-0x10]!\n\t"
+          "mov x2, x4\n\t"          /* stack */
+          "mov x3, #0\n\t"          /* fpu_stack */
+@@ -1838,6 +1851,14 @@ CLIENT_CALL_RETURN __attribute__((naked)) NdrAsyncClientCall( PMIDL_STUB_DESC de
+          "stp x29, x30, [sp, #-0x20]!\n\t"
+          ".seh_save_fplr_x 0x20\n\t"
+          ".seh_endprologue\n\t"
++         /* vstpoc: same FEX ExitFunctionEC x4 gap as NdrClientCall2 above
++          * (Hangover issue #225) — step past the gap to the real overflow args. */
++         "cbz x4, 1f\n\t"
++         "ldr x16, [x4, #0x08]\n\t"
++         "cmp x16, #0x10\n\t"
++         "b.ne 1f\n\t"
++         "add x4, x4, #0x20\n\t"
++         "1:\n\t"
+          "stp x2, x3, [x4, #-0x10]!\n\t"
+          "mov x2, x4\n\t"          /* stack */
+          "mov x3, #0\n\t"          /* fpu_stack */

@@ -23,5 +23,15 @@
             android:configChanges="orientation|screenSize|screenLayout"
             android:theme="@style/Theme.GuitarRackCraft" />
 
+        <!-- Debug-only: fork `wine <exe>` against a prefix from adb (no UI).
+             Gated on BuildConfig.DEBUG inside the receiver. See DebugRunReceiver. -->
+        <receiver
+            android:name="com.varcain.guitarrackcraft.debug.DebugRunReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="com.varcain.guitarrackcraft.DEBUG_RUN" />
+            </intent-filter>
+        </receiver>
+
     </application>
 </manifest>
