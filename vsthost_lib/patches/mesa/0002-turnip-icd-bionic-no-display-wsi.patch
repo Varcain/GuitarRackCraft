@@ -1,0 +1,39 @@
+diff --git a/src/util/detect_os.h b/src/util/detect_os.h
+index 86286dfbe70..d170919b2af 100644
+--- a/src/util/detect_os.h
++++ b/src/util/detect_os.h
+@@ -24,7 +24,7 @@
+  * Android defines __linux__, so DETECT_OS_LINUX and DETECT_OS_POSIX will
+  * also be defined.
+  */
+-#if defined(__ANDROID__)
++#if defined(__ANDROID__) && !defined(MESA_FORCE_LINUX)
+ #define DETECT_OS_ANDROID 1
+ #endif
+ 
+diff --git a/src/vulkan/meson.build b/src/vulkan/meson.build
+index 56f35fc90fe..b5014963f24 100644
+--- a/src/vulkan/meson.build
++++ b/src/vulkan/meson.build
+@@ -54,7 +54,7 @@ if with_platform_wayland
+   vulkan_wsi_deps += dep_wayland_client
+   vulkan_wsi_list += '-DVK_USE_PLATFORM_WAYLAND_KHR'
+ endif
+-if system_has_kms_drm and not with_platform_android
++if system_has_kms_drm and not with_platform_android and host_machine.system() != 'android'
+   vulkan_wsi_deps += [dep_libdrm]
+   vulkan_wsi_list += '-DVK_USE_PLATFORM_DISPLAY_KHR'
+ endif
+diff --git a/src/vulkan/wsi/meson.build b/src/vulkan/wsi/meson.build
+index f2b21306029..595fd84d541 100644
+--- a/src/vulkan/wsi/meson.build
++++ b/src/vulkan/wsi/meson.build
+@@ -29,7 +29,7 @@ else
+   files_vulkan_wsi += files('wsi_common_headless.c')
+ endif
+ 
+-if system_has_kms_drm and not with_platform_android
++if system_has_kms_drm and not with_platform_android and host_machine.system() != 'android'
+   files_vulkan_wsi += files('wsi_common_display.c')
+ endif
+ 

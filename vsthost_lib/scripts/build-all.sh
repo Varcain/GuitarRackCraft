@@ -24,7 +24,9 @@
 #   dxvk      build-dxvk.sh            — DXVK D3D-to-Vulkan translation DLLs
 #   mesa      build-mesa-zink.sh       — desktop-GL libs (zink→Turnip) → mesa-zink-libs.tar.gz
 #   adrenotools build-adrenotools.sh   — libadrenotools + hook libs (Turnip HAL loader → jniLibs)
-#   turnip    fetch-turnip-libs.sh     — Adreno Vulkan driver/ICD + runtime deps → turnip-libs
+#   turnip    fetch-turnip-libs.sh     — AdrenoTools HAL Turnip vulkan.ad07xx.so (prebuilt; Phase 3 TODO)
+#             build-libdrm-android.sh  — source libdrm (freedreno) → drm sysroot + turnip-libs
+#             build-turnip-icd.sh      — source Turnip Vulkan ICD libvulkan_freedreno.so (from mesa submodule)
 #             build-vulkan-loader.sh   — Khronos Vulkan loader libvulkan.so.1 (source) → turnip-libs.tar.gz
 #   hosts     build-vst-host.sh        — vst_host.exe + vst_host_x86.exe (PE guests)
 #             build-vst3-host.sh       — vst3_host.exe (VST3 hosting; needs vst3sdk submodule)
@@ -148,14 +150,28 @@ phase_adrenotools() {
 }
 
 phase_turnip() {
-    step 8c "fetch-turnip (Adreno Vulkan driver/ICD + runtime deps → turnip-libs)"
+    # Clean staging so the asset is exactly the current outputs (avoid shipping
+    # stale libs — e.g. the retired Termux WSI cluster — from a previous run).
+    rm -rf "$REPO/toolchain/turnip-libs"; mkdir -p "$REPO/toolchain/turnip-libs"
+
+    step 8c "fetch-turnip-hal (AdrenoTools HAL Turnip vulkan.ad07xx.so → turnip-libs)"
+    # Phase 3 will source-build the HAL; for now this only fetches the prebuilt
+    # AdrenoTools HAL driver (vulkan.ad07xx.so).
     run_step fetch-turnip-libs.sh
 
-    step 8c2 "build-vulkan-loader (Khronos Vulkan loader libvulkan.so.1 from source → turnip-libs)"
-    # Phase 1 of the prebuilt→source migration: the Khronos loader is now built
-    # from external/Vulkan-Loader (was a Termux .deb in fetch-turnip-libs). Runs
-    # AFTER the fetch (which creates toolchain/turnip-libs/ + the other libs) and
-    # BEFORE the tar below, so libvulkan.so.1 lands in the asset.
+    step 8c2 "build-libdrm-android (source libdrm → drm sysroot + turnip-libs)"
+    # Phase 2: source libdrm (freedreno) — the Turnip ICD's one real runtime dep,
+    # and replaces the checked-in Termux blob build-mesa-zink used to link.
+    run_step build-libdrm-android.sh
+
+    step 8c3 "build-turnip-icd (source Turnip Vulkan ICD libvulkan_freedreno.so → turnip-libs)"
+    # Phase 2: Turnip ICD from the 3rd_party/mesa submodule (no-WSI, msm+kgsl).
+    # Needs the source libdrm above (pkg-config). Replaces the Termux ICD .deb.
+    run_step build-turnip-icd.sh
+
+    step 8c4 "build-vulkan-loader (Khronos Vulkan loader libvulkan.so.1 from source → turnip-libs)"
+    # Phase 1: Khronos loader from external/Vulkan-Loader. Runs before the tar so
+    # libvulkan.so.1 lands in the asset alongside the source ICD + HAL.
     run_step build-vulkan-loader.sh
     # fetch-turnip-libs only STAGES into toolchain/turnip-libs/ (it's a fetch script,
     # like fetch-x11-libs). Bundle that into the runtime asset here, with bare SONAME

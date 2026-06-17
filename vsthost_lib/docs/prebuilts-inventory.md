@@ -4,10 +4,11 @@ Every binary the VST build (`vsthost_lib/scripts/build-all.sh` + `build-vst3-hos
 consumes **without compiling it from source in this build**. Goal: drive each
 row to a from-source build. Verified 2026-06-14 against `win_vst_devel`.
 
-**Migration status (2026-06-17): Phase 0 (X11, A1) ✅ · Phase 1 (Khronos Vulkan
-loader, A2 loader-half) ✅ · Phase 2 (Turnip ICD + deps, A2/A3) 🔜 · Phase 3
-(AdrenoTools HAL) ⬜.** See "Migration status & remaining work" at the bottom for
-the live plan — that section supersedes the original "suggested order".
+**Migration status (2026-06-17): Phase 0 (X11, A1) ✅ · Phase 1 (Khronos loader) ✅
+· Phase 2 (Turnip ICD + source libdrm, A2 driver-half) ✅ · A3 (switch mesa-zink
+off the checked-in libdrm blob) 🔜 · Phase 3 (AdrenoTools HAL) ⬜.** See "Migration
+status & remaining work" at the bottom for the live plan — that section supersedes
+the original "suggested order".
 
 Legend: **SHIPPED** = lands in the APK · **HOST** = build-time tool only.
 
@@ -85,28 +86,38 @@ One `fetch-*.sh` area retired per phase. This section is the live plan.
   HAL, no source patch). Dropped `vulkan-loader-generic` from `fetch-turnip-libs.sh`;
   runs in the `assemble` job's `turnip` phase. SETUP_VERSION 31→32.
 
-### 🔜 Phase 2 — Turnip Vulkan ICD + its real deps (A2 driver-half + A3) · effort M · risk M
-Build the Turnip ICD from the in-tree `3rd_party/mesa` submodule (sibling of
-`build-mesa-zink.sh`, reuse its NDK meson cross-file): `-Dvulkan-drivers=freedreno
--Dgallium-drivers= -Dplatforms= -Dfreedreno-kmds=msm,kgsl`. Output
-`libvulkan_freedreno.so` + ICD json (bare `library_path`). This is the DXVK
-Khronos-loader **fallback** path (the loader from Phase 1 dlopens it).
+### ✅ Phase 2 — Turnip Vulkan ICD + source libdrm (A2 driver-half)
+Done. The Turnip ICD is built from the in-tree `3rd_party/mesa` submodule:
+- `build-turnip-icd.sh`: `-Dvulkan-drivers=freedreno -Dgallium-drivers=
+  -Dplatforms= -Dfreedreno-kmds=msm,kgsl -Dzstd=disabled` + `-static-libstdc++`
+  + patch `0002-turnip-icd-bionic-no-display-wsi.patch` (a MESA_FORCE_LINUX
+  escape hatch in detect_os.h so DETECT_OS_ANDROID=0 → no AHardwareBuffer/VNDK/
+  gralloc code that needs `<vndk/hardware_buffer.h>`, and dropping the VK_KHR_display
+  WSI on Android-Bionic hosts since `wsi_common_display.c` uses `pthread_cancel`
+  which Bionic lacks). Output `libvulkan_freedreno.so` + `freedreno_icd.aarch64.json`
+  (library_path rewritten to the bare filename). This is the DXVK Khronos-loader
+  **fallback** path (the Phase-1 loader dlopens it).
+- `build-libdrm-android.sh`: source libdrm 2.4.125 (freedreno-only, meson/NDK) →
+  `toolchain/drm-android` sysroot + `libdrm.so` into the asset. The ICD's one real
+  runtime dep.
+- **Result (verified):** `libvulkan_freedreno.so` NEEDs only `libdrm.so` + system
+  `libz.so`/`libm`/`libdl`/`libc` — the entire Termux WSI cluster (libxcb*,
+  libX11-xcb, libwayland-client, libxshmfence, libandroid-shmem, libffi) +
+  libzstd.so.1 + libz.so.1 + libc++_shared are GONE (the `-Dplatforms=` empty
+  build never references them). `fetch-turnip-libs.sh` is gutted to ONLY the
+  AdrenoTools HAL fetch. `turnip-libs.tar.gz`: 6.6M → 5.2M, now loader + source
+  ICD + ICD json + source libdrm + HAL. SETUP_VERSION 32→33.
 
-**Key finding (DT_NEEDED audit 2026-06-17):** most of the remaining Termux turnip
-libs exist only because the *Termux* ICD was built with full WSI — a **no-WSI**
-(`-Dplatforms=`) source build won't reference them, so they fall out with the ICD:
-- Termux `libvulkan_freedreno.so` NEEDs: libandroid-shmem, libdrm, libxcb(+dri3/
-  present/sync/randr/shm/xfixes), libX11-xcb, libwayland-client, libxshmfence,
-  libz.so.1, libzstd.so.1, libc++_shared, libm/libdl/libc.
-- `-Dplatforms=` drops the X11/Wayland/DRI3 set (libxcb*, libX11-xcb,
-  libwayland-client + libffi, libxshmfence, libandroid-shmem) → **~10 libs pruned
-  from `fetch-turnip-libs.sh`.**
-- Real deps left to own: **libdrm** (A3 — kgsl/msm needs it) + **libzstd**
-  (source-build, autotools/meson, NDK pattern from `build-android-libs.sh`);
-  **libz** → use the NDK's `libz.so`; libc++_shared is the NDK's.
-- Also retires the **checked-in Termux libdrm blob** in `patches/mesa/build-files/`
-  that `build-mesa-zink.sh` consumes (A3).
-- New: `build-turnip-icd.sh`; prune `fetch-turnip-libs.sh` to (at most) nothing.
+### 🔜 A3 — switch mesa-zink off the checked-in Termux libdrm blob · effort S · risk M
+The source libdrm (`toolchain/drm-android`) now exists, but `build-mesa-zink.sh`
+still links + bundles the **checked-in Termux libdrm blob** at
+`patches/mesa/build-files/android-deps-data/lib/libdrm*.so`. Remaining work:
+point build-mesa-zink's meson cross-file pkg-config at `toolchain/drm-android`,
+copy `libdrm.so` from there into `mesa-zink-libs.tar.gz`, delete the blob, and
+move `build-libdrm-android` to run before the `mesa` phase (it's currently in
+`turnip`, which runs after `mesa`). Deferred from Phase 2 because it touches the
+working zink/GL-editor build → wants a full mesa-zink rebuild + on-device GL
+editor (AmpliTube) check to verify, separate from the ICD work.
 
 ### ⬜ Phase 3 — AdrenoTools HAL Turnip (last fetch + primary GPU path) · effort L · risk M–H
 Build the Android-HAL Turnip (`vulkan.ad07xx.so`, exports `HMI`) from the same
