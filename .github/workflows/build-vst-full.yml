@@ -426,8 +426,13 @@ jobs:
             neural_pack/src/main/assets/plugins
             brummer_pack/src/main/assets/plugins
           key: ${{ steps.native-key.outputs.key }}
-          restore-keys: |
-            native-${{ runner.os }}-
+          # NO restore-keys on purpose. A prefix (partial) restore brings back a
+          # stale autotools build tree — e.g. build/x11_ui/libX11 configured with
+          # the previous CONFIGURE_ARGS. When the args change (e.g. dropping
+          # --disable-xkb), build.sh reconfigures it in place and autotools
+          # dirty-reconfigure fails on the runner ("Performing configure step for
+          # 'libX11' FAILED"). Exact-key-only means a config change misses the
+          # cache and build.sh does a CLEAN build; ccache keeps recompiles fast.
       - name: Cache ccache
         uses: actions/cache@v4
         with:
@@ -481,7 +486,13 @@ jobs:
       - name: Dump build logs on failure
         if: failure()
         run: |
-          for f in build/prebuild/*/src/*/stamp/*-*.log; do
-            [ -f "$f" ] && echo "=== $f ===" && tail -100 "$f"
+          # ExternalProject stamp logs live at <name>-prefix/src/<name>-stamp/*.log
+          # (the previous glob '*/src/*/stamp/' never matched and dumped nothing).
+          for f in build/prebuild/*/src/*-stamp/*.log; do
+            [ -f "$f" ] && echo "=== $f ===" && tail -120 "$f"
+          done || true
+          # autotools config.log carries the detailed "configure: error:" reason
+          for f in build/x11_ui/*/config.log build/*/config.log; do
+            [ -f "$f" ] && echo "=== $f ===" && tail -80 "$f"
           done || true
           tail -100 vsthost_lib/external/wine-upstream/build-android-arm64/config.log 2>/dev/null || true
