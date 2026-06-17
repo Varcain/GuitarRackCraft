@@ -158,3 +158,6 @@
 [submodule "3rd_party/x11/libXxf86vm"]
 	path = 3rd_party/x11/libXxf86vm
 	url = https://gitlab.freedesktop.org/xorg/lib/libxxf86vm.git
+[submodule "vsthost_lib/external/Vulkan-Loader"]
+	path = vsthost_lib/external/Vulkan-Loader
+	url = https://github.com/KhronosGroup/Vulkan-Loader.git

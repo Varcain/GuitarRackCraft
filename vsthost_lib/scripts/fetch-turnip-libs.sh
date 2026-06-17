@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
-# Fetches Turnip (Mesa's open-source Adreno Vulkan driver) + the Khronos
-# Vulkan loader + all runtime deps as Termux arm64 Bionic .deb packages,
-# and stages the .so files + the ICD manifest into toolchain/turnip-libs/.
+# Fetches Turnip (Mesa's open-source Adreno Vulkan driver) + its runtime deps
+# as Termux arm64 Bionic .deb packages, and stages the .so files + the ICD
+# manifest into toolchain/turnip-libs/. The Khronos Vulkan loader (libvulkan.so.1)
+# is NO LONGER fetched here — it's built from source by build-vulkan-loader.sh
+# (Phase 1 of the prebuilt→source migration), staged into the same dir.
 #
 # WHY: the system Qualcomm proprietary Adreno driver advertises
 # VK_EXT_robustness2 nullDescriptor but REJECTS it at vkCreateDevice, which
@@ -36,7 +38,9 @@ mkdir -p "$out" "$tmp"
 # version bumps don't break this script.
 PKGS=(
   mesa-vulkan-icd-freedreno   # Turnip: libvulkan_freedreno.so + freedreno_icd.aarch64.json
-  vulkan-loader-generic       # Khronos Vulkan loader: libvulkan.so.1
+  # NOTE: the Khronos Vulkan loader (libvulkan.so.1) is NO LONGER fetched here —
+  # it's built from source by build-vulkan-loader.sh (run right after this script
+  # in build-all.sh phase_turnip). See that script + Phase 1 of the source migration.
   libdrm                      # DRM-MSM kernel access (/dev/dri/renderD128)
   zlib                        # libz.so.1
   zstd                        # libzstd.so.1
@@ -68,7 +72,6 @@ done
 usr="$tmp/data/data/com.termux/files/usr"
 # Stage every .so (real SONAME names incl .so.N) + the ICD manifest.
 cp -av "$usr"/lib/libvulkan_freedreno.so \
-       "$usr"/lib/libvulkan.so.1* \
        "$usr"/lib/libdrm.so* \
        "$usr"/lib/libz.so.1* \
        "$usr"/lib/libzstd.so.1* \
@@ -83,13 +86,14 @@ cp -av "$usr"/share/vulkan/icd.d/freedreno_icd.aarch64.json "$out"/ 2>/dev/null 
 # Dereference the versioned-SONAME symlinks (libz.so.1 -> libz.so.1.3.2 etc.)
 # into REAL files at their SONAME names, and drop the now-redundant versioned
 # copies. The runtime extractor (WineSetup, NLS-style TarReader) SKIPS symlinks,
-# and Turnip's NEEDED entries + win32u's loader dlopen reference the SONAMEs
-# (libz.so.1, libzstd.so.1, libvulkan.so.1), so they must be real files.
+# and Turnip's NEEDED entries reference the SONAMEs (libz.so.1, libzstd.so.1),
+# so they must be real files. (libvulkan.so.1 is staged here as a real file by
+# build-vulkan-loader.sh, which runs next in phase_turnip.)
 ( cd "$out"
-  for sl in libz.so.1 libzstd.so.1 libvulkan.so.1; do
+  for sl in libz.so.1 libzstd.so.1; do
     if [ -L "$sl" ]; then tgt=$(readlink "$sl"); rm "$sl"; cp "$tgt" "$sl"; fi
   done
-  rm -f libz.so.1.* libzstd.so.1.* libvulkan.so.1.* 2>/dev/null || true
+  rm -f libz.so.1.* libzstd.so.1.* 2>/dev/null || true
 )
 # Make the ICD manifest's library_path a bare filename so the Khronos loader
 # resolves it via LD_LIBRARY_PATH (set to the extracted turnip dir at runtime)

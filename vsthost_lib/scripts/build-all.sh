@@ -24,7 +24,8 @@
 #   dxvk      build-dxvk.sh            — DXVK D3D-to-Vulkan translation DLLs
 #   mesa      build-mesa-zink.sh       — desktop-GL libs (zink→Turnip) → mesa-zink-libs.tar.gz
 #   adrenotools build-adrenotools.sh   — libadrenotools + hook libs (Turnip HAL loader → jniLibs)
-#   turnip    fetch-turnip-libs.sh     — Adreno Vulkan driver + Khronos loader → turnip-libs.tar.gz
+#   turnip    fetch-turnip-libs.sh     — Adreno Vulkan driver/ICD + runtime deps → turnip-libs
+#             build-vulkan-loader.sh   — Khronos Vulkan loader libvulkan.so.1 (source) → turnip-libs.tar.gz
 #   hosts     build-vst-host.sh        — vst_host.exe + vst_host_x86.exe (PE guests)
 #             build-vst3-host.sh       — vst3_host.exe (VST3 hosting; needs vst3sdk submodule)
 #             build-uihost-stub.sh     — touch-keyboard COM stubs
@@ -147,8 +148,15 @@ phase_adrenotools() {
 }
 
 phase_turnip() {
-    step 8c "fetch-turnip (Adreno Vulkan driver + Khronos loader → turnip-libs.tar.gz)"
+    step 8c "fetch-turnip (Adreno Vulkan driver/ICD + runtime deps → turnip-libs)"
     run_step fetch-turnip-libs.sh
+
+    step 8c2 "build-vulkan-loader (Khronos Vulkan loader libvulkan.so.1 from source → turnip-libs)"
+    # Phase 1 of the prebuilt→source migration: the Khronos loader is now built
+    # from external/Vulkan-Loader (was a Termux .deb in fetch-turnip-libs). Runs
+    # AFTER the fetch (which creates toolchain/turnip-libs/ + the other libs) and
+    # BEFORE the tar below, so libvulkan.so.1 lands in the asset.
+    run_step build-vulkan-loader.sh
     # fetch-turnip-libs only STAGES into toolchain/turnip-libs/ (it's a fetch script,
     # like fetch-x11-libs). Bundle that into the runtime asset here, with bare SONAME
     # filenames (no leading dir) so WineSetup.extractTurnipLibs drops them straight
