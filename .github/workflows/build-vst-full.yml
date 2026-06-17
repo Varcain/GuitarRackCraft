@@ -64,6 +64,7 @@ jobs:
     timeout-minutes: 10
     outputs:
       llvm: ${{ steps.k.outputs.llvm }}
+      x11: ${{ steps.k.outputs.x11 }}
       winedeps: ${{ steps.k.outputs.winedeps }}
       wine: ${{ steps.k.outputs.wine }}
       fex: ${{ steps.k.outputs.fex }}
@@ -81,16 +82,19 @@ jobs:
           LLVM_C=$(gl vsthost_lib/external/llvm-mingw)
           echo "llvm=llvm-$os-$LLVM_C" >> "$GITHUB_OUTPUT"
 
-          # winedeps now also source-builds the X11 sysroot (native cmake +
-          # 3rd_party/x11 submodules), so the key tracks that build logic + the
-          # X11 submodule pins (HEAD:3rd_party/x11 tree hash) too.
-          WD=$( { cat vsthost_lib/scripts/fetch-x11-libs.sh \
-                      vsthost_lib/scripts/build-android-libs.sh \
-                      vsthost_lib/scripts/build-gnutls-android.sh \
-                      vsthost_lib/scripts/build-all.sh \
-                      cmake/targets/x11_sysroot.cmake; \
-                  git rev-parse HEAD:3rd_party/x11; } | h16)
+          WD=$(cat vsthost_lib/scripts/fetch-x11-libs.sh \
+                   vsthost_lib/scripts/build-android-libs.sh \
+                   vsthost_lib/scripts/build-gnutls-android.sh | h16)
           echo "winedeps=winedeps-$os-$WD-ndk${NDK_VSTHOST}" >> "$GITHUB_OUTPUT"
+
+          # X11 client stack is its OWN cached job (built once via the native
+          # cmake, restored by the wine + assemble jobs — decoupled from
+          # gnutls/freetype). Key tracks the X11 build logic + the 3rd_party/x11
+          # submodule pins, scoped to NDK_NATIVE so the cached sysroot matches
+          # assemble's build.sh full (which also builds this sysroot).
+          X11_K=$( { cat cmake/targets/x11_sysroot.cmake vsthost_lib/scripts/build-all.sh; \
+                     git rev-parse HEAD:3rd_party/x11; } | h16)
+          echo "x11=x11-$os-$X11_K-ndk${NDK_NATIVE}" >> "$GITHUB_OUTPUT"
 
           WINE_C=$(gl vsthost_lib/external/wine-upstream)
           WINE_H=$( { find vsthost_lib/patches/wine -type f -name '*.patch' | sort | xargs -r cat; \
@@ -148,11 +152,48 @@ jobs:
             vsthost_lib/external/fex-upstream
           cd vsthost_lib && bash scripts/build-all.sh llvm
 
+  # ── x11: the X11 client stack (libX11/xcb/Xau/Xext/Xrender + Xi/Xfixes/
+  #    Xrandr/Xcursor/Xxf86vm/Xdmcp) source-built via the native cmake. Built
+  #    ONCE here + cached; restored by the wine job (winex11 links it) and
+  #    assemble (build.sh full reuses the stamps + sysroot, no rebuild).
+  #    Decoupled from winedeps so a gnutls/freetype change doesn't rebuild X11
+  #    (and vice versa). NDK_NATIVE matches assemble's native build.
+  x11:
+    needs: keys
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Cache X11 sysroot
+        id: x11-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            build/x11_ui
+            build/prebuild
+          key: ${{ needs.keys.outputs.x11 }}
+      - name: System deps + NDK
+        if: steps.x11-cache.outputs.cache-hit != 'true'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends $COMMON_APT $X11_APT $NATIVE_APT
+          yes | "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
+          "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" "ndk;${NDK_NATIVE}"
+      - name: Init native submodules (the cmake configure spans the full 3rd_party tree)
+        if: steps.x11-cache.outputs.cache-hit != 'true'
+        run: git submodule update --init --recursive 3rd_party
+      - name: Build X11 sysroot
+        if: steps.x11-cache.outputs.cache-hit != 'true'
+        env:
+          ANDROID_NDK: ${{ env.ANDROID_SDK_ROOT }}/ndk/${{ env.NDK_NATIVE }}
+        run: cd vsthost_lib && bash scripts/build-all.sh x11
+
   # ── wine: PE (build-arm64ec) + Unix (build-android-arm64). The other long
-  #    pole. Two caches: `winedeps` (x11/png-ft/gnutls, rarely changes) and
+  #    pole. Two caches: `winedeps` (png-ft/gnutls/headers, rarely changes) and
   #    `wine` (a lean tar of build-android-arm64 for the assemble handoff).
+  #    The X11 sysroot it links comes from the `x11` job's cache (restored below).
   wine:
-    needs: [keys, llvm]
+    needs: [keys, llvm, x11]
     runs-on: ubuntu-latest
     timeout-minutes: 300
     steps:
@@ -167,7 +208,6 @@ jobs:
             vsthost_lib/toolchain/wine-fonts
             vsthost_lib/toolchain/android-libs
             vsthost_lib/toolchain/gnutls-android-arm64
-            build/x11_ui/sysroot
           key: ${{ needs.keys.outputs.winedeps }}
       - name: Cache wine output (lean build-android-arm64 tar)
         id: wine-cache
@@ -184,30 +224,16 @@ jobs:
         if: steps.winedeps-cache.outputs.cache-hit != 'true' || steps.wine-cache.outputs.cache-hit != 'true'
         run: |
           sudo apt-get update -qq
-          # $NATIVE_APT (ocaml etc.) is needed because winedeps now builds the
-          # source X11 sysroot via the native cmake (cmake configure probes for
-          # the native toolchain). cmake/meson/ninja/autotools are in $COMMON_APT.
-          sudo apt-get install -y --no-install-recommends $COMMON_APT $X11_APT $NATIVE_APT
+          sudo apt-get install -y --no-install-recommends $COMMON_APT $X11_APT
           yes | "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
           "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" "ndk;${NDK_VSTHOST}"
 
       # winedeps first — wine-android links against them. Network fetch (Termux/upstream).
+      # winedeps = freetype/png + gnutls + X11/freetype headers + wine fonts.
+      # The X11 client libs themselves come from the `x11` job (restored below).
       - name: Build winedeps
         if: steps.winedeps-cache.outputs.cache-hit != 'true'
-        env:
-          # winedeps builds the source X11 sysroot via the native cmake (which
-          # needs the NDK) in addition to the freetype/gnutls source builds.
-          ANDROID_NDK: ${{ env.ANDROID_SDK_ROOT }}/ndk/${{ env.NDK_VSTHOST }}
-        run: |
-          # X11 client-lib submodules — winedeps source-builds them (the native
-          # cmake X11 sysroot) in place of the old Termux prebuilt fetch.
-          git submodule update --init \
-            3rd_party/x11/util-macros 3rd_party/x11/xorgproto 3rd_party/x11/xtrans \
-            3rd_party/x11/libXau 3rd_party/x11/xcb-proto 3rd_party/x11/libxcb \
-            3rd_party/x11/libX11 3rd_party/x11/libXext 3rd_party/x11/libXrender \
-            3rd_party/x11/libXdmcp 3rd_party/x11/libXfixes 3rd_party/x11/libXi \
-            3rd_party/x11/libXrandr 3rd_party/x11/libXcursor 3rd_party/x11/libXxf86vm
-          cd vsthost_lib && bash scripts/build-all.sh winedeps
+        run: cd vsthost_lib && bash scripts/build-all.sh winedeps
 
       # wine needs the llvm-mingw toolchain (restore the llvm job's cache) + the wine source.
       - name: Restore llvm-mingw
@@ -216,6 +242,15 @@ jobs:
         with:
           path: vsthost_lib/external/llvm-mingw/install
           key: ${{ needs.keys.outputs.llvm }}
+          fail-on-cache-miss: true
+      - name: Restore X11 sysroot (from the x11 job; wine links libX11/Xext + dlopens the extensions)
+        if: steps.wine-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            build/x11_ui
+            build/prebuild
+          key: ${{ needs.keys.outputs.x11 }}
           fail-on-cache-miss: true
       - name: Build wine + stage lean output tar
         if: steps.wine-cache.outputs.cache-hit != 'true'
@@ -332,7 +367,7 @@ jobs:
   #    (turnip fetch + hosts + pack), build the LV2/native side, assemble the
   #    APK. This is the only job that needs the full submodule tree + both NDKs.
   assemble:
-    needs: [keys, wine, fex, dxvk, mesa]
+    needs: [keys, wine, fex, dxvk, mesa, x11]
     runs-on: ubuntu-latest
     timeout-minutes: 180
     steps:
@@ -372,7 +407,6 @@ jobs:
             vsthost_lib/toolchain/wine-fonts
             vsthost_lib/toolchain/android-libs
             vsthost_lib/toolchain/gnutls-android-arm64
-            build/x11_ui/sysroot
           key: ${{ needs.keys.outputs.winedeps }}
           fail-on-cache-miss: true
       - name: Restore wine output tar
@@ -400,6 +434,14 @@ jobs:
         with:
           path: vsthost_lib/src/main/assets/mesa-zink-libs.tar.gz
           key: ${{ needs.keys.outputs.mesa }}
+          fail-on-cache-miss: true
+      - name: Restore X11 sysroot (from the x11 job — build.sh full reuses it, no rebuild)
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            build/x11_ui
+            build/prebuild
+          key: ${{ needs.keys.outputs.x11 }}
           fail-on-cache-miss: true
 
       - name: Unpack wine output into build dir

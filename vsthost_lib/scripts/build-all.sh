@@ -88,22 +88,24 @@ phase_llvm() {
     run_step setup-fex-pivot.sh
 }
 
-phase_winedeps() {
+phase_x11() {
     # Source-build the X11 client stack via the native cmake X11 sysroot
     # (3rd_party/x11 -> build/x11_ui/sysroot): libX11/libxcb/libXau +
     # libXext/libXrender + libXi/libXfixes/libXrandr/libXcursor/libXxf86vm/
     # libXdmcp, all shared, unversioned SONAMEs, XKB enabled. wine's winex11.drv
     # links/dlopens these (build-wine-android.sh --x-libraries) and build.sh
-    # stages them into jniLibs. Replaces the Termux X11 prebuilts. Self-contained
-    # so `build-all.sh wine` finds the sysroot whether or not ./build.sh ran
-    # first (the CI wine job builds it here, before the assemble native build).
+    # stages them into jniLibs. Replaces the Termux X11 prebuilts. Its own phase
+    # (and CI job) so it's cached independently of gnutls/freetype and built once
+    # — the wine + assemble jobs restore the sysroot rather than rebuild it.
     echo ""
     echo "=== build source X11 sysroot (native cmake target x11_runtime_libs) ==="
     proj_root="$(cd "$REPO/.." && pwd)"
     ( cd "$proj_root" && cmake --preset android-arm64 -S cmake >/dev/null && \
       cmake --build build/prebuild --target x11_runtime_libs )
+}
 
-    step 2 "fetch-x11-libs (X11/freetype headers + wine fonts; X11 libs source-built above)"
+phase_winedeps() {
+    step 2 "fetch-x11-libs (X11/freetype headers + wine fonts; X11 libs source-built in the x11 phase)"
     run_step fetch-x11-libs.sh
 
     step 3 "build-android-libs (libpng + libfreetype for arm64)"
@@ -196,7 +198,7 @@ phase_pack() {
 # Phase dispatch
 # ===========================================================================
 
-ALL_PHASES=(llvm winedeps wine fex dxvk mesa adrenotools turnip hosts pack)
+ALL_PHASES=(llvm x11 winedeps wine fex dxvk mesa adrenotools turnip hosts pack)
 
 usage() {
     echo "usage: build-all.sh [phase...]" >&2
