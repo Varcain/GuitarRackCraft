@@ -79,7 +79,7 @@ file(WRITE "${_x11_strip_pthread_script}" "#!/bin/bash\nfind \"$1\" -name Makefi
 
 add_autotools_project(libX11
     SOURCE_DIR "${_x11_dir}/libX11" BINARY_DIR "${X11_BUILD_DIR}/libX11" INSTALL_DIR "${X11_SYSROOT}"
-    DEPENDS xorgproto xtrans libxcb CONFIGURE_ARGS "PTHREAD_CFLAGS=" "PTHREAD_LIBS=" --enable-shared --disable-static --disable-xf86bigfont --disable-specs --disable-xkb --disable-loadable-i18n --disable-composecache --without-xmlto --without-fop --enable-malloc0returnsnull "CFLAGS=${NDK_CFLAGS_STR} -I${X11_SYSROOT}/include" "LDFLAGS=-L${X11_SYSROOT}/lib"
+    DEPENDS xorgproto xtrans libxcb CONFIGURE_ARGS "PTHREAD_CFLAGS=" "PTHREAD_LIBS=" --enable-shared --disable-static --disable-xf86bigfont --disable-specs --disable-loadable-i18n --disable-composecache --without-xmlto --without-fop --enable-malloc0returnsnull "CFLAGS=${NDK_CFLAGS_STR} -I${X11_SYSROOT}/include" "LDFLAGS=-L${X11_SYSROOT}/lib"
     EXTERNAL_PROJECT_ARGS BUILD_BYPRODUCTS "${X11_SYSROOT}/lib/libX11.so"
 )
 ExternalProject_Add_Step(libX11 autoreconf COMMAND bash "${_ensure_autotools_script}" <SOURCE_DIR> DEPENDEES download DEPENDERS configure)
