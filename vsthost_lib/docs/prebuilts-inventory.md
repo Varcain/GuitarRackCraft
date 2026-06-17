@@ -4,6 +4,11 @@ Every binary the VST build (`vsthost_lib/scripts/build-all.sh` + `build-vst3-hos
 consumes **without compiling it from source in this build**. Goal: drive each
 row to a from-source build. Verified 2026-06-14 against `win_vst_devel`.
 
+**Migration status (2026-06-17): Phase 0 (X11, A1) ✅ · Phase 1 (Khronos Vulkan
+loader, A2 loader-half) ✅ · Phase 2 (Turnip ICD + deps, A2/A3) 🔜 · Phase 3
+(AdrenoTools HAL) ⬜.** See "Migration status & remaining work" at the bottom for
+the live plan — that section supersedes the original "suggested order".
+
 Legend: **SHIPPED** = lands in the APK · **HOST** = build-time tool only.
 
 ---
@@ -12,8 +17,8 @@ Legend: **SHIPPED** = lands in the APK · **HOST** = build-time tool only.
 
 | # | Prebuilt | What / how obtained | Fetched by | Ships as | From-source path |
 |---|----------|---------------------|-----------|----------|------------------|
-| A1 | **Termux X11 client libs** (12): libX11, libxcb, libXau, libXdmcp, libXext, libXrender, libXi, libXfixes, libXrandr, libXcursor, libXxf86vm, libandroid-support | prebuilt arm64 Bionic `.deb`s from `packages.termux.dev` | `scripts/fetch-x11-libs.sh` (build-all step 2) | `jniLibs/libX*.so`, `libxcb.so`, … | **Already exists in the main build**: `3rd_party/x11/*` submodules (xorgproto, xtrans, xcb-proto, libXau, libxcb, libX11, libXext, libXrender, pixman, …) are built from source by `./build.sh`. Migration = point wine's `--x-libraries` at the main build's X11 sysroot instead of `toolchain/x11-libs`, and add the missing ones (libXi/libXfixes/libXrandr/libXcursor/libXxf86vm/libandroid-support) as submodules. |
-| A2 | **Turnip** (Mesa Adreno Vulkan driver) **+ Khronos Vulkan loader** (`libvulkan.so.1`) **+ runtime deps** | prebuilt arm64 Bionic `.deb`s from `packages.termux.dev`, staged to `toolchain/turnip-libs/` + the ICD manifest | `scripts/fetch-turnip-libs.sh` ⚠️ **run manually — NOT in build-all.sh** | `assets/turnip-libs.tar.gz` (gitignored) | Turnip is a Mesa Vulkan driver → build it from the **`3rd_party/mesa`** submodule already in the tree (`-Dvulkan-drivers=freedreno`), alongside the zink build. Build the loader from `KhronosGroup/Vulkan-Loader` source. (Fixes the proprietary-Adreno nullDescriptor bug — see `feedback_amplitube_blank_render`.) |
+| A1 ✅ | **Termux X11 client libs** (12): libX11, libxcb, libXau, libXdmcp, libXext, libXrender, libXi, libXfixes, libXrandr, libXcursor, libXxf86vm, libandroid-support | prebuilt arm64 Bionic `.deb`s from `packages.termux.dev` | ~~`scripts/fetch-x11-libs.sh`~~ | `jniLibs/libX*.so`, `libxcb.so`, … | **DONE (Phase 0).** wine `--x-libraries` + app jniLibs now link the source `3rd_party/x11` sysroot (libX11 w/ XKB + the 6 extension submodules added, unversioned SONAMEs), built by the dedicated CI `x11` job (`-DX11_ONLY=ON`). `fetch-x11-libs.sh` keeps only headers/fonts. libandroid-support dropped (Termux shim). Commits 899ad53/a2d9d00/87579cd. |
+| A2 ◐ | **Turnip** (Mesa Adreno Vulkan driver) **+ Khronos Vulkan loader** (`libvulkan.so.1`) **+ runtime deps** | prebuilt arm64 Bionic `.deb`s from `packages.termux.dev`, staged to `toolchain/turnip-libs/` + the ICD manifest | `scripts/fetch-turnip-libs.sh` (build-all `turnip` phase) | `assets/turnip-libs.tar.gz` (gitignored) | **Loader half DONE (Phase 1):** `libvulkan.so.1` built from `external/Vulkan-Loader` v1.3.296 (`build-vulkan-loader.sh`). **Driver half = Phase 2** (below): build Turnip from the **`3rd_party/mesa`** submodule (`-Dvulkan-drivers=freedreno`) + own its real deps. **HAL = Phase 3.** (Fixes the proprietary-Adreno nullDescriptor bug — see `feedback_amplitube_blank_render`.) |
 | A3 | **libdrm** (`libdrm.so`, `libdrm_freedreno.so`, `libdrm_etnaviv.so`) | **checked-in** Termux blobs at `patches/mesa/build-files/android-deps-data/lib/` | consumed by `scripts/build-mesa-zink.sh` (build-all step 8b) | `libdrm.so` inside `assets/mesa-zink-libs.tar.gz` | Build libdrm from source (its own meson project; or the `libdrm` submodule used by the main build if present). Removes the checked-in blob + its captured headers (`android-deps-data/include/{libdrm,freedreno}`). |
 | A4 | **Host fonts** (Liberation + DejaVu `.ttf`) | copied from `/usr/share/fonts/truetype/{liberation,dejavu}` (apt `fonts-liberation`/`fonts-dejavu`) | `scripts/fetch-x11-libs.sh` | `assets/wine-fonts/*.ttf` | Data assets (not "compiled"). Options: vendor the upstream Liberation/DejaVu source tarballs, or rely solely on wine's own core fonts (already built from source during the wine build). Low priority. |
 
@@ -65,11 +70,65 @@ gradle — not a manual/out-of-band script.
 
 ---
 
-## Suggested migration order (highest leverage first)
+## Migration status & remaining work (updated 2026-06-17)
 
-1. **A2 Turnip + loader from the mesa submodule** — removes the biggest prebuilt *and* closes the CI gap; mesa is already in-tree.
-2. **A1 X11 libs from `3rd_party/x11` source** — the source path already exists in the main build; mostly wiring.
-3. **A3 libdrm from source** — small; removes the last checked-in binary blob and unblocks A2's freedreno backend.
-4. **B2 vst hosts via llvm-mingw** — drop the apt mingw toolchain (llvm-mingw already source-built).
-5. **A4 fonts** — vendor source or drop to wine's own fonts. Low priority.
-6. Accept B1 (NDK), B3 (Gradle), B4 (host tools) as standard host prerequisites.
+One `fetch-*.sh` area retired per phase. This section is the live plan.
+
+### ✅ Done
+- **Phase 0 — X11 (A1).** Source `3rd_party/x11` sysroot linked by wine + the app;
+  dedicated CI `x11` job (`-DX11_ONLY=ON`, builds only the X11/Cairo/Mesa sysroot,
+  inits only `3rd_party/{x11,expat,mesa}`). `fetch-x11-libs.sh` keeps headers/fonts
+  only. Commits 899ad53 / a2d9d00 / 87579cd.
+- **Phase 1 — Khronos Vulkan loader (A2 loader-half).** `libvulkan.so.1` from
+  `external/Vulkan-Loader` v1.3.296 via `build-vulkan-loader.sh` (NDK clang +
+  `-DCMAKE_SYSTEM_NAME=Linux` → generic `VK_ICD_FILENAMES` discovery, no Android
+  HAL, no source patch). Dropped `vulkan-loader-generic` from `fetch-turnip-libs.sh`;
+  runs in the `assemble` job's `turnip` phase. SETUP_VERSION 31→32.
+
+### 🔜 Phase 2 — Turnip Vulkan ICD + its real deps (A2 driver-half + A3) · effort M · risk M
+Build the Turnip ICD from the in-tree `3rd_party/mesa` submodule (sibling of
+`build-mesa-zink.sh`, reuse its NDK meson cross-file): `-Dvulkan-drivers=freedreno
+-Dgallium-drivers= -Dplatforms= -Dfreedreno-kmds=msm,kgsl`. Output
+`libvulkan_freedreno.so` + ICD json (bare `library_path`). This is the DXVK
+Khronos-loader **fallback** path (the loader from Phase 1 dlopens it).
+
+**Key finding (DT_NEEDED audit 2026-06-17):** most of the remaining Termux turnip
+libs exist only because the *Termux* ICD was built with full WSI — a **no-WSI**
+(`-Dplatforms=`) source build won't reference them, so they fall out with the ICD:
+- Termux `libvulkan_freedreno.so` NEEDs: libandroid-shmem, libdrm, libxcb(+dri3/
+  present/sync/randr/shm/xfixes), libX11-xcb, libwayland-client, libxshmfence,
+  libz.so.1, libzstd.so.1, libc++_shared, libm/libdl/libc.
+- `-Dplatforms=` drops the X11/Wayland/DRI3 set (libxcb*, libX11-xcb,
+  libwayland-client + libffi, libxshmfence, libandroid-shmem) → **~10 libs pruned
+  from `fetch-turnip-libs.sh`.**
+- Real deps left to own: **libdrm** (A3 — kgsl/msm needs it) + **libzstd**
+  (source-build, autotools/meson, NDK pattern from `build-android-libs.sh`);
+  **libz** → use the NDK's `libz.so`; libc++_shared is the NDK's.
+- Also retires the **checked-in Termux libdrm blob** in `patches/mesa/build-files/`
+  that `build-mesa-zink.sh` consumes (A3).
+- New: `build-turnip-icd.sh`; prune `fetch-turnip-libs.sh` to (at most) nothing.
+
+### ⬜ Phase 3 — AdrenoTools HAL Turnip (last fetch + primary GPU path) · effort L · risk M–H
+Build the Android-HAL Turnip (`vulkan.ad07xx.so`, exports `HMI`) from the same
+mesa submodule: `-Dvulkan-drivers=freedreno -Dplatforms=android
+-Dfreedreno-kmds=kgsl,msm -Dandroid-stub=true -Dgallium-drivers=`. Stage under the
+soname `WineHostProcess` sets (`VSTPOC_ADRENOTOOLS_DRIVERNAME=vulkan.ad07xx.so`).
+- DT_NEEDED audit: the HAL needs only Android **platform** libs (libcutils,
+  libhardware, liblog, libnativewindow, libsync, libz, libm/libdl/libc) — all on
+  device, **nothing to bundle**.
+- Highest device risk: must export `HMI` AND enumerate a pdev under `/dev/kgsl`.
+  Keep `Turnip_v26.0.0_R8.zip` as a guarded fallback until the source HAL renders
+  AmpliTube's editor on-device; when proven → `fetch-turnip-libs.sh` fully retired.
+
+### Open items / cleanup
+- **Vulkan loader CI placement (decision pending):** the loader rebuilds every
+  `assemble` run inside `turnip` (~30–60s NDK CMake, uncached). Option: own cached
+  job like `x11`/`mesa`. Revisit once Phase 2 lands (the whole turnip phase becomes
+  a source build → likely worth its own job then).
+- **On-device Phase-1 verify:** confirm a GPU/D3D11 plugin (AmpliTube/BIAS) editor
+  still renders with the source loader (LeCto/VST2 doesn't exercise Vulkan).
+- **Dead code:** delete `fetch-mesa-zink-libs.sh` (superseded by `build-mesa-zink.sh`).
+- **B2 (separate track):** build vst_host/vst3_host/uihost with source
+  `external/llvm-mingw` instead of apt mingw-w64.
+- **A4 fonts:** low priority — vendor source or fall back to wine's own core fonts.
+- Accept B1 (NDK), B3 (Gradle), B4 (host tools) as standard host prerequisites.
