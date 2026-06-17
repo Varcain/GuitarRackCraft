@@ -135,15 +135,25 @@ add_shared_libsndfile(shared_libsndfile "${SNDFILE_BUILD_DIR}" "${SNDFILE_PREFIX
 add_library(xshm_stub STATIC "${APP_ROOT}/cpp/xshm_stub.c")
 target_compile_options(xshm_stub PRIVATE -fPIC -DANDROID -O2)
 
+# X11_ONLY: build just the X11/Cairo/Mesa sysroot (the dedicated `x11` CI job
+# sets -DX11_ONLY=ON). Skips the LV2/fftw/plugin builds below — they need
+# build.sh's OCaml codelet-gen and are unrelated to the X11 client libs wine
+# links. The wine + assemble jobs restore the cached X11 sysroot.
+option(X11_ONLY "Build only the X11 sysroot; skip LV2/fftw/plugins" OFF)
+
 # ─── Phase 1: Sysroot dependencies ───────────────────────────────────────────
+# X11/Cairo/Mesa sysroot — ALWAYS built (the `x11` job builds ONLY this).
+include(${CMAKE_CURRENT_SOURCE_DIR}/targets/x11_sysroot.cmake)
+
+# Everything below (LV2 libs, FFTW3, all plugin targets, metadata, all_plugins)
+# is the LV2/plugin build — skipped entirely under X11_ONLY.
+if(NOT X11_ONLY)
+
 # LV2 libs: serd → zix → sord → sratom → lilv
 include(${CMAKE_CURRENT_SOURCE_DIR}/targets/lv2_libs.cmake)
 
 # FFTW3 (single-precision, static)
 include(${CMAKE_CURRENT_SOURCE_DIR}/targets/fftw3.cmake)
-
-# X11/Cairo/Mesa sysroot
-include(${CMAKE_CURRENT_SOURCE_DIR}/targets/x11_sysroot.cmake)
 
 # ─── Phase 2: Plugin compilation (native CMake targets) ──────────────────────
 # GxPlugins DSP .so
@@ -222,3 +232,5 @@ add_custom_target(all_plugins
         metadata_done
     COMMENT "All plugins built"
 )
+
+endif()  # NOT X11_ONLY — the x11 job builds only the X11 sysroot (above)

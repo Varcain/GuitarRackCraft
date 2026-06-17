@@ -127,10 +127,17 @@ else
         NEED_CONFIGURE=true
         echo "CMake files changed — reconfiguring..."
         rm -f "$BUILD_DIR/build.ninja"
+    elif grep -q '^X11_ONLY:BOOL=ON' "$BUILD_DIR/CMakeCache.txt" 2>/dev/null; then
+        # build-all.sh's `x11` phase configures this dir with X11_ONLY=ON (X11
+        # sysroot only, no LV2/fftw/plugins). A full build needs those targets
+        # back, so force a clean reconfigure with X11_ONLY=OFF.
+        NEED_CONFIGURE=true
+        echo "build dir was configured X11_ONLY=ON — reconfiguring full..."
+        rm -f "$BUILD_DIR/build.ninja"
     fi
     if [ "$NEED_CONFIGURE" = true ]; then
         echo "=== Configuring (Android arm64-v8a) ==="
-        cmake --preset android-arm64 -S "$CMAKE_DIR"
+        cmake --preset android-arm64 -S "$CMAKE_DIR" -DX11_ONLY=OFF
     fi
 
     # Metadata stamps must regenerate to pick up new/changed plugins.

@@ -168,9 +168,7 @@ jobs:
         id: x11-cache
         uses: actions/cache@v4
         with:
-          path: |
-            build/x11_ui
-            build/prebuild
+          path: build/x11_ui
           key: ${{ needs.keys.outputs.x11 }}
       - name: System deps + NDK
         if: steps.x11-cache.outputs.cache-hit != 'true'
@@ -179,9 +177,9 @@ jobs:
           sudo apt-get install -y --no-install-recommends $COMMON_APT $X11_APT $NATIVE_APT
           yes | "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
           "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" "ndk;${NDK_NATIVE}"
-      - name: Init native submodules (the cmake configure spans the full 3rd_party tree)
+      - name: Init X11/GL submodules (X11_ONLY build — no LV2 plugins)
         if: steps.x11-cache.outputs.cache-hit != 'true'
-        run: git submodule update --init --recursive 3rd_party
+        run: git submodule update --init --recursive 3rd_party/x11 3rd_party/expat 3rd_party/mesa
       - name: Build X11 sysroot
         if: steps.x11-cache.outputs.cache-hit != 'true'
         env:
@@ -247,9 +245,7 @@ jobs:
         if: steps.wine-cache.outputs.cache-hit != 'true'
         uses: actions/cache/restore@v4
         with:
-          path: |
-            build/x11_ui
-            build/prebuild
+          path: build/x11_ui
           key: ${{ needs.keys.outputs.x11 }}
           fail-on-cache-miss: true
       - name: Build wine + stage lean output tar
@@ -438,9 +434,7 @@ jobs:
       - name: Restore X11 sysroot (from the x11 job — build.sh full reuses it, no rebuild)
         uses: actions/cache/restore@v4
         with:
-          path: |
-            build/x11_ui
-            build/prebuild
+          path: build/x11_ui
           key: ${{ needs.keys.outputs.x11 }}
           fail-on-cache-miss: true
 
