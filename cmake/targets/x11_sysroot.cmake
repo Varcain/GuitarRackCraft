@@ -96,20 +96,52 @@ add_custom_command(
     COMMAND ${NDK_STRIP} --strip-unneeded "${JNILIBS_DIR}/libXau.so.6" || true
     COMMAND ${NDK_STRIP} --strip-unneeded "${JNILIBS_DIR}/libxcb.so.1" || true
     COMMAND ${NDK_STRIP} --strip-unneeded "${JNILIBS_DIR}/libX11.so.6" || true
+    # X11 extensions wine's winex11.drv dlopens (unversioned SONAMEs → staged as
+    # lib*.so directly; is_core_lib in build.sh keeps them in the main jniLibs).
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${X11_SYSROOT}/lib/libXext.so"    "${JNILIBS_DIR}/libXext.so"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${X11_SYSROOT}/lib/libXrender.so" "${JNILIBS_DIR}/libXrender.so"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${X11_SYSROOT}/lib/libXi.so"      "${JNILIBS_DIR}/libXi.so"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${X11_SYSROOT}/lib/libXfixes.so"  "${JNILIBS_DIR}/libXfixes.so"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${X11_SYSROOT}/lib/libXrandr.so"  "${JNILIBS_DIR}/libXrandr.so"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${X11_SYSROOT}/lib/libXcursor.so" "${JNILIBS_DIR}/libXcursor.so"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${X11_SYSROOT}/lib/libXxf86vm.so" "${JNILIBS_DIR}/libXxf86vm.so"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${X11_SYSROOT}/lib/libXdmcp.so"   "${JNILIBS_DIR}/libXdmcp.so"
+    COMMAND bash -c "${NDK_STRIP} --strip-unneeded '${JNILIBS_DIR}'/libX{ext,render,i,fixes,randr,cursor,xf86vm,dmcp}.so || true"
     COMMAND ${CMAKE_COMMAND} -E touch "${_x11_rt_stamp}"
     DEPENDS "${X11_SYSROOT}/lib/libXau.so" "${X11_SYSROOT}/lib/libxcb.so" "${X11_SYSROOT}/lib/libX11.so"
+            "${X11_SYSROOT}/lib/libXext.so" "${X11_SYSROOT}/lib/libXrender.so" "${X11_SYSROOT}/lib/libXi.so"
+            "${X11_SYSROOT}/lib/libXfixes.so" "${X11_SYSROOT}/lib/libXrandr.so" "${X11_SYSROOT}/lib/libXcursor.so"
+            "${X11_SYSROOT}/lib/libXxf86vm.so" "${X11_SYSROOT}/lib/libXdmcp.so"
 )
 add_custom_target(x11_runtime_libs DEPENDS "${_x11_rt_stamp}")
-add_dependencies(x11_runtime_libs libX11)
+add_dependencies(x11_runtime_libs libX11 libXext libXrender libXi libXfixes libXrandr libXcursor libXxf86vm libXdmcp)
 
 # ─── 4b & 4c. Xext & Xrender ────────────────────────────────────────────────
+# Built BOTH shared + static: cairo/the LV2 GUIs keep their static link, and
+# wine's winex11.drv dlopens the shared .so (SONAME_LIBXEXT/XRENDER).
 foreach(_lib Xext Xrender)
     add_autotools_project(lib${_lib}
         SOURCE_DIR "${_x11_dir}/lib${_lib}" BINARY_DIR "${X11_BUILD_DIR}/lib${_lib}" INSTALL_DIR "${X11_SYSROOT}"
-        DEPENDS libX11 CONFIGURE_ARGS --enable-static --disable-shared --enable-malloc0returnsnull "CFLAGS=${NDK_CFLAGS_STR} -I${X11_SYSROOT}/include" "LDFLAGS=-L${X11_SYSROOT}/lib"
-        EXTERNAL_PROJECT_ARGS BUILD_BYPRODUCTS "${X11_SYSROOT}/lib/lib${_lib}.a"
+        DEPENDS libX11 CONFIGURE_ARGS --enable-shared --enable-static --enable-malloc0returnsnull "CFLAGS=${NDK_CFLAGS_STR} -I${X11_SYSROOT}/include" "LDFLAGS=-L${X11_SYSROOT}/lib"
+        EXTERNAL_PROJECT_ARGS BUILD_BYPRODUCTS "${X11_SYSROOT}/lib/lib${_lib}.so"
     )
     ExternalProject_Add_Step(lib${_lib} autoreconf COMMAND bash "${_ensure_autotools_script}" <SOURCE_DIR> DEPENDEES download DEPENDERS configure)
+endforeach()
+
+# ─── 4d. X11 extensions wine's winex11.drv dlopens by SONAME ────────────────
+# Xdmcp, Xfixes, Xi, Xrandr, Xcursor, Xxf86vm — source-built (shared) here so
+# the wine X11 client stack is fully from-source (replaces Termux
+# fetch-x11-libs.sh). Pinned to the versions wine was built against. Staged
+# into jniLibs with libX11/libxcb so the wine subprocess resolves them.
+set(_x11ext_args --enable-shared --disable-static --enable-malloc0returnsnull "CFLAGS=${NDK_CFLAGS_STR} -I${X11_SYSROOT}/include" "LDFLAGS=-L${X11_SYSROOT}/lib")
+add_autotools_project(libXdmcp   SOURCE_DIR "${_x11_dir}/libXdmcp"   BINARY_DIR "${X11_BUILD_DIR}/libXdmcp"   INSTALL_DIR "${X11_SYSROOT}" DEPENDS xorgproto                  CONFIGURE_ARGS ${_x11ext_args} EXTERNAL_PROJECT_ARGS BUILD_BYPRODUCTS "${X11_SYSROOT}/lib/libXdmcp.so")
+add_autotools_project(libXfixes  SOURCE_DIR "${_x11_dir}/libXfixes"  BINARY_DIR "${X11_BUILD_DIR}/libXfixes"  INSTALL_DIR "${X11_SYSROOT}" DEPENDS libX11                     CONFIGURE_ARGS ${_x11ext_args} EXTERNAL_PROJECT_ARGS BUILD_BYPRODUCTS "${X11_SYSROOT}/lib/libXfixes.so")
+add_autotools_project(libXi      SOURCE_DIR "${_x11_dir}/libXi"      BINARY_DIR "${X11_BUILD_DIR}/libXi"      INSTALL_DIR "${X11_SYSROOT}" DEPENDS libX11 libXext            CONFIGURE_ARGS ${_x11ext_args} EXTERNAL_PROJECT_ARGS BUILD_BYPRODUCTS "${X11_SYSROOT}/lib/libXi.so")
+add_autotools_project(libXrandr  SOURCE_DIR "${_x11_dir}/libXrandr"  BINARY_DIR "${X11_BUILD_DIR}/libXrandr"  INSTALL_DIR "${X11_SYSROOT}" DEPENDS libX11 libXext libXrender  CONFIGURE_ARGS ${_x11ext_args} EXTERNAL_PROJECT_ARGS BUILD_BYPRODUCTS "${X11_SYSROOT}/lib/libXrandr.so")
+add_autotools_project(libXcursor SOURCE_DIR "${_x11_dir}/libXcursor" BINARY_DIR "${X11_BUILD_DIR}/libXcursor" INSTALL_DIR "${X11_SYSROOT}" DEPENDS libX11 libXfixes libXrender CONFIGURE_ARGS ${_x11ext_args} EXTERNAL_PROJECT_ARGS BUILD_BYPRODUCTS "${X11_SYSROOT}/lib/libXcursor.so")
+add_autotools_project(libXxf86vm SOURCE_DIR "${_x11_dir}/libXxf86vm" BINARY_DIR "${X11_BUILD_DIR}/libXxf86vm" INSTALL_DIR "${X11_SYSROOT}" DEPENDS libX11 libXext            CONFIGURE_ARGS ${_x11ext_args} EXTERNAL_PROJECT_ARGS BUILD_BYPRODUCTS "${X11_SYSROOT}/lib/libXxf86vm.so")
+foreach(_x11ext libXdmcp libXfixes libXi libXrandr libXcursor libXxf86vm)
+    ExternalProject_Add_Step(${_x11ext} autoreconf COMMAND bash "${_ensure_autotools_script}" <SOURCE_DIR> DEPENDEES download DEPENDERS configure)
 endforeach()
 
 # ─── 5. pixman ──────────────────────────────────────────────────────────────

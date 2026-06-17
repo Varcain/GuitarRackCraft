@@ -158,6 +158,15 @@ is_core_lib() {
         libXau.so*)            return 0 ;;
         libGL.so*)             return 0 ;;
         libglapi.so*)          return 0 ;;
+        # X11 extensions wine's winex11.drv dlopens (source-built, was Termux)
+        libXext.so*)           return 0 ;;
+        libXrender.so*)        return 0 ;;
+        libXi.so*)             return 0 ;;
+        libXfixes.so*)         return 0 ;;
+        libXrandr.so*)         return 0 ;;
+        libXcursor.so*)        return 0 ;;
+        libXxf86vm.so*)        return 0 ;;
+        libXdmcp.so*)          return 0 ;;
         *)                     return 1 ;;
     esac
 }

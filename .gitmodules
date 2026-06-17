@@ -140,3 +140,21 @@
 [submodule "vsthost_lib/external/libadrenotools"]
 	path = vsthost_lib/external/libadrenotools
 	url = https://github.com/bylaws/libadrenotools.git
+[submodule "3rd_party/x11/libXdmcp"]
+	path = 3rd_party/x11/libXdmcp
+	url = https://gitlab.freedesktop.org/xorg/lib/libxdmcp.git
+[submodule "3rd_party/x11/libXi"]
+	path = 3rd_party/x11/libXi
+	url = https://gitlab.freedesktop.org/xorg/lib/libxi.git
+[submodule "3rd_party/x11/libXfixes"]
+	path = 3rd_party/x11/libXfixes
+	url = https://gitlab.freedesktop.org/xorg/lib/libxfixes.git
+[submodule "3rd_party/x11/libXrandr"]
+	path = 3rd_party/x11/libXrandr
+	url = https://gitlab.freedesktop.org/xorg/lib/libxrandr.git
+[submodule "3rd_party/x11/libXcursor"]
+	path = 3rd_party/x11/libXcursor
+	url = https://gitlab.freedesktop.org/xorg/lib/libxcursor.git
+[submodule "3rd_party/x11/libXxf86vm"]
+	path = 3rd_party/x11/libXxf86vm
+	url = https://gitlab.freedesktop.org/xorg/lib/libxxf86vm.git

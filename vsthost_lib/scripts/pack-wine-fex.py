@@ -117,27 +117,19 @@ def iter_build_outputs(build_root: Path, fex_arm64ec: Path, fex_wow64: Path) -> 
     yield fex_arm64ec, f"{WINE_ROOT_DEVICE}/lib/wine/aarch64-windows/libarm64ecfex.dll"
     yield fex_wow64,   f"{WINE_ROOT_DEVICE}/lib/wine/aarch64-windows/libwow64fex.dll"
 
-    # X11 client libs (Termux-built, Bionic-compatible). winex11.drv links
-    # against libX11/libXext at build time; Bionic's dynamic linker
-    # resolves them from nativeLibraryDir by SONAME. We ship the .so files
-    # directly (no libwine_NNNN.so rename) so the SONAMEs match what wine
-    # expects. NDK strip below leaves them executable.
+    # X11 client libs are now SOURCE-BUILT by the native cmake X11 sysroot and
+    # staged into the app module's jniLibs by build.sh (libX11/libxcb/libXau +
+    # libXext/libXrender + libXi/libXfixes/libXrandr/libXcursor/libXxf86vm/
+    # libXdmcp — all unversioned SONAMEs, XKB enabled). The merged APK exposes
+    # them in nativeLibraryDir, so winex11.drv links + dlopens them at runtime.
+    # We no longer ship Termux X11 prebuilts here, and libandroid-support is
+    # dropped (the clean NDK X11 build doesn't need that Termux POSIX shim).
+    # Only the FreeType chain stays here — wine's gdi32/win32u link
+    # libfreetype.so + libpng16, both built from upstream source against the
+    # NDK (scripts/build-android-libs.sh), staged under toolchain/x11-libs.
     repo_root = build_root.parent.parent.parent
     x11_lib_dir = repo_root / "toolchain/x11-libs"
     for so_name in [
-        "libX11.so", "libXau.so", "libxcb.so", "libXdmcp.so",
-        "libXext.so", "libXrender.so", "libXi.so", "libXfixes.so",
-        "libXrandr.so", "libXcursor.so", "libXxf86vm.so",
-        "libandroid-support.so",
-        # FreeType chain — wine's gdi32/win32u link against libfreetype.so
-        # which pulls libpng16, libbz2 and libbrotlidec (which itself pulls
-        # libbrotlicommon).
-        # libfreetype + libpng — both built from upstream source against
-        # the NDK (see scripts/build-android-libs.sh). They link against
-        # Bionic's libz/libm/libdl directly so no further freetype
-        # deps need to ride along. Termux's pre-built versions tripped
-        # Bionic's linker every which way (symbol versioning, namespace
-        # isolation); a clean NDK build sidesteps that entirely.
         "libfreetype.so", "libpng16.so",
     ]:
         src = x11_lib_dir / so_name

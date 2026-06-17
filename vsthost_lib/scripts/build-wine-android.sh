@@ -59,8 +59,21 @@ if [ ! -f Makefile ]; then
   # back to its stub egl_init() that just WARNs "EGL support not compiled
   # in!" at runtime, breaking all D3D/GL plugins (AmpCraft, etc.).
   EGL_LIB_DIR="$TOOLCHAIN/sysroot/usr/lib/aarch64-linux-android/$API"
+  # X11 client libs are now SOURCE-BUILT: the native cmake X11 sysroot at
+  # build/x11_ui/sysroot (the same libs the LV2 GUIs use, with unversioned
+  # SONAMEs + XKB + the extensions winex11 dlopens), replacing the Termux
+  # prebuilts that fetch-x11-libs.sh used to stage. build.sh stages these into
+  # jniLibs. FreeType/libpng (also source-built, build-android-libs.sh) remain
+  # under toolchain/x11-libs. The sysroot is produced by ./build.sh — must run
+  # before this wine build (guarded below).
+  X11_SYSROOT="$repo_root/../build/x11_ui/sysroot"
+  if [ ! -f "$X11_SYSROOT/lib/libX11.so" ]; then
+    echo "error: source X11 sysroot missing ($X11_SYSROOT/lib/libX11.so)." >&2
+    echo "       Build it first: ./build.sh full  (or: cmake --build build/prebuild --target x11_runtime_libs)" >&2
+    exit 1
+  fi
   export CPPFLAGS="-I$repo_root/toolchain/x11-headers"
-  export LDFLAGS="-L$repo_root/toolchain/x11-libs -L$EGL_LIB_DIR -L$repo_root/toolchain/gnutls-android-arm64/lib"
+  export LDFLAGS="-L$X11_SYSROOT/lib -L$repo_root/toolchain/x11-libs -L$EGL_LIB_DIR -L$repo_root/toolchain/gnutls-android-arm64/lib"
   # --with-wine-tools points at our existing x86_64 Linux host build, which
   # has widl / winegcc / etc. already compiled. Cross-compile builds reuse
   # those rather than running the wine tools through the cross compiler.
@@ -88,7 +101,7 @@ if [ ! -f Makefile ]; then
     --disable-win16 \
     --disable-tests \
     --x-includes="$repo_root/toolchain/x11-headers" \
-    --x-libraries="$repo_root/toolchain/x11-libs" \
+    --x-libraries="$X11_SYSROOT/lib" \
     --with-freetype \
     --without-alsa \
     --without-pulse \
