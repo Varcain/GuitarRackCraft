@@ -114,6 +114,17 @@ set(MESA_BUILD_DIR "${PROJECT_ROOT}/build/mesa" CACHE PATH "Mesa build dir")
 file(MAKE_DIRECTORY "${MESA_BUILD_DIR}")
 generate_mesa_cross_file("${MESA_BUILD_DIR}/mesa_cross.txt" "${X11_SYSROOT}")
 
+# X11_ONLY: build just the X11/Cairo/Mesa sysroot (the dedicated `x11` CI job
+# sets -DX11_ONLY=ON). Skips the LV2/fftw/plugin builds below — they need
+# build.sh's OCaml codelet-gen + the LV2/plugin submodules and are unrelated to
+# the X11 client libs wine links. The wine + assemble jobs restore the X11 cache.
+# NOTE: this must gate every ExternalProject_Add for a plugin submodule —
+# ExternalProject validates SOURCE_DIR existence at CONFIGURE time, so a call
+# left ungated fails the x11 job (which inits only 3rd_party/{x11,expat,mesa}).
+option(X11_ONLY "Build only the X11 sysroot; skip LV2/fftw/plugins" OFF)
+
+if(NOT X11_ONLY)
+
 # FFTW3
 set(FFTW3_BUILD_DIR "${PROJECT_ROOT}/build/fftw3" CACHE PATH "FFTW3 build dir")
 set(FFTW3_PREFIX    "${FFTW3_BUILD_DIR}/install" CACHE PATH "FFTW3 prefix")
@@ -131,18 +142,15 @@ set(SNDFILE_PREFIX    "${PROJECT_ROOT}/build/shared/sndfile_prefix" CACHE PATH "
 file(MAKE_DIRECTORY "${SNDFILE_BUILD_DIR}" "${SNDFILE_PREFIX}")
 add_shared_libsndfile(shared_libsndfile "${SNDFILE_BUILD_DIR}" "${SNDFILE_PREFIX}")
 
+endif()  # NOT X11_ONLY — FFTW3 / LV2-compat headers / shared libsndfile are plugin-only
+
 # ─── Global stubs ────────────────────────────────────────────────────────────
 add_library(xshm_stub STATIC "${APP_ROOT}/cpp/xshm_stub.c")
 target_compile_options(xshm_stub PRIVATE -fPIC -DANDROID -O2)
 
-# X11_ONLY: build just the X11/Cairo/Mesa sysroot (the dedicated `x11` CI job
-# sets -DX11_ONLY=ON). Skips the LV2/fftw/plugin builds below — they need
-# build.sh's OCaml codelet-gen and are unrelated to the X11 client libs wine
-# links. The wine + assemble jobs restore the cached X11 sysroot.
-option(X11_ONLY "Build only the X11 sysroot; skip LV2/fftw/plugins" OFF)
-
 # ─── Phase 1: Sysroot dependencies ───────────────────────────────────────────
-# X11/Cairo/Mesa sysroot — ALWAYS built (the `x11` job builds ONLY this).
+# X11/Cairo/Mesa sysroot — ALWAYS built (the `x11` job builds ONLY this; it
+# references only 3rd_party/{x11,expat,mesa}).
 include(${CMAKE_CURRENT_SOURCE_DIR}/targets/x11_sysroot.cmake)
 
 # Everything below (LV2 libs, FFTW3, all plugin targets, metadata, all_plugins)
