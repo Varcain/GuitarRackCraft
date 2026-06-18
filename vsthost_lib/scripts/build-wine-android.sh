@@ -85,11 +85,12 @@ if [ ! -f Makefile ]; then
   # own Compose Activity and wine talks to it via the in-process X server
   # we wrote on master.
   #
-  # X11 support uses Termux's prebuilt arm64 libs (Bionic-compatible —
-  # they link against libc.so / libandroid-support.so / libdl.so, not
-  # glibc). Headers from /usr/include/X11 copied into toolchain/
-  # x11-headers/ (arch-agnostic). Libs from .deb packages staged under
-  # toolchain/x11-libs/. Re-stage with scripts/fetch-x11-libs.sh.
+  # X11 support links the SOURCE-built X11 client sysroot (build/x11_ui/sysroot,
+  # --x-libraries above; libX11/libxcb/… built from 3rd_party/x11 with XKB,
+  # unversioned SONAMEs). The Termux .deb X11 prebuilts were retired (Phase 0 of
+  # the prebuilt→source migration). Headers come from /usr/include/X11 copied into
+  # toolchain/x11-headers/ (arch-agnostic, build-time only) by fetch-x11-libs.sh;
+  # libpng/freetype (source, build-android-libs.sh) live in toolchain/x11-libs/.
   # --disable-win16: see comment in build-wine-pe.sh — clang 21.1-rc2 crashes
   # on dlls/krnl386.exe16/selector.c (16-bit inline asm) and we don't need
   # Win16 anyway (FEX-Emu doesn't translate it).
