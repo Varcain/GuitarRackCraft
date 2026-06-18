@@ -9,7 +9,8 @@
 # also land in vsthost_lib/toolchain/mesa-zink-libs/ (the staging dir).
 #
 # Self-contained + machine-portable: applies patches/mesa/0001, drops the
-# captured build deps (header stubs + Termux libdrm) into the submodule, and
+# captured header stubs (cutils/log) into the submodule, links the SOURCE libdrm
+# (toolchain/drm-android, built by build-libdrm-android.sh — no checked-in blob), and
 # GENERATES the meson cross-file with this machine's NDK + repo paths (the
 # committed build-files/android-aarch64.ini has hardcoded paths, used only as a
 # reference). Run after `git submodule update --init --recursive 3rd_party/mesa`.
@@ -41,12 +42,17 @@ git -C "$M" reset --hard HEAD >/dev/null
 git -C "$M" clean -fdx -e build-android-zink >/dev/null
 git -C "$M" apply "$PATCHES/0001-zink-android-desktop-gl-via-turnip.patch"
 
-echo "[+] drop captured build deps (header stubs + Termux libdrm) into the submodule"
+echo "[+] drop captured header stubs (cutils/log) into the submodule"
 DEPS="$M/.android-deps"
 rm -rf "$DEPS"
-mkdir -p "$DEPS/include" "$DEPS/data/data/com.termux/files/usr"
+mkdir -p "$DEPS/include"
 cp -r "$PATCHES/build-files/android-deps-include/." "$DEPS/include/"
-cp -r "$PATCHES/build-files/android-deps-data/."    "$DEPS/data/data/com.termux/files/usr/"
+# libdrm (its .so + headers + .pc + libsync.h) now comes from the SOURCE build
+# (build-libdrm-android.sh → toolchain/drm-android), not a checked-in Termux blob.
+# Phase 2/A3 of the prebuilt→source migration. phase_mesa runs build-libdrm first.
+DRM_SYSROOT="$repo_root/toolchain/drm-android"
+[ -f "$DRM_SYSROOT/lib/pkgconfig/libdrm.pc" ] || {
+    echo "error: source libdrm not at $DRM_SYSROOT — run build-libdrm-android.sh first" >&2; exit 1; }
 
 echo "[+] generate machine-local meson cross-file"
 CROSS="$M/android-aarch64.ini"
@@ -59,7 +65,7 @@ ar = '$NDKBIN/llvm-ar'
 strip = '$NDKBIN/llvm-strip'
 c_ld = 'lld'
 cpp_ld = 'lld'
-pkg-config = ['env', 'PKG_CONFIG_SYSROOT_DIR=$DEPS', 'PKG_CONFIG_LIBDIR=$DEPS/data/data/com.termux/files/usr/lib/pkgconfig', 'pkg-config']
+pkg-config = ['env', 'PKG_CONFIG_LIBDIR=$DRM_SYSROOT/lib/pkgconfig', 'pkg-config']
 
 [host_machine]
 system = 'android'
@@ -103,7 +109,7 @@ cp "$B/src/egl/libEGL.so"                             "$OUT/libEGL_vstpoc.so"
 cp "$B/src/gbm/libgbm.so"                             "$OUT/libgbm.so"
 cp "$B/src/mapi/shared-glapi/libglapi.so"             "$OUT/libglapi.so"
 cp "$(ls "$B"/subprojects/expat-*/libexpat.so | head -1)" "$OUT/libexpat.so"   # mesa-built expat subproject
-cp "$PATCHES/build-files/android-deps-data/lib/libdrm.so"  "$OUT/libdrm.so"    # Termux libdrm
+cp -L "$DRM_SYSROOT/lib/libdrm.so"                    "$OUT/libdrm.so"    # source libdrm (build-libdrm-android.sh)
 cp /tmp/libvulkan_vstpoc.so                           "$OUT/libvulkan_vstpoc.so"
 
 # Strip the mesa-built libs (ninja leaves them with full debug info → ~83MB

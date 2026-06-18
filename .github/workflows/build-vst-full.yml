@@ -116,7 +116,7 @@ jobs:
 
           MESA_C=$(gl 3rd_party/mesa)
           MESA_H=$( { find vsthost_lib/patches/mesa -type f -name '*.patch' 2>/dev/null | sort | xargs -r cat; \
-                      cat vsthost_lib/scripts/build-mesa-zink.sh; } | h16)
+                      cat vsthost_lib/scripts/build-mesa-zink.sh vsthost_lib/scripts/build-libdrm-android.sh; } | h16)
           echo "mesa=mesa-$os-$MESA_C-$MESA_H-ndk${NDK_VSTHOST}" >> "$GITHUB_OUTPUT"
 
           echo "── cache keys ──"; cat "$GITHUB_OUTPUT"

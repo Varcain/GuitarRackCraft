@@ -4,11 +4,11 @@ Every binary the VST build (`vsthost_lib/scripts/build-all.sh` + `build-vst3-hos
 consumes **without compiling it from source in this build**. Goal: drive each
 row to a from-source build. Verified 2026-06-14 against `win_vst_devel`.
 
-**Migration status (2026-06-17): Phase 0 (X11, A1) ✅ · Phase 1 (Khronos loader) ✅
-· Phase 2 (Turnip ICD + source libdrm, A2 driver-half) ✅ · A3 (switch mesa-zink
-off the checked-in libdrm blob) 🔜 · Phase 3 (AdrenoTools HAL) ⬜.** See "Migration
-status & remaining work" at the bottom for the live plan — that section supersedes
-the original "suggested order".
+**Migration status (2026-06-18): Phase 0 (X11, A1) ✅ · Phase 1 (Khronos loader) ✅
+· Phase 2 (Turnip ICD + source libdrm, A2 driver-half) ✅ · A3 (mesa-zink off the
+checked-in libdrm blob) ✅ · Phase 3 (AdrenoTools HAL) ⬜ — the last prebuilt/fetch.**
+See "Migration status & remaining work" at the bottom for the live plan — that
+section supersedes the original "suggested order".
 
 Legend: **SHIPPED** = lands in the APK · **HOST** = build-time tool only.
 
@@ -108,16 +108,16 @@ Done. The Turnip ICD is built from the in-tree `3rd_party/mesa` submodule:
   AdrenoTools HAL fetch. `turnip-libs.tar.gz`: 6.6M → 5.2M, now loader + source
   ICD + ICD json + source libdrm + HAL. SETUP_VERSION 32→33.
 
-### 🔜 A3 — switch mesa-zink off the checked-in Termux libdrm blob · effort S · risk M
-The source libdrm (`toolchain/drm-android`) now exists, but `build-mesa-zink.sh`
-still links + bundles the **checked-in Termux libdrm blob** at
-`patches/mesa/build-files/android-deps-data/lib/libdrm*.so`. Remaining work:
-point build-mesa-zink's meson cross-file pkg-config at `toolchain/drm-android`,
-copy `libdrm.so` from there into `mesa-zink-libs.tar.gz`, delete the blob, and
-move `build-libdrm-android` to run before the `mesa` phase (it's currently in
-`turnip`, which runs after `mesa`). Deferred from Phase 2 because it touches the
-working zink/GL-editor build → wants a full mesa-zink rebuild + on-device GL
-editor (AmpliTube) check to verify, separate from the ICD work.
+### ✅ A3 — mesa-zink off the checked-in Termux libdrm blob
+Done. `build-mesa-zink.sh` now links the **source** libdrm (`toolchain/drm-android`,
+built by `build-libdrm-android.sh`): meson cross-file pkg-config → the source
+sysroot, `libdrm.so` bundled from there, and `phase_mesa` runs `build-libdrm-android`
+before zink. The checked-in Termux blob (`patches/mesa/build-files/android-deps-data/`)
+is **deleted** — `libsync.h` is provided by libdrm itself (byte-identical), so the
+only remaining captured dep is the cutils/log header stubs in `android-deps-include`.
+Verified: `libgallium-24.2.8.so` NEEDs `libdrm.so`; the bundled `libdrm.so` is the
+source build (SONAME `libdrm.so`, NEEDED only `libc`, Bionic-clean). mesa-zink
+asset rebuilds clean (no checked-in binary blobs left in the tree).
 
 ### ⬜ Phase 3 — AdrenoTools HAL Turnip (last fetch + primary GPU path) · effort L · risk M–H
 Build the Android-HAL Turnip (`vulkan.ad07xx.so`, exports `HMI`) from the same

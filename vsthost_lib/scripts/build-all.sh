@@ -22,7 +22,8 @@
 #             build-wine-android.sh    — wine Unix side for arm64 Bionic
 #   fex       build-fex-pe.sh          — FEX-Emu PE DLLs (libarm64ecfex / libwow64fex)
 #   dxvk      build-dxvk.sh            — DXVK D3D-to-Vulkan translation DLLs
-#   mesa      build-mesa-zink.sh       — desktop-GL libs (zink→Turnip) → mesa-zink-libs.tar.gz
+#   mesa      build-libdrm-android.sh  — source libdrm (freedreno) → drm sysroot
+#             build-mesa-zink.sh       — desktop-GL libs (zink→Turnip) → mesa-zink-libs.tar.gz
 #   adrenotools build-adrenotools.sh   — libadrenotools + hook libs (Turnip HAL loader → jniLibs)
 #   turnip    fetch-turnip-libs.sh     — AdrenoTools HAL Turnip vulkan.ad07xx.so (prebuilt; Phase 3 TODO)
 #             build-libdrm-android.sh  — source libdrm (freedreno) → drm sysroot + turnip-libs
@@ -140,6 +141,11 @@ phase_dxvk() {
 }
 
 phase_mesa() {
+    step 8a "build-libdrm-android (source libdrm → drm sysroot; mesa-zink + turnip ICD link it)"
+    # build-mesa-zink links the source libdrm sysroot (toolchain/drm-android) — must
+    # exist first. Also run in phase_turnip (for the ICD); idempotent + fast (~3s).
+    run_step build-libdrm-android.sh
+
     step 8b "build-mesa-zink (desktop-GL libs for JUCE GL editors → mesa-zink-libs.tar.gz)"
     run_step build-mesa-zink.sh
 }
