@@ -25,7 +25,7 @@
 #   mesa      build-libdrm-android.sh  — source libdrm (freedreno) → drm sysroot
 #             build-mesa-zink.sh       — desktop-GL libs (zink→Turnip) → mesa-zink-libs.tar.gz
 #   adrenotools build-adrenotools.sh   — libadrenotools + hook libs (Turnip HAL loader → jniLibs)
-#   turnip    fetch-turnip-libs.sh     — AdrenoTools HAL Turnip vulkan.ad07xx.so (prebuilt; Phase 3 TODO)
+#   turnip    build-turnip-hal.sh      — source Turnip Android HAL vulkan.ad07xx.so (exports HMI; from mesa submodule)
 #             build-libdrm-android.sh  — source libdrm (freedreno) → drm sysroot + turnip-libs
 #             build-turnip-icd.sh      — source Turnip Vulkan ICD libvulkan_freedreno.so (from mesa submodule)
 #             build-vulkan-loader.sh   — Khronos Vulkan loader libvulkan.so.1 (source) → turnip-libs.tar.gz
@@ -160,10 +160,11 @@ phase_turnip() {
     # stale libs — e.g. the retired Termux WSI cluster — from a previous run).
     rm -rf "$REPO/toolchain/turnip-libs"; mkdir -p "$REPO/toolchain/turnip-libs"
 
-    step 8c "fetch-turnip-hal (AdrenoTools HAL Turnip vulkan.ad07xx.so → turnip-libs)"
-    # Phase 3 will source-build the HAL; for now this only fetches the prebuilt
-    # AdrenoTools HAL driver (vulkan.ad07xx.so).
-    run_step fetch-turnip-libs.sh
+    step 8c "build-turnip-hal (source Turnip Android HAL vulkan.ad07xx.so → turnip-libs)"
+    # Phase 3 (final): the AdrenoTools HAL driver is now BUILT FROM SOURCE from the
+    # mesa submodule (-Dplatforms=android, exports HMI) instead of the K11MCH1 R8
+    # .zip — the last prebuilt + the last fetch-*.sh retired.
+    run_step build-turnip-hal.sh
 
     step 8c2 "build-libdrm-android (source libdrm → drm sysroot + turnip-libs)"
     # Phase 2: source libdrm (freedreno) — the Turnip ICD's one real runtime dep,

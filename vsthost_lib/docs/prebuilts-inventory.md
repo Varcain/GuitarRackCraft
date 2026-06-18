@@ -5,10 +5,11 @@ consumes **without compiling it from source in this build**. Goal: drive each
 row to a from-source build. Verified 2026-06-14 against `win_vst_devel`.
 
 **Migration status (2026-06-18): Phase 0 (X11, A1) ✅ · Phase 1 (Khronos loader) ✅
-· Phase 2 (Turnip ICD + source libdrm, A2 driver-half) ✅ · A3 (mesa-zink off the
-checked-in libdrm blob) ✅ · Phase 3 (AdrenoTools HAL) ⬜ — the last prebuilt/fetch.**
-See "Migration status & remaining work" at the bottom for the live plan — that
-section supersedes the original "suggested order".
+· Phase 2 (Turnip ICD + source libdrm) ✅ · A3 (mesa-zink off the libdrm blob) ✅ ·
+Phase 3 (AdrenoTools HAL) ✅ (code; on-device verify pending).** Every SHIPPED binary
+prebuilt is now source-built; both fetch-*.sh binary fetches are retired. See
+"Migration status & remaining work" at the bottom — that section supersedes the
+original "suggested order".
 
 Legend: **SHIPPED** = lands in the APK · **HOST** = build-time tool only.
 
@@ -119,27 +120,41 @@ Verified: `libgallium-24.2.8.so` NEEDs `libdrm.so`; the bundled `libdrm.so` is t
 source build (SONAME `libdrm.so`, NEEDED only `libc`, Bionic-clean). mesa-zink
 asset rebuilds clean (no checked-in binary blobs left in the tree).
 
-### ⬜ Phase 3 — AdrenoTools HAL Turnip (last fetch + primary GPU path) · effort L · risk M–H
-Build the Android-HAL Turnip (`vulkan.ad07xx.so`, exports `HMI`) from the same
-mesa submodule: `-Dvulkan-drivers=freedreno -Dplatforms=android
--Dfreedreno-kmds=kgsl,msm -Dandroid-stub=true -Dgallium-drivers=`. Stage under the
-soname `WineHostProcess` sets (`VSTPOC_ADRENOTOOLS_DRIVERNAME=vulkan.ad07xx.so`).
-- DT_NEEDED audit: the HAL needs only Android **platform** libs (libcutils,
-  libhardware, liblog, libnativewindow, libsync, libz, libm/libdl/libc) — all on
-  device, **nothing to bundle**.
-- Highest device risk: must export `HMI` AND enumerate a pdev under `/dev/kgsl`.
-  Keep `Turnip_v26.0.0_R8.zip` as a guarded fallback until the source HAL renders
-  AmpliTube's editor on-device; when proven → `fetch-turnip-libs.sh` fully retired.
+### ✅ Phase 3 — AdrenoTools HAL Turnip (code complete; on-device verify pending)
+Done in code. `build-turnip-hal.sh` builds the Android-HAL Turnip (`vulkan.ad07xx.so`,
+exports `HMI`) from the mesa submodule: `-Dplatforms=android -Dandroid-stub=true
+-Dplatform-sdk-version=34 -Dvulkan-drivers=freedreno -Dgallium-drivers=
+-Dfreedreno-kmds=kgsl -Degl=disabled`, `-static-libstdc++`. No patch + no AOSP
+headers needed — `-Dandroid-stub=true` supplies mesa's in-tree `include/android_stub/`
+(`vndk/hardware_buffer.h`, `hardware/hardware.h`+`hwvulkan.h`, cutils/log/sync/
+nativewindow) and builds the stub `.so`s for the link; the real platform libs come
+from the libadrenotools namespace at runtime. **Structural match to the K11MCH1 R8
+prebuilt**: exports `HMI`, identical DT_NEEDED (libcutils/libhardware/liblog/
+libnativewindow/libsync/libm/libz/libdl/libc — no libdrm, kgsl-only), Bionic-clean.
+`fetch-turnip-libs.sh` is **deleted** (the last fetch retired). SETUP_VERSION 33→34.
+- **⚠ On-device verification pending:** it's stock mesa 24.2.8 vs R8's a7xx-tuned
+  mesa 26.0.0, and the GL/HAL path (LeCto + all GL editors) can't be exercised
+  while AmpliTube's editor deadlocks. Shipped as primary per decision; if it
+  renders worse on the Adreno 750, `git revert` the Phase-3 commit to restore the
+  R8 fetch. Verify once the AmpliTube deadlock is fixed.
 
 ### Open items / cleanup
-- **Vulkan loader CI placement (decision pending):** the loader rebuilds every
-  `assemble` run inside `turnip` (~30–60s NDK CMake, uncached). Option: own cached
-  job like `x11`/`mesa`. Revisit once Phase 2 lands (the whole turnip phase becomes
-  a source build → likely worth its own job then).
-- **On-device Phase-1 verify:** confirm a GPU/D3D11 plugin (AmpliTube/BIAS) editor
-  still renders with the source loader (LeCto/VST2 doesn't exercise Vulkan).
-- **Dead code:** delete `fetch-mesa-zink-libs.sh` (superseded by `build-mesa-zink.sh`).
+- **★ On-device GPU verify (BLOCKING):** the whole source GPU stack (HAL + ICD +
+  loader) is build-verified but NOT on-device-verified — blocked by the AmpliTube
+  editor deadlock (the GL/HAL path). Fix that first, then confirm AmpliTube/LeCto/
+  BIAS editors render; if the source HAL regresses the Adreno 750, revert the
+  Phase-3 commit (restores the R8 fetch).
+- **✅ Dead code removed:** `fetch-mesa-zink-libs.sh` + its `build-llvm-stub.sh`
+  (both superseded by `build-mesa-zink.sh -Dllvm=disabled`; mutually-referencing,
+  not in the live path) — deleted.
+- **`fetch-x11-libs.sh` (the only fetch-*.sh left):** no longer downloads anything;
+  copies host `/usr/include/X11` dev headers (build-time only, NOT shipped) + the
+  Liberation/DejaVu fonts. To fully retire it: source the headers from the
+  `3rd_party/x11` submodules (A1 tail) + handle fonts (A4).
+- **Vulkan/turnip CI cost:** `assemble` now does 3 mesa builds (turnip-icd,
+  turnip-hal, + build.sh's cmake X11-sysroot mesa) ~uncached. Could give the
+  turnip phase its own cached job like `x11`/`mesa`.
+- **A4 fonts:** low priority — vendor source or fall back to wine's own core fonts.
 - **B2 (separate track):** build vst_host/vst3_host/uihost with source
   `external/llvm-mingw` instead of apt mingw-w64.
-- **A4 fonts:** low priority — vendor source or fall back to wine's own core fonts.
 - Accept B1 (NDK), B3 (Gradle), B4 (host tools) as standard host prerequisites.

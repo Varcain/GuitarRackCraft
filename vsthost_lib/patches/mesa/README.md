@@ -72,7 +72,7 @@ cp $B/src/gallium/targets/dri/libgallium-24.2.8.so $OUT/dri/zink_dri.so   # zink
 cp $B/src/egl/libEGL.so $OUT/libEGL_vstpoc.so
 cp $B/src/gbm/libgbm.so $B/src/mapi/shared-glapi/libglapi.so $OUT/
 cp /tmp/libvulkan_vstpoc.so $OUT/
-# libexpat.so + libdrm.so come from Termux (fetch-mesa-zink-libs.sh / android-deps-data)
+# libexpat.so is mesa's expat subproject; libdrm.so is the source build (build-libdrm-android.sh → toolchain/drm-android)
 patchelf --set-soname libEGL_vstpoc.so $OUT/libEGL_vstpoc.so
 # CRITICAL (fix 6): neutralise DT_VERSYM/VERNEED or Bionic rejects libEGL
 python3 -c "import sys; sys.path.insert(0,'vsthost_lib/scripts'); \
