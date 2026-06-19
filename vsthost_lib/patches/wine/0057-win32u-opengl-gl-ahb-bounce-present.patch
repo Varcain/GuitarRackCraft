@@ -1,0 +1,581 @@
+From: Kamil Lulko <limakzagan@gmail.com>
+Subject: win32u/opengl: universal zero-copy GL editor present via AHB bounce
+
+Replace the per-frame glReadPixels + GDI readback in framebuffer_surface_swap
+with a UNIVERSAL zero-copy path. The Android system EGL imports AHardwareBuffers
+(EGL_ANDROID_image_native_buffer, CDD-mandated) but NOT raw dma-bufs; the wine
+surfaceless Mesa EGL exports/imports dma-bufs but can't make AHBs. Bridge:
+allocate an AHB (NDK), take its own dma-buf fd (AHardwareBuffer_getNativeHandle->
+data[0]), import THAT into Mesa as a renderable FBO (EGL_LINUX_DMA_BUF_EXT —
+universal on Mesa), GPU-blit the editor frame into it (vertically flipped for the
+top-left AHB convention; imported as ARGB8888 so GL-red lands in the B byte to
+match the compositor's .bgr shader), and ship the AHB over the existing AHB
+REGISTER/PRESENT side-channel (0048) — the consumer imports it via the existing
+(universal) AHB path, no consumer change. CPU_READ usage forces LINEAR so the
+producer-side import needs no modifier; the AHB is a separate buffer from the
+editor FBO so there is no tearing. Enabled by VSTPOC_AHB_GL=1 (default-on via
+WineHostProcess; works in plugin prefixes where VSTPOC_AHB_PRESENT is 0) or
+VSTPOC_AHB_PRESENT=1; VSTPOC_AHB_GL=0 forces readback; any failure falls back.
+Vendors AhbChannelProtocol.h into win32u (POSIX sockets, no NDK headers).
+~0.7 core saved vs readback on Ampbox (Adreno 750). See
+feedback_gl_zerocopy_dmabuf_not_ahb.
+
+diff --git a/dlls/win32u/opengl.c b/dlls/win32u/opengl.c
+--- a/dlls/win32u/opengl.c
++++ b/dlls/win32u/opengl.c
+@@ -27,6 +27,11 @@
+ #include <pthread.h>
+ #include <dlfcn.h>
+ #include <unistd.h>
++#include <stdlib.h>
++#include <string.h>
++#include <errno.h>
++#include <sys/socket.h>
++#include <sys/un.h>
+ 
+ #include "ntstatus.h"
+ #include "ntgdi_private.h"
+@@ -37,6 +42,14 @@
+ 
+ #include "dibdrv/dibdrv.h"
+ 
++/* vstpoc GL zero-copy present: GPU-blit the editor's rendered FBO into an
++ * AHardwareBuffer (the AHB-bounce in framebuffer_surface_swap) and ship it over
++ * the private side-channel, replacing the per-frame glReadPixels+GDI readback.
++ * Vendored verbatim from vsthost_lib/src/main/cpp/x11/AhbChannelProtocol.h —
++ * KEEP IN SYNC (the X server + the winex11.drv Vulkan producer are the other
++ * ends). POSIX sockets only, no NDK headers. See feedback_gl_zerocopy_dmabuf_not_ahb. */
++#include "AhbChannelProtocol.h"
++
+ WINE_DEFAULT_DEBUG_CHANNEL(wgl);
+ 
+ struct pbuffer
+@@ -216,6 +229,17 @@
+ struct framebuffer_surface
+ {
+     struct opengl_drawable base;
++    /* vstpoc GL AHB-bounce zero-copy present. calloc'd struct, so 0 = "not yet
++     * tried"; ahb_chan_fd is only read after ahb_tried is set. */
++    int      ahb_tried;       /* connect attempted (don't retry the socket each frame) */
++    int      ahb_chan_fd;     /* side-channel socket, <0 once tried => readback */
++    unsigned ahb_window_id;   /* x11 whole_window for this hwnd (the channel key) */
++    int      ahb_registered;  /* AHB REGISTER sent for the current size */
++    int      ahb_reg_w, ahb_reg_h;  /* size the AHB was allocated at (re-alloc on change) */
++    void    *ahb_buffer;      /* AHardwareBuffer* — the bounced shared buffer */
++    void    *ahb_egl_image;   /* EGLImage of ahb_buffer's dma-buf (wine-side) */
++    GLuint   ahb_tex;         /* GL texture bound to ahb_egl_image */
++    GLuint   ahb_fbo;         /* FBO with ahb_tex as COLOR_ATTACHMENT0 (the blit dest) */
+ };
+ 
+ static GLenum color_format_from_pfd( const struct wgl_pixel_format *desc )
+@@ -405,9 +429,26 @@
+     TRACE( "drawable %p destroyed framebuffer %u\n", drawable, fbo );
+ }
+ 
++static void vstpoc_gl_ahb_free( struct framebuffer_surface *s );  /* fwd: defined with the present path */
++
+ static void framebuffer_surface_destroy( struct opengl_drawable *drawable )
+ {
++    struct framebuffer_surface *s = (struct framebuffer_surface *)drawable;
+     TRACE( "%s\n", debugstr_opengl_drawable( drawable ) );
++    /* vstpoc: tear down the AHB-bounce side-channel; closing it makes the X server
++     * revert the editor window to the CPU framebuffer (see handleAhbChannelConnection
++     * end-of-connection). UNREGISTER is best-effort (the close suffices). */
++    if (s->ahb_tried && s->ahb_chan_fd >= 0)
++    {
++        AhbChMsg msg;
++        memset( &msg, 0, sizeof(msg) );
++        msg.magic = AHBCH_MAGIC; msg.version = AHBCH_VERSION; msg.type = AHBCH_UNREGISTER;
++        msg.window_id = s->ahb_window_id;
++        ahbch_send_msg( s->ahb_chan_fd, &msg, -1 );
++        close( s->ahb_chan_fd );
++        s->ahb_chan_fd = -1;
++    }
++    vstpoc_gl_ahb_free( s );
+ }
+ 
+ static void framebuffer_surface_resize( struct opengl_drawable *drawable )
+@@ -471,6 +512,325 @@
+     if (flags & GL_FLUSH_UPDATED && drawable->read_fbo) framebuffer_surface_resize( drawable );
+ }
+ 
++/* ===== vstpoc GL AHB-bounce zero-copy present ================================
++ * UNIVERSAL (not Adreno-tied) zero-copy GL editor present. The system EGL on this
++ * Qualcomm device — and Android GPU EGLs generally — imports AHardwareBuffers
++ * (EGL_ANDROID_image_native_buffer, CDD-mandated) but NOT raw dma-bufs (no
++ * EGL_EXT_image_dma_buf_import); the wine surfaceless Mesa EGL can EXPORT dma-bufs
++ * but can't make AHBs (no android platform). Bridge universally: allocate an AHB
++ * (NDK), get its OWN dma-buf fd (AHardwareBuffer_getNativeHandle->data[0]), import
++ * THAT into Mesa as a renderable FBO (EGL_LINUX_DMA_BUF_EXT — universal on Mesa),
++ * GPU-blit the editor's frame into it (no CPU copy), and ship the AHB over the
++ * same side-channel the Vulkan/DXVK path (0048) uses → the consumer imports it via
++ * the existing AHB path. CPU_READ usage forces LINEAR so the producer-side dma-buf
++ * import needs no modifier. The AHB is a SEPARATE buffer from the editor FBO ⇒ no
++ * tearing. Enabled by VSTPOC_AHB_GL=1 (opt-in for plugin prefixes) or
++ * VSTPOC_AHB_PRESENT=1; VSTPOC_AHB_GL=0 forces readback; any failure falls back.
++ * See feedback_gl_zerocopy_dmabuf_not_ahb. */
++
++/* EGL_EXT_image_dma_buf_import tokens (the wine Mesa EGL HAS this; absent from
++ * some wine egl headers). */
++#ifndef EGL_LINUX_DMA_BUF_EXT
++#define EGL_LINUX_DMA_BUF_EXT            0x3270
++#endif
++#ifndef EGL_LINUX_DRM_FOURCC_EXT
++#define EGL_LINUX_DRM_FOURCC_EXT         0x3271
++#define EGL_DMA_BUF_PLANE0_FD_EXT        0x3272
++#define EGL_DMA_BUF_PLANE0_OFFSET_EXT    0x3273
++#define EGL_DMA_BUF_PLANE0_PITCH_EXT     0x3274
++#endif
++/* Import the AHB's dma-buf as ARGB8888 (mem byte order B,G,R,A), NOT ABGR8888, so
++ * the producer's GL red lands in the B byte: the AHB then holds BGRA, which is what
++ * the X-server compositor expects (its shader swizzles .bgr, fbTex is BGRA-wire,
++ * the 0048 Vulkan/DXVK AHB is D3D BGRA). ABGR8888 would store RGBA → R/B swapped
++ * (blueish) after the shader's .bgr. */
++#define VSTPOC_DRM_ARGB8888 0x34325241u  /* 'AR24' */
++#define VSTPOC_AHB_FORMAT_RGBA8888 1u    /* AHARDWAREBUFFER_FORMAT_R8G8B8A8_UNORM */
++/* GPU_SAMPLED_IMAGE(0x100) | GPU_FRAMEBUFFER(0x200) | CPU_READ_RARELY(0x2): the CPU
++ * flag forces a LINEAR layout so the Mesa dma-buf import needs no modifier. */
++#define VSTPOC_AHB_USAGE 0x302ull
++
++/* NDK AHardwareBuffer_Desc / cutils native_handle_t, defined locally (win32u does
++ * not include the NDK headers). Layout matches android/hardware_buffer.h. */
++struct vstpoc_ahb_desc { UINT width, height, layers, format; UINT64 usage; UINT stride, rfu0; UINT64 rfu1; };
++struct vstpoc_native_handle { int version, num_fds, num_ints, data[1]; };
++
++static int g_vstpoc_gl_ahb;   /* 0 unprobed, 1 ready, -1 unsupported/disabled */
++static void         *(*p_vstpoc_eglCreateImageKHR)( void *, void *, unsigned int, void *, const int * );
++static unsigned int  (*p_vstpoc_eglDestroyImageKHR)( void *, void * );
++static void          (*p_vstpoc_glEGLImageTargetTexture2DOES)( unsigned int, void * );
++static void         *(*p_vstpoc_eglCreateSyncKHR)( void *, unsigned int, const int * );
++static unsigned int  (*p_vstpoc_eglDestroySyncKHR)( void *, void * );
++static int           (*p_vstpoc_eglDupNativeFenceFDANDROID)( void *, void * );
++/* libandroid (dlopen'd; win32u doesn't link it). getNativeHandle is exported on
++ * every device but absent from the NDK headers — dlsym it. */
++static int           (*p_vstpoc_AHB_allocate)( const struct vstpoc_ahb_desc *, void ** );
++static const struct vstpoc_native_handle *(*p_vstpoc_AHB_getNativeHandle)( const void * );
++static void          (*p_vstpoc_AHB_describe)( const void *, struct vstpoc_ahb_desc * );
++static int           (*p_vstpoc_AHB_sendHandle)( const void *, int );
++static void          (*p_vstpoc_AHB_release)( void * );
++
++static const WCHAR vstpoc_whole_window_prop[] =
++    {'_','_','w','i','n','e','_','x','1','1','_','w','h','o','l','e','_','w','i','n','d','o','w',0};
++
++/* DISPLAY=host:N[.screen] → N, to name the per-display abstract side-channel. */
++static int vstpoc_gl_display_number( void )
++{
++    const char *ds = getenv( "DISPLAY" );
++    const char *c;
++    if (!ds) return 0;
++    c = strrchr( ds, ':' );
++    return c ? atoi( c + 1 ) : 0;
++}
++
++/* Resolve the Mesa dma-buf IMPORT + GL/EGL + NDK AHB entry points once. Only the
++ * Mesa/zink EGL (g_vstpoc_mesa_egl) has the dma-buf import; the fence is optional. */
++static int vstpoc_gl_ahb_init( const struct opengl_funcs *funcs )
++{
++    const char *e, *g;
++    void *libandroid;
++    if (g_vstpoc_gl_ahb) return g_vstpoc_gl_ahb > 0;
++    g_vstpoc_gl_ahb = -1;
++
++    if (!g_vstpoc_mesa_egl) return 0;
++    /* Enable when EITHER VSTPOC_AHB_GL=1 (opt-in — the right knob for plugin
++     * prefixes, where the Vulkan path forces VSTPOC_AHB_PRESENT=0 but GL editors
++     * like Ampbox/AmpliTube/LeCto live) OR VSTPOC_AHB_PRESENT=1 (non-plugin
++     * prefixes). VSTPOC_AHB_GL=0 force-disables → readback. */
++    e = getenv( "VSTPOC_AHB_PRESENT" );
++    g = getenv( "VSTPOC_AHB_GL" );
++    if ((g && g[0] == '0') || !((e && e[0] == '1') || (g && g[0] == '1'))) return 0;
++
++    p_vstpoc_eglCreateImageKHR            = (void *)funcs->p_eglGetProcAddress( "eglCreateImageKHR" );
++    p_vstpoc_eglDestroyImageKHR           = (void *)funcs->p_eglGetProcAddress( "eglDestroyImageKHR" );
++    p_vstpoc_glEGLImageTargetTexture2DOES = (void *)funcs->p_eglGetProcAddress( "glEGLImageTargetTexture2DOES" );
++    p_vstpoc_eglCreateSyncKHR             = (void *)funcs->p_eglGetProcAddress( "eglCreateSyncKHR" );
++    p_vstpoc_eglDestroySyncKHR            = (void *)funcs->p_eglGetProcAddress( "eglDestroySyncKHR" );
++    p_vstpoc_eglDupNativeFenceFDANDROID   = (void *)funcs->p_eglGetProcAddress( "eglDupNativeFenceFDANDROID" );
++
++    if (!(libandroid = dlopen( "libandroid.so", RTLD_NOW )))
++    { ERR( "vstpoc-gl: dlopen libandroid.so failed: %s — readback\n", dlerror() ); return 0; }
++    p_vstpoc_AHB_allocate        = dlsym( libandroid, "AHardwareBuffer_allocate" );
++    p_vstpoc_AHB_getNativeHandle = dlsym( libandroid, "AHardwareBuffer_getNativeHandle" );
++    p_vstpoc_AHB_describe        = dlsym( libandroid, "AHardwareBuffer_describe" );
++    p_vstpoc_AHB_sendHandle      = dlsym( libandroid, "AHardwareBuffer_sendHandleToUnixSocket" );
++    p_vstpoc_AHB_release         = dlsym( libandroid, "AHardwareBuffer_release" );
++
++    if (!p_vstpoc_eglCreateImageKHR || !p_vstpoc_eglDestroyImageKHR ||
++        !p_vstpoc_glEGLImageTargetTexture2DOES || !p_vstpoc_AHB_allocate ||
++        !p_vstpoc_AHB_getNativeHandle || !p_vstpoc_AHB_sendHandle || !p_vstpoc_AHB_release)
++    {
++        ERR( "vstpoc-gl: AHB-bounce entry points missing (img=%p tgt2D=%p alloc=%p nh=%p send=%p) — readback\n",
++             p_vstpoc_eglCreateImageKHR, p_vstpoc_glEGLImageTargetTexture2DOES,
++             p_vstpoc_AHB_allocate, p_vstpoc_AHB_getNativeHandle, p_vstpoc_AHB_sendHandle );
++        return 0;
++    }
++    g_vstpoc_gl_ahb = 1;
++    ERR( "vstpoc-gl: AHB-bounce zero-copy present ENABLED (fence=%s)\n",
++         (p_vstpoc_eglCreateSyncKHR && p_vstpoc_eglDupNativeFenceFDANDROID) ? "yes" : "no" );
++    return 1;
++}
++
++/* Lazily connect the side-channel for this drawable + resolve its x11 window id
++ * (the channel key — the same whole_window the readback's GDI present targets).
++ * Sets ahb_tried so we don't re-attempt the socket every frame. */
++static int vstpoc_gl_connect( struct framebuffer_surface *s, HWND hwnd )
++{
++    struct sockaddr_un addr;
++    socklen_t alen;
++    unsigned long win = 0;
++    int cfd, dnum, guard = 0;
++    HWND h = hwnd;
++
++    s->ahb_tried = 1;
++    s->ahb_chan_fd = -1;
++
++    /* The GL editor hwnd is often a CHILD window with no X11 whole_window of its
++     * own — winex11 maps it to an ancestor's X11 window (which is why the GDI
++     * readback works). Walk up for the first ancestor that has one. The consumer
++     * composites the editor texture GLOBALLY (window_id is only a consistent
++     * REGISTER/PRESENT key, not a per-window quad), so the synthetic GA_ROOT-hwnd
++     * fallback is sufficient when no ancestor has a whole_window. */
++    while (h && guard++ < 16)
++    {
++        win = (unsigned long)(UINT_PTR)NtUserGetProp( h, vstpoc_whole_window_prop );
++        if (win) break;
++        h = NtUserGetAncestor( h, GA_PARENT );
++    }
++    if (!win)
++    {
++        HWND root = NtUserGetAncestor( hwnd, GA_ROOT );
++        win = (unsigned long)(UINT_PTR)(root ? root : hwnd);   /* synthetic but stable */
++        ERR( "vstpoc-gl: no whole_window in ancestry of hwnd %p; synthetic key 0x%x\n",
++             hwnd, (unsigned)win );
++    }
++    s->ahb_window_id = (unsigned)win;
++
++    if ((cfd = socket( AF_UNIX, SOCK_STREAM, 0 )) < 0) return 0;
++    dnum = vstpoc_gl_display_number();
++    alen = ahbch_make_addr( &addr, dnum );
++    if (connect( cfd, (struct sockaddr *)&addr, alen ) != 0)
++    {
++        ERR( "vstpoc-gl: side-channel connect (display %d) failed: %s — readback\n", dnum, strerror(errno) );
++        close( cfd );
++        return 0;
++    }
++    s->ahb_chan_fd = cfd;
++    ERR( "vstpoc-gl: dma-buf side-channel ACTIVE win=0x%x display=%d\n", s->ahb_window_id, dnum );
++    return 1;
++}
++
++/* Free the bounced AHB + its wine-side GL FBO/texture/EGLImage. */
++static void vstpoc_gl_ahb_free( struct framebuffer_surface *s )
++{
++    const struct opengl_funcs *funcs = &display_funcs;
++    if (s->ahb_fbo) { funcs->p_glDeleteFramebuffers( 1, &s->ahb_fbo ); s->ahb_fbo = 0; }
++    if (s->ahb_tex) { funcs->p_glDeleteTextures( 1, &s->ahb_tex ); s->ahb_tex = 0; }
++    if (s->ahb_egl_image && p_vstpoc_eglDestroyImageKHR)
++        p_vstpoc_eglDestroyImageKHR( display_egl.display, s->ahb_egl_image );
++    s->ahb_egl_image = NULL;
++    if (s->ahb_buffer && p_vstpoc_AHB_release) p_vstpoc_AHB_release( s->ahb_buffer );
++    s->ahb_buffer = NULL;
++}
++
++/* Allocate the AHB + import its OWN dma-buf as a renderable Mesa FBO. Returns 1 on
++ * success (s->ahb_buffer/ahb_tex/ahb_fbo/ahb_egl_image set), 0 on failure. */
++static int vstpoc_gl_ahb_alloc( struct framebuffer_surface *s, int width, int height )
++{
++    const struct opengl_funcs *funcs = &display_funcs;
++    struct vstpoc_ahb_desc desc, got;
++    const struct vstpoc_native_handle *nh;
++    void *ahb = NULL, *img;
++    int fd, stride_px, attrs[16], n = 0;
++    GLint save_tex = 0, save_fbo = 0;
++    GLenum status;
++
++    memset( &desc, 0, sizeof(desc) );
++    desc.width = width; desc.height = height; desc.layers = 1;
++    desc.format = VSTPOC_AHB_FORMAT_RGBA8888; desc.usage = VSTPOC_AHB_USAGE;
++    if (p_vstpoc_AHB_allocate( &desc, &ahb ) != 0 || !ahb)
++    { ERR( "vstpoc-gl: AHardwareBuffer_allocate %dx%d failed — readback\n", width, height ); return 0; }
++
++    nh = p_vstpoc_AHB_getNativeHandle( ahb );
++    if (!nh || nh->num_fds < 1)
++    { ERR( "vstpoc-gl: AHB native handle has no fd — readback\n" ); p_vstpoc_AHB_release( ahb ); return 0; }
++    fd = nh->data[0];                              /* the AHB's dma-buf fd (LINEAR) */
++    stride_px = width;
++    if (p_vstpoc_AHB_describe) { memset( &got, 0, sizeof(got) ); p_vstpoc_AHB_describe( ahb, &got );
++                                 if (got.stride) stride_px = (int)got.stride; }
++
++    /* import the AHB's dma-buf into a renderable EGLImage (LINEAR, no modifier). */
++    attrs[n++] = EGL_WIDTH;                     attrs[n++] = width;
++    attrs[n++] = EGL_HEIGHT;                    attrs[n++] = height;
++    attrs[n++] = EGL_LINUX_DRM_FOURCC_EXT;      attrs[n++] = (int)VSTPOC_DRM_ARGB8888;
++    attrs[n++] = EGL_DMA_BUF_PLANE0_FD_EXT;     attrs[n++] = fd;
++    attrs[n++] = EGL_DMA_BUF_PLANE0_OFFSET_EXT; attrs[n++] = 0;
++    attrs[n++] = EGL_DMA_BUF_PLANE0_PITCH_EXT;  attrs[n++] = stride_px * 4;
++    attrs[n++] = EGL_NONE;
++    img = p_vstpoc_eglCreateImageKHR( display_egl.display, NULL, EGL_LINUX_DMA_BUF_EXT, NULL, attrs );
++    if (!img)
++    { ERR( "vstpoc-gl: import AHB dma-buf (fd=%d pitch=%d) failed (egl %#x) — readback\n",
++           fd, stride_px * 4, funcs->p_eglGetError() ); p_vstpoc_AHB_release( ahb ); return 0; }
++
++    funcs->p_glGetIntegerv( GL_TEXTURE_BINDING_2D, &save_tex );
++    funcs->p_glGetIntegerv( GL_DRAW_FRAMEBUFFER_BINDING, &save_fbo );
++
++    funcs->p_glGenTextures( 1, &s->ahb_tex );
++    funcs->p_glBindTexture( GL_TEXTURE_2D, s->ahb_tex );
++    p_vstpoc_glEGLImageTargetTexture2DOES( GL_TEXTURE_2D, img );
++    funcs->p_glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST );
++    funcs->p_glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST );
++
++    funcs->p_glGenFramebuffers( 1, &s->ahb_fbo );
++    funcs->p_glBindFramebuffer( GL_DRAW_FRAMEBUFFER, s->ahb_fbo );
++    funcs->p_glFramebufferTexture2D( GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, s->ahb_tex, 0 );
++    status = funcs->p_glCheckFramebufferStatus( GL_DRAW_FRAMEBUFFER );
++
++    funcs->p_glBindTexture( GL_TEXTURE_2D, save_tex );
++    funcs->p_glBindFramebuffer( GL_DRAW_FRAMEBUFFER, save_fbo );
++
++    if (status != GL_FRAMEBUFFER_COMPLETE)
++    {
++        ERR( "vstpoc-gl: AHB FBO incomplete (%#x) — readback\n", status );
++        s->ahb_egl_image = img; s->ahb_buffer = ahb;   /* let _free clean it all up */
++        vstpoc_gl_ahb_free( s );
++        return 0;
++    }
++    s->ahb_buffer = ahb; s->ahb_egl_image = img;
++    return 1;
++}
++
++/* Returns TRUE if the frame was presented via the AHB bounce (caller skips
++ * readback), FALSE to fall back to the glReadPixels + GDI readback. */
++static BOOL vstpoc_gl_ahb_present( struct framebuffer_surface *s, HWND hwnd, int width, int height )
++{
++    const struct opengl_funcs *funcs = &display_funcs;
++    struct opengl_drawable *drawable = &s->base;
++    GLint save_read = 0, save_draw = 0;
++    int fence_fd = -1;
++    AhbChMsg msg;
++
++    if (!vstpoc_gl_ahb_init( funcs )) return FALSE;
++    if (!s->ahb_tried && !vstpoc_gl_connect( s, hwnd )) return FALSE;
++    if (s->ahb_chan_fd < 0) return FALSE;
++
++    /* (1) (re)allocate the AHB + REGISTER it once per size. */
++    if (!s->ahb_registered || s->ahb_reg_w != width || s->ahb_reg_h != height)
++    {
++        vstpoc_gl_ahb_free( s );
++        if (!vstpoc_gl_ahb_alloc( s, width, height )) return FALSE;
++        memset( &msg, 0, sizeof(msg) );
++        msg.magic = AHBCH_MAGIC; msg.version = AHBCH_VERSION; msg.type = AHBCH_REGISTER;
++        msg.window_id = s->ahb_window_id; msg.width = width; msg.height = height;
++        msg.format = VSTPOC_AHB_FORMAT_RGBA8888; msg.buffer_count = 1;
++        if (!ahbch_send_msg( s->ahb_chan_fd, &msg, -1 ) ||
++            p_vstpoc_AHB_sendHandle( s->ahb_buffer, s->ahb_chan_fd ) != 0)
++        { vstpoc_gl_ahb_free( s ); goto chan_broken; }
++        s->ahb_registered = 1; s->ahb_reg_w = width; s->ahb_reg_h = height;
++        ERR( "vstpoc-gl: AHB REGISTER win=0x%x %dx%d\n", s->ahb_window_id, width, height );
++    }
++
++    /* (2) GPU-blit the editor's finished frame into the AHB FBO (resolves MSAA; no
++     * CPU copy). Source = draw_fbo (freshest, ATTACHMENT0) else read_fbo; force the
++     * read buffer to ATTACHMENT0 (doublebuffer read_fbo reads ATTACHMENT1 = empty). */
++    funcs->p_glGetIntegerv( GL_READ_FRAMEBUFFER_BINDING, &save_read );
++    funcs->p_glGetIntegerv( GL_DRAW_FRAMEBUFFER_BINDING, &save_draw );
++    funcs->p_glBindFramebuffer( GL_READ_FRAMEBUFFER, drawable->draw_fbo ? drawable->draw_fbo : drawable->read_fbo );
++    funcs->p_glReadBuffer( GL_COLOR_ATTACHMENT0 );
++    funcs->p_glBindFramebuffer( GL_DRAW_FRAMEBUFFER, s->ahb_fbo );
++    /* Vertical flip: GL renders bottom-left origin, but the consumer samples the AHB
++     * top-left (gralloc convention; compositeQuad maps tex(0,0)->top-left, and the
++     * 0048 Vulkan AHB is already top-left). dst Y range reversed (height->0). */
++    funcs->p_glBlitFramebuffer( 0, 0, width, height, 0, height, width, 0, GL_COLOR_BUFFER_BIT, GL_NEAREST );
++    funcs->p_glBindFramebuffer( GL_READ_FRAMEBUFFER, save_read );
++    funcs->p_glBindFramebuffer( GL_DRAW_FRAMEBUFFER, save_draw );
++
++    /* (3) fence + PRESENT (the server GPU-waits the fence before sampling). */
++    if (p_vstpoc_eglCreateSyncKHR && p_vstpoc_eglDupNativeFenceFDANDROID)
++    {
++        void *sync = p_vstpoc_eglCreateSyncKHR( display_egl.display, EGL_SYNC_NATIVE_FENCE_ANDROID, NULL );
++        funcs->p_glFlush();
++        if (sync)
++        {
++            fence_fd = p_vstpoc_eglDupNativeFenceFDANDROID( display_egl.display, sync );
++            p_vstpoc_eglDestroySyncKHR( display_egl.display, sync );
++        }
++    }
++    else funcs->p_glFlush();
++
++    memset( &msg, 0, sizeof(msg) );
++    msg.magic = AHBCH_MAGIC; msg.version = AHBCH_VERSION; msg.type = AHBCH_PRESENT;
++    msg.window_id = s->ahb_window_id; msg.buffer_index = 0; msg.has_fence = (fence_fd >= 0);
++    if (!ahbch_send_msg( s->ahb_chan_fd, &msg, fence_fd )) { if (fence_fd >= 0) close( fence_fd ); goto chan_broken; }
++    if (fence_fd >= 0) close( fence_fd );
++    return TRUE;
++
++chan_broken:
++    ERR( "vstpoc-gl: AHB side-channel send failed (%s) — reverting to readback\n", strerror(errno) );
++    close( s->ahb_chan_fd ); s->ahb_chan_fd = -1; s->ahb_registered = 0;
++    return FALSE;
++}
++
+ static BOOL framebuffer_surface_swap( struct opengl_drawable *drawable )
+ {
+     /* vstpoc-gles: PRESENT the offscreen framebuffer to the window. On Android
+@@ -497,6 +857,13 @@
+     width  = rect.right  > 0 ? rect.right  : 1;
+     height = rect.bottom > 0 ? rect.bottom : 1;
+ 
++    /* vstpoc GL zero-copy present: GPU-blit the rendered frame into an AHB and ship
++     * it to the in-process X server (no CPU copy). On success we're done; any
++     * failure (gate off, not connected, alloc/import/send failed) falls through to
++     * the glReadPixels + GDI readback below. */
++    if (vstpoc_gl_ahb_present( (struct framebuffer_surface *)drawable, hwnd, width, height ))
++        return TRUE;
++
+     if (!(bits = malloc( (size_t)width * height * 4 ))) return FALSE;
+ 
+     funcs->p_glGetIntegerv( GL_READ_FRAMEBUFFER_BINDING, &old_read_fbo );
+diff --git a/dlls/win32u/AhbChannelProtocol.h b/dlls/win32u/AhbChannelProtocol.h
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/dlls/win32u/AhbChannelProtocol.h
+@@ -0,0 +1,138 @@
++// AhbChannelProtocol.h — Phase 2 of the GPU X-server upgrade.
++//
++// A private control channel for passing AHardwareBuffer handles + sync-fds
++// between a frame producer (the wine winex11.drv Vulkan present path, Phase 3 —
++// or a synthetic test client) and the in-process X11 server's GLES compositor,
++// DECOUPLED from the TCP X11 protocol socket. SCM_RIGHTS fd-passing is
++// impossible on the custom-libxcb TCP socket, so AHB/fence handles travel here.
++//
++// Transport: AF_UNIX SOCK_STREAM, abstract namespace ("\0guitarrack-ahb-<N>"),
++// one socket per X11 display number. Additive + independently disableable; does
++// NOT touch the TCP path. Keyed by X11 window id (both sides already know it).
++//
++// This header is intentionally plain C (fixed-width types, static-inline socket
++// helpers, no C++/namespaces) so it can be vendored verbatim into the wine tree
++// for the Phase 3 producer.
++#ifndef GUITARRACKCRAFT_X11_AHB_CHANNEL_PROTOCOL_H
++#define GUITARRACKCRAFT_X11_AHB_CHANNEL_PROTOCOL_H
++
++#include <stdint.h>
++#include <stddef.h>
++#include <string.h>
++#include <stdio.h>
++#include <sys/socket.h>
++#include <sys/un.h>
++#include <unistd.h>
++
++/* NOTE: this header deliberately does NOT include <android/hardware_buffer.h> —
++ * the helpers below only use POSIX sockets, so the header is vendorable verbatim
++ * into the wine tree (winex11.drv, which has bionic sockets but not the NDK
++ * AHB headers). The AHB *handles* themselves travel via the NDK's
++ * AHardwareBuffer_send/recvHandleFromUnixSocket, called by the endpoint code
++ * (which includes/declares those itself), NOT by anything here. */
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++#define AHBCH_MAGIC   0x41484243u  /* 'AHBC' */
++#define AHBCH_VERSION 1u
++
++enum AhbChMsgType {
++    AHBCH_REGISTER   = 1, /* client->server, followed by buffer_count AHB handles
++                           * (each via AHardwareBuffer_sendHandleToUnixSocket) */
++    AHBCH_PRESENT    = 2, /* client->server, has_fence=1 => one sync-fd via SCM_RIGHTS */
++    AHBCH_UNREGISTER = 3, /* client->server */
++    AHBCH_RELEASE    = 4, /* server->client: buffer_index is free to reuse */
++};
++
++/* Fixed 40-byte message header. Host-local socket → native byte order (both
++ * ends are LE ARM64/x86_64). Field meaning depends on `type`. */
++typedef struct AhbChMsg {
++    uint32_t magic;        /* AHBCH_MAGIC */
++    uint16_t version;      /* AHBCH_VERSION */
++    uint16_t type;         /* enum AhbChMsgType */
++    uint32_t window_id;    /* X11 window id the AHB(s) back */
++    uint32_t width;        /* REGISTER: buffer width  */
++    uint32_t height;       /* REGISTER: buffer height */
++    uint32_t format;       /* REGISTER: AHARDWAREBUFFER_FORMAT_* */
++    uint32_t buffer_count; /* REGISTER: number of AHB handles that follow */
++    uint32_t buffer_index; /* PRESENT / RELEASE: which buffer in the ring */
++    uint32_t has_fence;    /* PRESENT: 1 => one sync-fd follows via SCM_RIGHTS */
++    uint32_t reserved;     /* pad to 40 / future use */
++} AhbChMsg;
++
++/* Fill `addr` with the abstract-namespace address for display N. Returns the
++ * socklen_t to pass to bind()/connect() (covers the leading NUL + name, NOT the
++ * whole sun_path — abstract sockets are length-delimited, not NUL-delimited). */
++static inline socklen_t ahbch_make_addr(struct sockaddr_un* addr, int display_number) {
++    memset(addr, 0, sizeof(*addr));
++    addr->sun_family = AF_UNIX;
++    char name[64];
++    int n = snprintf(name, sizeof(name), "guitarrack-ahb-%d", display_number);
++    if (n < 0) n = 0;
++    if (n > (int)sizeof(name) - 1) n = (int)sizeof(name) - 1;
++    addr->sun_path[0] = '\0';                 /* abstract namespace */
++    memcpy(addr->sun_path + 1, name, (size_t)n);
++    return (socklen_t)(offsetof(struct sockaddr_un, sun_path) + 1 + n);
++}
++
++/* Send one message, optionally with a single fd attached via SCM_RIGHTS
++ * (fence_fd < 0 => none). Returns 1 on success, 0 on failure. */
++static inline int ahbch_send_msg(int fd, const AhbChMsg* msg, int fence_fd) {
++    struct iovec iov;
++    iov.iov_base = (void*)msg;
++    iov.iov_len  = sizeof(*msg);
++    struct msghdr mh;
++    memset(&mh, 0, sizeof(mh));
++    mh.msg_iov    = &iov;
++    mh.msg_iovlen = 1;
++    char cbuf[CMSG_SPACE(sizeof(int))];
++    if (fence_fd >= 0) {
++        memset(cbuf, 0, sizeof(cbuf));
++        mh.msg_control    = cbuf;
++        mh.msg_controllen = sizeof(cbuf);
++        struct cmsghdr* c = CMSG_FIRSTHDR(&mh);
++        c->cmsg_level = SOL_SOCKET;
++        c->cmsg_type  = SCM_RIGHTS;
++        c->cmsg_len   = CMSG_LEN(sizeof(int));
++        memcpy(CMSG_DATA(c), &fence_fd, sizeof(int));
++    }
++    ssize_t r = sendmsg(fd, &mh, 0);
++    return r == (ssize_t)sizeof(*msg) ? 1 : 0;
++}
++
++/* Receive one message. If a fence fd arrives via SCM_RIGHTS it is stored in
++ * *out_fence_fd (the caller owns + must close it); otherwise *out_fence_fd = -1.
++ * Returns 1 on success, 0 on EOF/error. */
++static inline int ahbch_recv_msg(int fd, AhbChMsg* msg, int* out_fence_fd) {
++    if (out_fence_fd) *out_fence_fd = -1;
++    struct iovec iov;
++    iov.iov_base = msg;
++    iov.iov_len  = sizeof(*msg);
++    struct msghdr mh;
++    memset(&mh, 0, sizeof(mh));
++    mh.msg_iov    = &iov;
++    mh.msg_iovlen = 1;
++    char cbuf[CMSG_SPACE(sizeof(int))];
++    mh.msg_control    = cbuf;
++    mh.msg_controllen = sizeof(cbuf);
++    ssize_t r = recvmsg(fd, &mh, MSG_WAITALL);
++    if (r != (ssize_t)sizeof(*msg)) return 0;
++    struct cmsghdr* c;
++    for (c = CMSG_FIRSTHDR(&mh); c; c = CMSG_NXTHDR(&mh, c)) {
++        if (c->cmsg_level == SOL_SOCKET && c->cmsg_type == SCM_RIGHTS) {
++            int got;
++            memcpy(&got, CMSG_DATA(c), sizeof(int));
++            if (out_fence_fd) *out_fence_fd = got; else if (got >= 0) close(got);
++            break;
++        }
++    }
++    return 1;
++}
++
++#ifdef __cplusplus
++}  /* extern "C" */
++#endif
++
++#endif  /* GUITARRACKCRAFT_X11_AHB_CHANNEL_PROTOCOL_H */

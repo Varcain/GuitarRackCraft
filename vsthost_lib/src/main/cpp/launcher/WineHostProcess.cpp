@@ -504,6 +504,14 @@ void WineHostProcess::setupWineEnvChild(const Config& cfg) {
      * (TONEX/TH-U) stay on readback until render-verified. Opt out via
      * wine_env.txt (VSTPOC_AHB_PRESENT=0). See feedback_bias_knob_drag_gpu_latency. */
     ::setenv("VSTPOC_AHB_PRESENT", vstpocPluginPfx ? "0" : "1", 1);
+    /* GL editor zero-copy present (the AHB-bounce in win32u/opengl.c): allocate an
+     * AHB, render the editor frame into it via wine's Mesa dma-buf import, and ship
+     * it over the same channel as a normal AHB. Only activates for GL editors
+     * (framebuffer_surface_swap), with a readback fallback on any failure. Plugin
+     * prefixes force AHB_PRESENT=0, so the GL path needs its own knob (default-on).
+     * ~0.7 core saved vs readback on Ampbox. Override via wine_env.txt
+     * VSTPOC_AHB_GL=0. See feedback_gl_zerocopy_dmabuf_not_ahb. */
+    ::setenv("VSTPOC_AHB_GL", "1", 1);
     /* TH-U editor deadlock fix: drop win_data_mutex across the cross-thread send
      * in winex11 WM_STATE/_XEMBED PropertyNotify handlers. Default off in wine;
      * we enable it here. Benign for plugins that don't hit the deadlock. */
@@ -1084,6 +1092,7 @@ bool WineHostProcess::start() {
          * + XPutImage. MUST match the setupWineEnvChild copy above (dual-block
          * trap). BIAS verified. See feedback_bias_knob_drag_gpu_latency. */
         ::setenv("VSTPOC_AHB_PRESENT", vstpocPluginPfx ? "0" : "1", 1);
+        ::setenv("VSTPOC_AHB_GL", "1", 1);  /* GL editor AHB-bounce zero-copy present; mirror setupWineEnvChild (dual-block trap) */
         ::setenv("WINE_VSTPOC_WM_STATE_UNLOCK","1", 1);  /* TH-U editor: drop lock across cross-thread send */
         // vstpoc 2026-05-25 (later 4): patches 031 (defer-focus) and
         // 032 (fingerprint-filter) were added for VST2-era TH-U
