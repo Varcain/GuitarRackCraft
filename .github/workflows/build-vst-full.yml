@@ -14,6 +14,7 @@
 #   keys ─┬─> llvm ─┬─> wine ──┐
 #         │         ├─> fex ───┤
 #         │         └─> dxvk ──┤
+#         ├─> llvm-android ────┤   (cross LLVM 18 → lavapipe SW-Vulkan in assemble's turnip)
 #         └─> mesa ────────────┤
 #                              v
 #                           assemble ──> APK artifact
@@ -64,6 +65,7 @@ jobs:
     timeout-minutes: 10
     outputs:
       llvm: ${{ steps.k.outputs.llvm }}
+      llvm_android: ${{ steps.k.outputs.llvm_android }}
       x11: ${{ steps.k.outputs.x11 }}
       winedeps: ${{ steps.k.outputs.winedeps }}
       wine: ${{ steps.k.outputs.wine }}
@@ -81,6 +83,13 @@ jobs:
 
           LLVM_C=$(gl vsthost_lib/external/llvm-mingw)
           echo "llvm=llvm-$os-$LLVM_C" >> "$GITHUB_OUTPUT"
+
+          # Cross-built LLVM 18 (target lavapipe links). Source is a fixed release
+          # fetched by fetch-llvm-source.sh; the install depends only on the two
+          # scripts (version + cmake build config), scoped to NDK_VSTHOST.
+          LLVMA_H=$( cat vsthost_lib/scripts/fetch-llvm-source.sh \
+                         vsthost_lib/scripts/build-llvm-android.sh | h16)
+          echo "llvm_android=llvm-android-$os-$LLVMA_H-ndk${NDK_VSTHOST}" >> "$GITHUB_OUTPUT"
 
           WD=$(cat vsthost_lib/scripts/fetch-x11-libs.sh \
                    vsthost_lib/scripts/build-android-libs.sh \
@@ -151,6 +160,51 @@ jobs:
             vsthost_lib/external/wine-upstream \
             vsthost_lib/external/fex-upstream
           cd vsthost_lib && bash scripts/build-all.sh llvm
+
+  # ── llvm-android: the cross-built LLVM 18.1.3 (AArch64 target) that Mesa
+  #    lavapipe (the software-Vulkan fallback) links. A slow ~1-2h one-time build
+  #    that build-all keeps out of the normal flow; cached on the fetch/build
+  #    script hashes. Restored by `assemble`, where build-all.sh's turnip phase
+  #    builds lavapipe (step 8c5) ONLY if this install is present — without it the
+  #    APK ships a Turnip-only turnip-libs.tar.gz and the "Lavapipe (SW)" renderer
+  #    option can't load its ICD.
+  llvm-android:
+    needs: keys
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - name: Cache android LLVM install
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: vsthost_lib/external/llvm-android/install-android-arm64
+          key: ${{ needs.keys.outputs.llvm_android }}
+      - name: Free disk space
+        if: steps.cache.outputs.cache-hit != 'true'
+        uses: jlumbroso/free-disk-space@main
+        with: { android: false, tool-cache: false, dotnet: true, haskell: true, large-packages: true, docker-images: true, swap-storage: true }
+      - name: System deps + host LLVM 18 + NDK
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          sudo apt-get update -qq
+          # llvm-18 provides the HOST llvm-tblgen the cross-build needs (no host LLVM
+          # build). ubuntu-latest is 24.04, which carries llvm-18 in the default repos.
+          sudo apt-get install -y --no-install-recommends $COMMON_APT llvm-18
+          yes | "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
+          "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" "ndk;${NDK_VSTHOST}"
+      - name: Fetch + cross-build LLVM 18.1.3 (android-arm64)
+        if: steps.cache.outputs.cache-hit != 'true'
+        env:
+          ANDROID_NDK: ${{ env.ANDROID_SDK_ROOT }}/ndk/${{ env.NDK_VSTHOST }}
+        run: |
+          # build-llvm-android.sh defaults HOST_LLVM_TBLGEN to /usr/bin/llvm-tblgen-18;
+          # point it at the package's actual binary if that symlink isn't created.
+          export HOST_LLVM_TBLGEN="$(command -v llvm-tblgen-18 || echo /usr/lib/llvm-18/bin/llvm-tblgen)"
+          echo "host tblgen: $HOST_LLVM_TBLGEN"
+          cd vsthost_lib
+          bash scripts/fetch-llvm-source.sh
+          bash scripts/build-llvm-android.sh
 
   # ── x11: the X11 client stack (libX11/xcb/Xau/Xext/Xrender + Xi/Xfixes/
   #    Xrandr/Xcursor/Xxf86vm/Xdmcp) source-built via the native cmake. Built
@@ -363,7 +417,7 @@ jobs:
   #    (turnip fetch + hosts + pack), build the LV2/native side, assemble the
   #    APK. This is the only job that needs the full submodule tree + both NDKs.
   assemble:
-    needs: [keys, wine, fex, dxvk, mesa, x11]
+    needs: [keys, wine, fex, dxvk, mesa, x11, llvm-android]
     runs-on: ubuntu-latest
     timeout-minutes: 180
     steps:
@@ -436,6 +490,12 @@ jobs:
         with:
           path: build/x11_ui
           key: ${{ needs.keys.outputs.x11 }}
+          fail-on-cache-miss: true
+      - name: Restore android LLVM install (build-all turnip builds lavapipe step 8c5 when present)
+        uses: actions/cache/restore@v4
+        with:
+          path: vsthost_lib/external/llvm-android/install-android-arm64
+          key: ${{ needs.keys.outputs.llvm_android }}
           fail-on-cache-miss: true
 
       - name: Unpack wine output into build dir
