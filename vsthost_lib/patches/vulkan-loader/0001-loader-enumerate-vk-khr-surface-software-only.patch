@@ -1,0 +1,67 @@
+diff --git a/loader/loader.c b/loader/loader.c
+index 434674b72..fd86fcca0 100644
+--- a/loader/loader.c
++++ b/loader/loader.c
+@@ -1284,6 +1284,24 @@ VkResult loader_get_icd_loader_instance_extensions(const struct loader_instance
+         goto out;
+     }
+ 
++    // vstpoc: this loader is built software-only with every platform WSI compiled
++    // OUT (build-vulkan-loader.sh: BUILD_WSI_*_SUPPORT=OFF), so it advertises no
++    // surface extensions of its own, and the lavapipe ICD enumerates
++    // VK_EXT_headless_surface but NOT the base VK_KHR_surface. DXVK requires
++    // VK_KHR_surface and aborts when it's absent. The loader IMPLEMENTS VK_KHR_surface
++    // unconditionally (vkDestroySurfaceKHR / vkGetPhysicalDeviceSurface*KHR trampolines
++    // in wsi.c are always compiled), so advertise it (+ headless, deduped if the ICD
++    // already provided it) here. This is what lets D3D11/DXVK plugin editors run on
++    // lavapipe (the universal software fallback). See project_lavapipe_gl_fallback.
++    const VkExtensionProperties vstpoc_surface_extension_info[] = {
++        {VK_KHR_SURFACE_EXTENSION_NAME, VK_KHR_SURFACE_SPEC_VERSION},
++        {VK_EXT_HEADLESS_SURFACE_EXTENSION_NAME, VK_EXT_HEADLESS_SURFACE_SPEC_VERSION}};
++    res = loader_add_to_ext_list(inst, inst_exts, sizeof(vstpoc_surface_extension_info) / sizeof(VkExtensionProperties),
++                                 vstpoc_surface_extension_info);
++    if (res == VK_ERROR_OUT_OF_HOST_MEMORY) {
++        goto out;
++    }
++
+ out:
+     return res;
+ }
+@@ -6759,6 +6777,16 @@ VKAPI_ATTR VkResult VKAPI_CALL terminator_EnumerateDeviceExtensionProperties(VkP
+                 }
+             }
+         }
++        // vstpoc: advertise VK_KHR_swapchain for software lavapipe (see the count-path
++        // comment below). Append if not already present and there's room.
++        {
++            const VkExtensionProperties vstpoc_swapchain = {VK_KHR_SWAPCHAIN_EXTENSION_NAME, VK_KHR_SWAPCHAIN_SPEC_VERSION};
++            if (!has_vk_extension_property_array(&vstpoc_swapchain, written_count, pProperties)) {
++                if (*pPropertyCount <= written_count) return VK_INCOMPLETE;
++                memcpy(&pProperties[written_count], &vstpoc_swapchain, sizeof(VkExtensionProperties));
++                written_count++;
++            }
++        }
+         // Make sure we update the pPropertyCount with the how many were written
+         *pPropertyCount = written_count;
+         return res;
+@@ -6804,6 +6832,20 @@ VKAPI_ATTR VkResult VKAPI_CALL terminator_EnumerateDeviceExtensionProperties(VkP
+         }
+     }
+ 
++    // vstpoc: software lavapipe (built surfaceless / WSI-off) does NOT enumerate
++    // VK_KHR_swapchain as a device extension even though it compiles the headless
++    // WSI (wsi_common_headless) and wine implements the swapchain abstraction.
++    // DXVK REQUIRES VK_KHR_swapchain to create a D3D11 device, so without it every
++    // D3D11 plugin (AmpliTube/Ampbox) fails device creation. Advertise it here (the
++    // loader's wsi.c provides the swapchain trampolines unconditionally); the headless
++    // present path + winex11 headless surface handle the rest. See
++    // project_lavapipe_gl_fallback. dedup-safe via loader_add_to_ext_list.
++    {
++        const VkExtensionProperties vstpoc_swapchain = {VK_KHR_SWAPCHAIN_EXTENSION_NAME, VK_KHR_SWAPCHAIN_SPEC_VERSION};
++        res = loader_add_to_ext_list(icd_term->this_instance, &all_exts, 1, &vstpoc_swapchain);
++        if (res != VK_SUCCESS) goto out;
++    }
++
+     // Write out the final de-duplicated count to pPropertyCount
+     *pPropertyCount = all_exts.count;
+     res = VK_SUCCESS;

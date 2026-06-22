@@ -37,10 +37,15 @@ NDKBIN="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin"
     echo "error: NDK not found at $NDK (set ANDROID_NDK)" >&2; exit 1; }
 for t in meson ninja patchelf; do command -v "$t" >/dev/null || { echo "error: $t not on PATH" >&2; exit 1; }; done
 
-echo "[+] mesa submodule reset + apply patches/mesa/0001"
+echo "[+] mesa submodule reset + apply patches/mesa/0001 + 0003"
 git -C "$M" reset --hard HEAD >/dev/null
-git -C "$M" clean -fdx -e build-android-zink >/dev/null
+git -C "$M" clean -fdx -e build-android-zink -e build-android-turnip -e build-android-lavapipe -e .android-deps >/dev/null
 git -C "$M" apply "$PATCHES/0001-zink-android-desktop-gl-via-turnip.patch"
+# 0003: let zink accept a software (CPU) device — needed so the GL editor renders
+# on lavapipe (the universal software-Vulkan fallback). Upstream gates this on
+# LIBGL_ALWAYS_SOFTWARE, which doesn't reach the editor's wine process; harmless on
+# the Turnip path (a real GPU is never CPU-typed). See feedback_lavapipe_*.
+git -C "$M" apply "$PATCHES/0003-zink-accept-cpu-device.patch"
 
 echo "[+] drop captured header stubs (cutils/log) into the submodule"
 DEPS="$M/.android-deps"
@@ -77,8 +82,8 @@ endian = 'little'
 needs_exe_wrapper = true
 
 [built-in options]
-c_args = ['-I$DEPS/include']
-cpp_args = ['-I$DEPS/include']
+c_args = ['-I$DEPS/include', '-fno-omit-frame-pointer', '-funwind-tables']
+cpp_args = ['-I$DEPS/include', '-fno-omit-frame-pointer', '-funwind-tables']
 c_link_args = ['-static-libstdc++', '-llog', '-lsync']
 cpp_link_args = ['-static-libstdc++', '-llog', '-lsync']
 EOF

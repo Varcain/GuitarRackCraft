@@ -1,0 +1,42 @@
+diff --git a/vsthost_lib/external/vst_host_vst3/vst3_host.cpp b/vsthost_lib/external/vst_host_vst3/vst3_host.cpp
+index c7a937e..11bea36 100644
+--- a/vsthost_lib/external/vst_host_vst3/vst3_host.cpp
++++ b/vsthost_lib/external/vst_host_vst3/vst3_host.cpp
+@@ -236,23 +236,29 @@ static VehPattern g_veh_patterns[] = {
+         /* memset_rsi_count */ 16,
+         /* hit_count */ {0},
+     },
+-    /* AmpliTube 5 editor-init NULL object (Turnip/D3D11 path). ASLR'd, match
+-     * by bytes. The faulting instruction loads an optional sub-object pointer
+-     * from a NULL parent (rcx=0) and the plugin's OWN code immediately
+-     * null-checks the result and branches:
++    /* AmpliTube 5 / Ampbox editor-init NULL object (Turnip OR lavapipe D3D11
++     * path). ASLR'd, match by bytes. The faulting instruction loads an optional
++     * sub-object pointer from a NULL parent (rcx=0) and the plugin's OWN code
++     * immediately null-checks the result and branches:
+      *   48 8b 79 40   mov rdi, [rcx+0x40]   ← faults (rcx=NULL)
+      *   48 8b da      mov rbx, rdx
+      *   48 85 ff      test rdi, rdi
+-     *   0f 84 ..      jz  <null-path>        ← handles rdi==0
++     *   0f 84 XX XX.. jz  <null-path>        ← handles rdi==0
+      * Recovery: zero rdi + skip the faulting load (4 bytes); the plugin's own
+      * jz then takes its null-handling path. x86 PE code, so recoverable
+-     * (unlike AmpliTube's earlier native-ARM64 +FE7784 crash). */
++     * (unlike AmpliTube's earlier native-ARM64 +FE7784 crash).
++     * ★Match only the first 12 bytes (through the `0f 84` jz opcode), NOT the
++     * rel32 jz target: AmpliTube's is 0x122, Ampbox's is 0x10b — same codegen,
++     * different branch distance. The recovery is identical for any such
++     * load-then-null-check, so 12 bytes covers both + future IK-style variants.
++     * 2026-06-22: this is why Ampbox (DXVK on lavapipe) crashed where AmpliTube
++     * recovered — see project_lavapipe_gl_fallback.★ */
+     {
+-        "amplitube-editor-null-obj",
++        "amplitube-ampbox-editor-null-obj",
+         /* read */ 0,
+         /* fault_addr_max */ 0x1000,
+         /* exact_pc */ 0,    /* ASLR, match by bytes only */
+-        /* byte_count */ 16,
++        /* byte_count */ 12, /* through `0f 84`; rel32 jz target intentionally unmatched */
+         /* bytes */ {
+             0x48, 0x8b, 0x79, 0x40,
+             0x48, 0x8b, 0xda, 0x48,

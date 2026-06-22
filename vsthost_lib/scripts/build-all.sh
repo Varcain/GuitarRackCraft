@@ -180,6 +180,19 @@ phase_turnip() {
     # Phase 1: Khronos loader from external/Vulkan-Loader. Runs before the tar so
     # libvulkan.so.1 lands in the asset alongside the source ICD + HAL.
     run_step build-vulkan-loader.sh
+
+    # Optional: the lavapipe software-Vulkan ICD (libvulkan_lvp.so) — the universal
+    # fallback for non-Adreno devices (or any GPU whose Vulkan can't run DXVK/zink).
+    # It needs the cross-built LLVM (build-llvm-android.sh, a slow one-time ~1-2h
+    # prereq NOT in build-all), so include it only when that install exists; skip
+    # cleanly otherwise so a normal build still produces a (Turnip-only) asset.
+    if [ -f "$REPO/external/llvm-android/install-android-arm64/lib/cmake/llvm/LLVMConfig.cmake" ]; then
+        step 8c5 "build-lavapipe (software Vulkan ICD libvulkan_lvp.so → turnip-libs)"
+        run_step build-lavapipe-android.sh
+    else
+        echo "  [skip 8c5] lavapipe: no android LLVM install — run build-llvm-android.sh to include the software-Vulkan fallback"
+    fi
+
     # fetch-turnip-libs only STAGES into toolchain/turnip-libs/ (it's a fetch script,
     # like fetch-x11-libs). Bundle that into the runtime asset here, with bare SONAME
     # filenames (no leading dir) so WineSetup.extractTurnipLibs drops them straight

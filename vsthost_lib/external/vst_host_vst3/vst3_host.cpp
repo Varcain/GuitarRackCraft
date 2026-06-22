@@ -236,23 +236,29 @@ static VehPattern g_veh_patterns[] = {
         /* memset_rsi_count */ 16,
         /* hit_count */ {0},
     },
-    /* AmpliTube 5 editor-init NULL object (Turnip/D3D11 path). ASLR'd, match
-     * by bytes. The faulting instruction loads an optional sub-object pointer
-     * from a NULL parent (rcx=0) and the plugin's OWN code immediately
-     * null-checks the result and branches:
+    /* AmpliTube 5 / Ampbox editor-init NULL object (Turnip OR lavapipe D3D11
+     * path). ASLR'd, match by bytes. The faulting instruction loads an optional
+     * sub-object pointer from a NULL parent (rcx=0) and the plugin's OWN code
+     * immediately null-checks the result and branches:
      *   48 8b 79 40   mov rdi, [rcx+0x40]   ← faults (rcx=NULL)
      *   48 8b da      mov rbx, rdx
      *   48 85 ff      test rdi, rdi
-     *   0f 84 ..      jz  <null-path>        ← handles rdi==0
+     *   0f 84 XX XX.. jz  <null-path>        ← handles rdi==0
      * Recovery: zero rdi + skip the faulting load (4 bytes); the plugin's own
      * jz then takes its null-handling path. x86 PE code, so recoverable
-     * (unlike AmpliTube's earlier native-ARM64 +FE7784 crash). */
+     * (unlike AmpliTube's earlier native-ARM64 +FE7784 crash).
+     * ★Match only the first 12 bytes (through the `0f 84` jz opcode), NOT the
+     * rel32 jz target: AmpliTube's is 0x122, Ampbox's is 0x10b — same codegen,
+     * different branch distance. The recovery is identical for any such
+     * load-then-null-check, so 12 bytes covers both + future IK-style variants.
+     * 2026-06-22: this is why Ampbox (DXVK on lavapipe) crashed where AmpliTube
+     * recovered — see project_lavapipe_gl_fallback.★ */
     {
-        "amplitube-editor-null-obj",
+        "amplitube-ampbox-editor-null-obj",
         /* read */ 0,
         /* fault_addr_max */ 0x1000,
         /* exact_pc */ 0,    /* ASLR, match by bytes only */
-        /* byte_count */ 16,
+        /* byte_count */ 12, /* through `0f 84`; rel32 jz target intentionally unmatched */
         /* bytes */ {
             0x48, 0x8b, 0x79, 0x40,
             0x48, 0x8b, 0xda, 0x48,
@@ -956,6 +962,35 @@ static LONG WINAPI pluginmain_veh(PEXCEPTION_POINTERS info)
 
     const ULONG_PTR access = info->ExceptionRecord->ExceptionInformation[0];
     const ULONG_PTR fault  = info->ExceptionRecord->ExceptionInformation[1];
+
+    /* vstpoc-lavapipe-mapmem: localize the DXVK-on-lavapipe vkMapMemory crash.
+     * It's a HIGH-address AV (the mapped lavapipe pointer), so it falls through
+     * the NULL-fault path below unlogged -> we only see the bare UnhandledFilter.
+     * Log pc+fault+bytes (rate-limited, observe only) so we can tell whether the
+     * native PC is in libvulkan_lvp (lavapipe map faults) or the FEX JIT (the guest
+     * touches a bad mapped pointer = our memory-mapping bug). Print the modbase
+     * line once so the pc is symbolicatable. */
+    if (fault >= 0x1000) {
+        static std::atomic<int> hi_av_logged{0};
+        int n = hi_av_logged.fetch_add(1, std::memory_order_relaxed);
+        if (n < 12) {
+            const unsigned char *pc = (const unsigned char *)info->ExceptionRecord->ExceptionAddress;
+            unsigned char b[16] = {0};
+            if (addr_is_committed(pc)) for (int i = 0; i < 16; i++) b[i] = pc[i];
+            LOG("VEH: hi-AV #%d %s pc=%p fault=0x%llx tid=%lx "
+                "bytes=%02x %02x %02x %02x %02x %02x %02x %02x  "
+                "rax=%llx rcx=%llx rdx=%llx r8=%llx r9=%llx\n",
+                n + 1, access == 0 ? "READ" : access == 1 ? "WRITE" : "EXEC",
+                info->ExceptionRecord->ExceptionAddress, (unsigned long long)fault,
+                (unsigned long)GetCurrentThreadId(),
+                b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7],
+                (unsigned long long)info->ContextRecord->Rax,
+                (unsigned long long)info->ContextRecord->Rcx,
+                (unsigned long long)info->ContextRecord->Rdx,
+                (unsigned long long)info->ContextRecord->R8,
+                (unsigned long long)info->ContextRecord->R9);
+        }
+    }
 
     /* Only act on NULL-ish faults. Real wild-pointer writes higher up
      * fall through to wine's default handler. */

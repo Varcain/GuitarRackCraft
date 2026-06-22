@@ -1,0 +1,25 @@
+diff --git a/src/gallium/drivers/zink/zink_screen.c b/src/gallium/drivers/zink/zink_screen.c
+index bbc5f562081..5b1b8aea890 100644
+--- a/src/gallium/drivers/zink/zink_screen.c
++++ b/src/gallium/drivers/zink/zink_screen.c
+@@ -1757,11 +1757,15 @@ choose_pdev(struct zink_screen *screen, int64_t dev_major, int64_t dev_minor)
+    }
+    VKSCR(GetPhysicalDeviceProperties)(screen->pdev, &screen->info.props);
+ 
+-   /* allow software rendering only if forced by the user */
+-   if (!cpu && screen->info.props.deviceType == VK_PHYSICAL_DEVICE_TYPE_CPU) {
+-      screen->pdev = VK_NULL_HANDLE;
+-      return;
+-   }
++   /* vstpoc: accept a software (CPU) device. Upstream rejects it here unless
++    * LIBGL_ALWAYS_SOFTWARE is set, but that env var does not reliably reach the
++    * editor's wine process on our Android stack. A CPU-type device only ever
++    * appears at this point when the Vulkan shim has deliberately loaded lavapipe
++    * (no usable hardware Vulkan for zink), so accepting it never affects the
++    * Turnip/GPU path (Turnip reports a GPU device type, not CPU). Upstream gate:
++    *   if (!cpu && deviceType == VK_PHYSICAL_DEVICE_TYPE_CPU) { pdev=NULL; return; }
++    */
++   (void)cpu;
+ 
+    screen->info.device_version = screen->info.props.apiVersion;
+ 

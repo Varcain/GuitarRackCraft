@@ -1,0 +1,43 @@
+diff --git a/src/gallium/drivers/llvmpipe/lp_texture.c b/src/gallium/drivers/llvmpipe/lp_texture.c
+index 5a4796e1c36..2d7ffd56074 100644
+--- a/src/gallium/drivers/llvmpipe/lp_texture.c
++++ b/src/gallium/drivers/llvmpipe/lp_texture.c
+@@ -1309,7 +1309,16 @@ llvmpipe_allocate_memory(struct pipe_screen *_screen, uint64_t size)
+ 
+    mem->size = align64(size, alignment);
+ 
+-#if DETECT_OS_LINUX
++/* vstpoc: MESA_FORCE_LINUX makes DETECT_OS_LINUX true on Android so the ICD is
++ * a generic Linux Vulkan driver, but the Linux device-memory path here backs
++ * allocations with a SHARED anonymous memfd (os_create_anonymous_file + mmap
++ * MAP_SHARED). Under an Android untrusted_app, that memfd/MAP_SHARED mmap is
++ * seccomp-restricted (same class as the XShm shmget block) -> mmap returns
++ * MAP_FAILED, the release-build assert is a no-op, and -1 propagates as the
++ * mapped pointer -> DXVK's first vkMapMemory crashes writing to -1. We don't
++ * need the shared-fd (no dma-buf export; software lavapipe presents via
++ * readback), so fall back to the plain malloc path on Android. */
++#if DETECT_OS_LINUX && !defined(MESA_FORCE_LINUX)
+    struct llvmpipe_screen *screen = llvmpipe_screen(_screen);
+ 
+    mem->cpu_addr = MAP_FAILED;
+@@ -1345,7 +1354,8 @@ llvmpipe_free_memory(struct pipe_screen *pscreen,
+ {
+    struct llvmpipe_memory_allocation *mem = (struct llvmpipe_memory_allocation *)pmem;
+ 
+-#if DETECT_OS_LINUX
++/* vstpoc: see llvmpipe_allocate_memory — malloc path on Android (MESA_FORCE_LINUX). */
++#if DETECT_OS_LINUX && !defined(MESA_FORCE_LINUX)
+    struct llvmpipe_screen *screen = llvmpipe_screen(pscreen);
+ 
+    if (mem->fd) {
+@@ -1546,7 +1556,9 @@ llvmpipe_map_memory(struct pipe_screen *screen,
+ {
+    struct llvmpipe_memory_allocation *mem = (struct llvmpipe_memory_allocation *)pmem;
+ 
+-#if DETECT_OS_LINUX
++/* vstpoc: see llvmpipe_allocate_memory — on Android (MESA_FORCE_LINUX) cpu_addr
++ * is the malloc'd pointer; skip the memfd mmap (it returns MAP_FAILED there). */
++#if DETECT_OS_LINUX && !defined(MESA_FORCE_LINUX)
+    if (mem->cpu_addr != MAP_FAILED)
+       return mem->cpu_addr;
+ 

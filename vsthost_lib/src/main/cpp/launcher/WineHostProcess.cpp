@@ -245,6 +245,70 @@ static void vstpocApplyEnvFile(const std::string& cacheDir) {
     }
 }
 
+/* vstpoc: read a single KEY's value from <cache>/wine_env.txt (same format as
+ * vstpocApplyEnvFile), or "" if absent. Lets an env block consult a flag (e.g.
+ * VSTPOC_FORCE_LAVAPIPE) BEFORE wine_env.txt is applied at the end of the block. */
+static std::string vstpocWineEnvValue(const std::string& cacheDir, const std::string& key) {
+    std::ifstream f(cacheDir + "/wine_env.txt");
+    std::string line;
+    while (std::getline(f, line)) {
+        size_t b = line.find_first_not_of(" \t\r\n");
+        if (b == std::string::npos || line[b] == '#') continue;
+        size_t eq = line.find('=', b);
+        if (eq == std::string::npos || line.substr(b, eq - b) != key) continue;
+        std::string v = line.substr(eq + 1);
+        size_t e = v.find_last_not_of(" \t\r\n");
+        v.resize(e == std::string::npos ? 0 : e + 1);
+        return v;
+    }
+    return "";
+}
+
+/* vstpoc: wire the lavapipe software-Vulkan fallback (the universal, non-Adreno-
+ * tied path). Always export VSTPOC_LAVAPIPE_ICD — the zink shim's load_vulkan()
+ * lavapipe branch and the bundled Khronos loader read it; it has NO effect on the
+ * default hardware path (that branch is only reached when no hardware Vulkan loads).
+ * When wine_env.txt sets VSTPOC_FORCE_LAVAPIPE=1, route BOTH editor paths to
+ * software lavapipe for this run (to test the fallback, or on a device whose GPU
+ * Vulkan can't run zink/DXVK): the zink shim honours VSTPOC_FORCE_LAVAPIPE directly;
+ * for DXVK (win32u/vulkan.c patch 0030, adrenotools-first) we point
+ * VSTPOC_VULKAN_LOADER at the Khronos loader + VK_ICD_FILENAMES at the lavapipe
+ * manifest AND poison the adrenotools driver name so its custom-Turnip load fails
+ * and DXVK falls through to that loader. Call AFTER the VSTPOC_ADRENOTOOLS_* setenv
+ * so the poisoned name wins. turnipDir has a trailing slash. */
+static void vstpocLavapipeEnv(const std::string& turnipDir, const std::string& cacheDir) {
+    const std::string lvpIcd = turnipDir + "lvp_icd.aarch64.json";
+    ::setenv("VSTPOC_LAVAPIPE_ICD", lvpIcd.c_str(), 1);
+    if (vstpocWineEnvValue(cacheDir, "VSTPOC_FORCE_LAVAPIPE") == "1") {
+        ::setenv("VSTPOC_FORCE_LAVAPIPE", "1", 1);
+        ::setenv("VSTPOC_VULKAN_LOADER", (turnipDir + "libvulkan.so.1").c_str(), 1);
+        ::setenv("VK_ICD_FILENAMES", lvpIcd.c_str(), 1);
+        ::setenv("VK_DRIVER_FILES",  lvpIcd.c_str(), 1);
+        ::setenv("VSTPOC_ADRENOTOOLS_DRIVERNAME", "__lavapipe_forced__", 1);
+        /* DXVK/D3D11 plugins need a swapchain. lavapipe's headless WSI (the only
+         * surface type it exposes offscreen) only becomes present-capable with this
+         * set, so vkCreateSwapchainKHR succeeds and the editor renders instead of
+         * failing device/swapchain setup. Harmless for the GL/zink path. */
+        ::setenv("MESA_VK_WSI_HEADLESS_SWAPCHAIN", "1", 1);
+        /* lavapipe is software — it can't produce an AHardwareBuffer, so the
+         * zero-copy AHB GPU-present path (patches 0048/0057) has no producer and the
+         * editor would hang at present. Force the CPU-readback present for both the
+         * Vulkan (AHB_PRESENT) and GL (AHB_GL) paths. A user wine_env.txt can still
+         * override. */
+        if (vstpocWineEnvValue(cacheDir, "VSTPOC_AHB_PRESENT").empty())
+            ::setenv("VSTPOC_AHB_PRESENT", "0", 1);
+        if (vstpocWineEnvValue(cacheDir, "VSTPOC_AHB_GL").empty())
+            ::setenv("VSTPOC_AHB_GL", "0", 1);
+        /* lavapipe is a VK_PHYSICAL_DEVICE_TYPE_CPU device, which zink's choose_pdev
+         * rejects unless LIBGL_ALWAYS_SOFTWARE is set (zink_screen.c: "allow software
+         * rendering only if forced"). Set it HERE (in the env block, before any wine
+         * exec) so the whole wine process tree — including the GL editor process that
+         * runs zink — inherits it; setting it later (in the shim) loses a timing race
+         * with zink reading it at screen creation. */
+        ::setenv("LIBGL_ALWAYS_SOFTWARE", "1", 1);
+    }
+}
+
 /* vstpoc: write the FEX Config.json = base cache entries + any KEY=VAL lines from
  * <appCache>/fex_hacks.txt as extra Config entries (e.g. "Multiblock=0",
  * "X87ReducedPrecision=0", "TSOEnabled=1", "O0=1"). Lets FEX Hacks/CPU knobs be
@@ -362,6 +426,7 @@ void WineHostProcess::setupWineEnvChild(const Config& cfg) {
         ::setenv("VSTPOC_ADRENOTOOLS_HOOKDIR",   cfg.nativeLibDir.c_str(), 1);
         ::setenv("VSTPOC_ADRENOTOOLS_DRIVERDIR", turnipDir.c_str(),        1);
         ::setenv("VSTPOC_ADRENOTOOLS_DRIVERNAME", "vulkan.ad07xx.so",      1);
+        vstpocLavapipeEnv(turnipDir, cfg.cacheDir);
         /* Mesa/Turnip logs to logcat by default (invisible from the forked wine
          * process); redirect to a readable file + trace device init. */
         ::setenv("MESA_LOG_FILE", (cfg.cacheDir + "/turnip.log").c_str(), 1);
@@ -894,6 +959,7 @@ bool WineHostProcess::start() {
             ::setenv("VSTPOC_ADRENOTOOLS_HOOKDIR",   cfg_.nativeLibDir.c_str(), 1);
             ::setenv("VSTPOC_ADRENOTOOLS_DRIVERDIR", turnipDir.c_str(),         1);
             ::setenv("VSTPOC_ADRENOTOOLS_DRIVERNAME", "vulkan.ad07xx.so",       1);
+            vstpocLavapipeEnv(turnipDir, cfg_.cacheDir);
             ::setenv("MESA_LOG_FILE", (cfg_.cacheDir + "/turnip.log").c_str(), 1);
             ::setenv("TU_DEBUG", "startup", 1);
             /* Redirect Turnip's shader cache to our writable cacheDir (its

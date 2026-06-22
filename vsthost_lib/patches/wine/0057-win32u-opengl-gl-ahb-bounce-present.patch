@@ -50,7 +50,7 @@ diff --git a/dlls/win32u/opengl.c b/dlls/win32u/opengl.c
  WINE_DEFAULT_DEBUG_CHANNEL(wgl);
  
  struct pbuffer
-@@ -216,6 +229,17 @@
+@@ -216,6 +229,20 @@
  struct framebuffer_surface
  {
      struct opengl_drawable base;
@@ -60,6 +60,9 @@ diff --git a/dlls/win32u/opengl.c b/dlls/win32u/opengl.c
 +    int      ahb_chan_fd;     /* side-channel socket, <0 once tried => readback */
 +    unsigned ahb_window_id;   /* x11 whole_window for this hwnd (the channel key) */
 +    int      ahb_registered;  /* AHB REGISTER sent for the current size */
++    int      ahb_disabled;    /* AHB alloc/import failed once (e.g. zink-on-system-Vulkan
++                               * has no dma-buf import) => permanently readback for this
++                               * drawable, no per-frame AHB churn */
 +    int      ahb_reg_w, ahb_reg_h;  /* size the AHB was allocated at (re-alloc on change) */
 +    void    *ahb_buffer;      /* AHardwareBuffer* — the bounced shared buffer */
 +    void    *ahb_egl_image;   /* EGLImage of ahb_buffer's dma-buf (wine-side) */
@@ -68,7 +71,7 @@ diff --git a/dlls/win32u/opengl.c b/dlls/win32u/opengl.c
  };
  
  static GLenum color_format_from_pfd( const struct wgl_pixel_format *desc )
-@@ -405,9 +429,26 @@
+@@ -405,9 +432,26 @@
      TRACE( "drawable %p destroyed framebuffer %u\n", drawable, fbo );
  }
  
@@ -95,7 +98,7 @@ diff --git a/dlls/win32u/opengl.c b/dlls/win32u/opengl.c
  }
  
  static void framebuffer_surface_resize( struct opengl_drawable *drawable )
-@@ -471,6 +512,325 @@
+@@ -471,6 +515,329 @@
      if (flags & GL_FLUSH_UPDATED && drawable->read_fbo) framebuffer_surface_resize( drawable );
  }
  
@@ -357,6 +360,7 @@ diff --git a/dlls/win32u/opengl.c b/dlls/win32u/opengl.c
 +    int fence_fd = -1;
 +    AhbChMsg msg;
 +
++    if (s->ahb_disabled) return FALSE;   /* tried + failed once → clean readback, no churn */
 +    if (!vstpoc_gl_ahb_init( funcs )) return FALSE;
 +    if (!s->ahb_tried && !vstpoc_gl_connect( s, hwnd )) return FALSE;
 +    if (s->ahb_chan_fd < 0) return FALSE;
@@ -365,7 +369,10 @@ diff --git a/dlls/win32u/opengl.c b/dlls/win32u/opengl.c
 +    if (!s->ahb_registered || s->ahb_reg_w != width || s->ahb_reg_h != height)
 +    {
 +        vstpoc_gl_ahb_free( s );
-+        if (!vstpoc_gl_ahb_alloc( s, width, height )) return FALSE;
++        /* Alloc/import can fail where there's no usable dma-buf import (zink on a
++         * non-Turnip system Vulkan): disable the AHB path for this drawable so we
++         * drop to a stable readback instead of re-allocating an AHB every frame. */
++        if (!vstpoc_gl_ahb_alloc( s, width, height )) { s->ahb_disabled = 1; return FALSE; }
 +        memset( &msg, 0, sizeof(msg) );
 +        msg.magic = AHBCH_MAGIC; msg.version = AHBCH_VERSION; msg.type = AHBCH_REGISTER;
 +        msg.window_id = s->ahb_window_id; msg.width = width; msg.height = height;
@@ -421,7 +428,7 @@ diff --git a/dlls/win32u/opengl.c b/dlls/win32u/opengl.c
  static BOOL framebuffer_surface_swap( struct opengl_drawable *drawable )
  {
      /* vstpoc-gles: PRESENT the offscreen framebuffer to the window. On Android
-@@ -497,6 +857,13 @@
+@@ -497,6 +864,13 @@
      width  = rect.right  > 0 ? rect.right  : 1;
      height = rect.bottom > 0 ? rect.bottom : 1;
  

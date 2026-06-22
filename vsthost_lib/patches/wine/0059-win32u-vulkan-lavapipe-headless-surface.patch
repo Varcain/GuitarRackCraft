@@ -1,0 +1,131 @@
+diff --git a/dlls/win32u/vulkan.c b/dlls/win32u/vulkan.c
+index bf8f6f1daba..58ece984f7c 100644
+--- a/dlls/win32u/vulkan.c
++++ b/dlls/win32u/vulkan.c
+@@ -26,6 +26,7 @@
+ 
+ #include <dlfcn.h>
+ #include <pthread.h>
++#include <stdlib.h>
+ #include <unistd.h>
+ 
+ #include "ntstatus.h"
+@@ -461,6 +462,39 @@ static VkResult convert_instance_create_info( struct mempool *pool, VkInstanceCr
+     ALL_VK_INSTANCE_EXTS
+ #undef USE_VK_EXT
+ 
++    /* vstpoc-android-surface: rewrite the host VK_KHR_xlib_surface request to
++     * VK_KHR_android_surface, but ONLY for the system Qualcomm libvulkan
++     * (which exposes android_surface, not xlib). When VSTPOC_VULKAN_LOADER is
++     * set we run DXVK on Turnip via the Khronos loader, which HAS xlib_surface
++     * (X11 WSI against our X server) — keep xlib so vkCreateInstance succeeds.
++     * getenv is declared via <stdlib.h> added by patch 0028. */
++    /* vstpoc-lavapipe: software lavapipe is SURFACELESS — its Khronos loader
++     * exposes neither VK_KHR_xlib_surface nor VK_KHR_android_surface, only
++     * VK_EXT_headless_surface. Keeping xlib (the VSTPOC_VULKAN_LOADER/Turnip
++     * path) OR rewriting to android both make the host vkCreateInstance fail on
++     * lavapipe -> NULL DXVK instance -> D3D11 plugin (e.g. Ampbox) crashes on
++     * the NULL device. Under VSTPOC_FORCE_LAVAPIPE rewrite to headless instead
++     * so the instance succeeds; the guest surface falls back to the offscreen
++     * stub + X-server readback present (winex11 X11DRV_vulkan_surface_create),
++     * which needs no real presentable surface. Checked first because the
++     * lavapipe env ALSO sets VSTPOC_VULKAN_LOADER. */
++    if (getenv( "VSTPOC_FORCE_LAVAPIPE" ))
++    {
++        for (uint32_t vstpoc_i = 0; vstpoc_i < count; vstpoc_i++)
++            if (!strcmp( extensions[vstpoc_i], "VK_KHR_xlib_surface" ))
++            {
++                extensions[vstpoc_i] = "VK_EXT_headless_surface";
++                ERR( "vstpoc-lavapipe: rewrote host VK_KHR_xlib_surface -> VK_EXT_headless_surface\n" );
++            }
++    }
++    else if (!getenv( "VSTPOC_VULKAN_LOADER" ))
++        for (uint32_t vstpoc_i = 0; vstpoc_i < count; vstpoc_i++)
++            if (!strcmp( extensions[vstpoc_i], "VK_KHR_xlib_surface" ))
++            {
++                extensions[vstpoc_i] = "VK_KHR_android_surface";
++                ERR( "vstpoc-android-surface: rewrote host VK_KHR_xlib_surface -> VK_KHR_android_surface\n" );
++            }
++
+     TRACE( "Enabling %u host instance extensions\n", count );
+     for (const char **extension = extensions, **end = extension + count; extension < end; extension++)
+         TRACE( "  - %s\n", debugstr_a(*extension) );
+@@ -540,6 +574,19 @@ static VkResult init_physical_device( struct vulkan_physical_device *physical_de
+     extensions.has_VK_KHR_win32_keyed_mutex = extensions.has_VK_KHR_timeline_semaphore &&
+                                               extensions.has_VK_KHR_external_semaphore_fd;
+ 
++    /* vstpoc-lavapipe-swapchain: software lavapipe doesn't expose VK_KHR_swapchain
++     * at the device level through the WSI-off Khronos loader, but it HAS a working
++     * headless swapchain impl (wsi_common_headless) and wine implements the swapchain
++     * abstraction itself (win32u_vkCreateSwapchainKHR). DXVK REQUIRES VK_KHR_swapchain
++     * to create the D3D11 device — without it every D3D11/DXVK plugin (AmpliTube,
++     * Ampbox) fails device creation -> NULL renderer -> grey editor. Advertise it to
++     * the client so DXVK proceeds; the host vkCreateDevice filters per-ICD and the
++     * loader/lavapipe headless path provides the actual swapchain (needs
++     * MESA_VK_WSI_HEADLESS_SWAPCHAIN=1 + a real headless surface). FORCE_LAVAPIPE only;
++     * on Turnip the host already advertises it. See project_lavapipe_gl_fallback. */
++    if (getenv( "VSTPOC_FORCE_LAVAPIPE" ))
++        extensions.has_VK_KHR_swapchain = 1;
++
+     /* filter out unsupported client device extensions */
+ #define USE_VK_EXT(x) client_physical_device->extensions.has_ ## x = extensions.has_ ## x;
+     ALL_VK_CLIENT_DEVICE_EXTS
+@@ -3030,8 +3077,56 @@ static void vulkan_init_once(void)
+     VkResult res;
+ 
+ #ifdef SONAME_LIBVULKAN
+-    vulkan_handle = dlopen( SONAME_LIBVULKAN, RTLD_NOW );
+-    if (!vulkan_handle) ERR( "Failed to load %s\n", SONAME_LIBVULKAN );
++    /* vstpoc: allow redirecting the host Vulkan loader. The system Qualcomm
++     * proprietary Adreno driver rejects VK_EXT_robustness2 nullDescriptor at
++     * vkCreateDevice (which DXVK requires), so D3D11 plugins (AmpliTube) can't
++     * render. Point VSTPOC_VULKAN_LOADER at our bundled Khronos loader (which
++     * loads Turnip/Mesa via VK_ICD_FILENAMES); Turnip implements nullDescriptor
++     * correctly. Unset → system libvulkan (unchanged, safe). */
++    {
++        /* vstpoc: prefer the Android-HAL Turnip driver (Mesa, correct
++         * VK_EXT_robustness2 nullDescriptor) loaded via libadrenotools, exactly
++         * like Winlator. adrenotools_open_libvulkan opens the Android libvulkan
++         * with our custom HAL driver hooked into a linker namespace that
++         * satisfies the driver's namespace-restricted system deps (libhardware,
++         * libcutils, libnativewindow). VSTPOC_ADRENOTOOLS_HOOKDIR must equal the
++         * app nativeLibraryDir (holds the built hook .so), DRIVERDIR is an
++         * internal-storage dir holding the driver, DRIVERNAME is its soname.
++         * Fall back to VSTPOC_VULKAN_LOADER (bundled Khronos ICD loader) or the
++         * system libvulkan when adrenotools is not configured/usable. */
++        const char *adreno_hookdir = getenv( "VSTPOC_ADRENOTOOLS_HOOKDIR" );
++        const char *vstpoc_loader = getenv( "VSTPOC_VULKAN_LOADER" );
++        const char *vulkan_name = (vstpoc_loader && *vstpoc_loader) ? vstpoc_loader : SONAME_LIBVULKAN;
++
++        if (adreno_hookdir && *adreno_hookdir)
++        {
++            void *at = dlopen( "libadrenotools.so", RTLD_NOW | RTLD_GLOBAL );
++            if (at)
++            {
++                void *(*open_vk)( int, int, const char *, const char *, const char *,
++                                  const char *, const char *, void ** ) =
++                    dlsym( at, "adrenotools_open_libvulkan" );
++                if (open_vk)
++                    vulkan_handle = open_vk( RTLD_NOW, 1 /* ADRENOTOOLS_DRIVER_CUSTOM */, NULL,
++                                             adreno_hookdir,
++                                             getenv( "VSTPOC_ADRENOTOOLS_DRIVERDIR" ),
++                                             getenv( "VSTPOC_ADRENOTOOLS_DRIVERNAME" ),
++                                             NULL, NULL );
++                if (vulkan_handle)
++                    ERR( "vstpoc: Turnip via libadrenotools loaded (driver=%s)\n",
++                         getenv( "VSTPOC_ADRENOTOOLS_DRIVERNAME" ) );
++                else
++                    ERR( "vstpoc: adrenotools_open_libvulkan failed (open=%p)\n", (void *)open_vk );
++            }
++            else ERR( "vstpoc: dlopen libadrenotools.so failed: %s\n", dlerror() );
++        }
++
++        if (!vulkan_handle)
++        {
++            vulkan_handle = dlopen( vulkan_name, RTLD_NOW );
++            if (!vulkan_handle) ERR( "Failed to load %s\n", vulkan_name );
++        }
++    }
+ #else
+     ERR( "Wine was built without Vulkan support.\n" );
+ #endif
