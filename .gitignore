@@ -134,4 +134,7 @@ vsthost_lib/external/llvm-mingw/install/
 vsthost_lib/external/llvm-mingw/build/
 vsthost_lib/external/wine-upstream/build-*/
 vsthost_lib/external/fex-upstream/build-*/
+# LLVM 18.1.3 source + Android cross-build for lavapipe (build-llvm-android.sh).
+# ~8.5 GB; source fetched manually (llvm-project-18.1.3.src tarball), not committed.
+vsthost_lib/external/llvm-android/
 vsthost_lib/toolchain/

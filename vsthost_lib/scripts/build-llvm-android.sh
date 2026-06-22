@@ -4,10 +4,10 @@
 # driver — Turnip on Adreno, the vendor Vulkan elsewhere — can run zink/DXVK).
 #
 # Version: LLVM 18.1.3 (mesa 24.2.8 supports LLVM ~15..18; LLVM 21 in
-# external/llvm-mingw is too new for it). Source fetched into
-# external/llvm-android/ (llvm + cmake + third-party from the 18.1.3 monorepo
-# tarball). The HOST tablegen is /usr/bin/llvm-tblgen-18 (also 18.1.3) so no host
-# LLVM build is needed.
+# external/llvm-mingw is too new for it). Source is auto-fetched by
+# scripts/fetch-llvm-source.sh (llvm + cmake + third-party component tarballs from
+# the LLVM 18.1.3 release) into external/llvm-android/ if missing. The HOST
+# tablegen is /usr/bin/llvm-tblgen-18 (also 18.1.3) so no host LLVM build is needed.
 #
 # Minimal: AArch64 target only, no tools/tests/examples, static libs. Installs a
 # CMake package (lib/cmake/llvm/LLVMConfig.cmake) so the mesa meson build can find
@@ -24,7 +24,11 @@ HOST_TBLGEN="${HOST_LLVM_TBLGEN:-/usr/bin/llvm-tblgen-18}"
 NDK="${ANDROID_NDK:-$HOME/Android/Sdk/ndk/26.1.10909125}"
 API=28
 
-[ -f "$SRC/CMakeLists.txt" ] || { echo "error: LLVM source not at $SRC (fetch llvm-project-18.1.3.src first)" >&2; exit 1; }
+if [ ! -f "$SRC/CMakeLists.txt" ]; then
+  echo "[+] LLVM source not at $SRC — fetching via fetch-llvm-source.sh"
+  "$(dirname "$0")/fetch-llvm-source.sh"
+fi
+[ -f "$SRC/CMakeLists.txt" ] || { echo "error: LLVM source still missing at $SRC after fetch-llvm-source.sh" >&2; exit 1; }
 [ -x "$HOST_TBLGEN" ] || { echo "error: host llvm-tblgen not at $HOST_TBLGEN" >&2; exit 1; }
 [ -f "$NDK/build/cmake/android.toolchain.cmake" ] || { echo "error: NDK toolchain not found ($NDK)" >&2; exit 1; }
 command -v ninja >/dev/null || { echo "error: ninja not on PATH" >&2; exit 1; }
