@@ -57,6 +57,19 @@ API=28                                                   # matches build-mesa-zi
 command -v cmake >/dev/null || { echo "error: cmake not on PATH" >&2; exit 1; }
 GEN="Unix Makefiles"; command -v ninja >/dev/null && GEN="Ninja"
 
+# --- apply our loader patches (reproducible: the build compiles the submodule
+#     WORKTREE, so reset to the pinned commit then re-apply — a fresh CI checkout
+#     has a clean submodule, a local tree may already carry the edits). Idempotent.
+#     patches/vulkan-loader/0001 makes the WSI-off loader enumerate VK_KHR_surface
+#     + VK_KHR_swapchain so DXVK can create its D3D11 device on software lavapipe. ---
+echo "[+] reset Vulkan-Loader to pinned HEAD + apply patches"
+git -C "$LOADER_SRC" reset --hard HEAD >/dev/null
+for p in "$repo_root/patches/vulkan-loader/"*.patch; do
+    [ -f "$p" ] || continue
+    echo "  ✓ $(basename "$p")"
+    git -C "$LOADER_SRC" apply "$p"
+done
+
 SYSROOT="$NDKBIN/../sysroot"
 
 echo "=== Vulkan loader build (libvulkan.so.1, generic/Linux discovery on Bionic) ==="
