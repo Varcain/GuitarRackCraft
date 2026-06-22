@@ -1,0 +1,36 @@
+From: Kamil Lulko <limakzagan@gmail.com>
+Subject: win32u: set_active_window cross-thread input attach (TH-U popup close)
+
+The wineserver's check_queue_input_window rejects set_active_window with
+ACCESS_DENIED when the target window is owned by a different thread in the same
+process (a JUCE popup/editor on a worker thread) whose input queue isn't attached
+to the caller's. The active window then gets stuck at NULL, and JUCE refuses to
+dispatch a window-close on its (non-active) popup — the popup's X is inert while
+ordinary buttons still work. Mirror patch 0017's NtUserSetFocus cross-thread
+attach for the activation path. Root cause + repro in feedback_thu_popup_close_active_null.
+
+diff --git a/dlls/win32u/input.c b/dlls/win32u/input.c
+index 88cbbabc4bf..60504aea66e 100644
+--- a/dlls/win32u/input.c
++++ b/dlls/win32u/input.c
+@@ -2035,6 +2035,20 @@ BOOL set_active_window( HWND hwnd, HWND *prev, BOOL mouse, BOOL focus, DWORD new
+         goto done;
+     }
+ 
++    /* vstpoc (TH-U popup close, feedback_thu_popup_close_active_null): the wineserver's
++     * check_queue_input_window rejects set_active_window with ACCESS_DENIED when the
++     * target window is owned by a different thread in the same process (a JUCE popup or
++     * editor on a worker thread) whose input queue isn't attached to ours -> the active
++     * window gets stuck at NULL and JUCE refuses to close popups (it needs an active
++     * window). Real Windows handles this via attached thread inputs; mirror patch 0017's
++     * NtUserSetFocus attach for the activation path. */
++    if (hwnd)
++    {
++        DWORD win_pid = 0, win_tid = get_window_thread( hwnd, &win_pid );
++        if (win_tid && win_pid == GetCurrentProcessId() && win_tid != GetCurrentThreadId())
++            NtUserAttachThreadInput( GetCurrentThreadId(), win_tid, TRUE );
++    }
++
+     /* call CBT hook chain */
+     cbt.fMouse     = mouse;
+     cbt.hWndActive = previous;
