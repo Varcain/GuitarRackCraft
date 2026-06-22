@@ -614,6 +614,10 @@ jobs:
           path: app/build/outputs/apk/full/debug/*.apk
           if-no-files-found: error
           retention-days: 90
+          # The APK is already a compressed zip, so re-deflating it in the artifact
+          # wrapper just costs upload time for ~no size gain. Store, don't compress.
+          # (GitHub always wraps artifacts in a zip — there is no raw-file upload.)
+          compression-level: 0
 
       - name: Dump build logs on failure
         if: failure()
