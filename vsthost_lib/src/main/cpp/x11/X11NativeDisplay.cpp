@@ -3706,14 +3706,18 @@ struct X11NativeDisplay::Impl {
                         uint32_t pid = read32(buf, 4);
                         int pw = (int)read16(buf, 12);
                         int ph = (int)read16(buf, 14);
-                        LOGI("X11 handle CreatePixmap pid=0x%x %dx%d", pid, pw, ph);
+                        /* vstpoc: gate — wine/JUCE churns ~250 CreatePixmap/s while
+                         * scrolling; an unconditional LOGI here is ~500 logcat
+                         * writes/s with both pixmap handlers, and a blocking log
+                         * write is a multi-ms hitch. See scrollbar present-path profile. */
+                        if (reqLogCount <= 60) LOGI("X11 handle CreatePixmap pid=0x%x %dx%d", pid, pw, ph);
                         pixmapStore_.create(pid, pw, ph);
                         break;
                     }
                     /* --- FreePixmap --- */
                     case 54: { /* FreePixmap */
                         uint32_t pid = read32(buf, 4);
-                        LOGI("X11 handle FreePixmap pid=0x%x", pid);
+                        if (reqLogCount <= 60) LOGI("X11 handle FreePixmap pid=0x%x", pid);
                         pixmapStore_.destroy(pid);
                         break;
                     }
