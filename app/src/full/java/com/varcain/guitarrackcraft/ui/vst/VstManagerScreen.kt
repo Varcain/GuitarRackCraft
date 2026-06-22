@@ -26,8 +26,12 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.varcain.guitarrackcraft.engine.GpuDetector
 import com.varcain.guitarrackcraft.engine.NativeEngine
 import com.varcain.guitarrackcraft.engine.RackManager
+import com.varcain.guitarrackcraft.engine.Renderer
+import com.varcain.guitarrackcraft.engine.RendererPreferenceManager
+import com.varcain.guitarrackcraft.engine.WineEnvFile
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.varcain.vsthost.NativeBridge
 import com.varcain.vsthost.PeFlag
@@ -81,6 +85,14 @@ fun VstManagerScreen(onNavigateBack: () -> Unit) {
     var importingName by remember { mutableStateOf<String?>(null) }
 
     var setupInProgress by remember { mutableStateOf(false) }
+
+    // Plugin-editor renderer selector. Turnip (GPU) is only offered on Adreno
+    // devices; everywhere else only software lavapipe can run.
+    val isAdreno = remember { GpuDetector.isAdreno() }
+    val rendererOptions = remember(isAdreno) {
+        if (isAdreno) listOf(Renderer.TURNIP, Renderer.LAVAPIPE) else listOf(Renderer.LAVAPIPE)
+    }
+    var selectedRenderer by remember { mutableStateOf(RendererPreferenceManager.getRenderer(context)) }
 
     // Installer flow: full-screen overlay while installerVm.state != IDLE.
     val installerVm: VstInstallerViewModel = viewModel()
@@ -213,6 +225,32 @@ fun VstManagerScreen(onNavigateBack: () -> Unit) {
             modifier = Modifier.padding(padding).fillMaxSize().padding(16.dp)
         ) {
             LazyColumn(modifier = Modifier.weight(1f)) {
+                item {
+                    Text(
+                        "Plugin editor renderer",
+                        style = MaterialTheme.typography.titleMedium
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    RendererDropdown(
+                        options = rendererOptions,
+                        selected = selectedRenderer,
+                        onSelected = { r ->
+                            selectedRenderer = r
+                            RendererPreferenceManager.setRenderer(context, r)
+                            scope.launch(Dispatchers.IO) { WineEnvFile.applyRenderer(context, r) }
+                        }
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        if (isAdreno)
+                            "Applies to plugin editors opened after this change. Remove and re-add a plugin (or restart the app) to switch a running one."
+                        else
+                            "This device has no Adreno GPU — only software rendering is available.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(Modifier.height(20.dp))
+                }
                 item {
                     Text(
                         "Imported VSTs",
@@ -354,6 +392,44 @@ fun VstManagerScreen(onNavigateBack: () -> Unit) {
                     "Imported plugins appear under author \"Varcain\" in the Plugin " +
                     "Browser after the audio engine restarts.",
                     style = MaterialTheme.typography.bodySmall
+                )
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun RendererDropdown(
+    options: List<Renderer>,
+    selected: Renderer,
+    onSelected: (Renderer) -> Unit
+) {
+    var expanded by remember { mutableStateOf(false) }
+    ExposedDropdownMenuBox(
+        expanded = expanded,
+        onExpandedChange = { expanded = it }
+    ) {
+        OutlinedTextField(
+            value = selected.label,
+            onValueChange = {},
+            readOnly = true,
+            modifier = Modifier
+                .fillMaxWidth()
+                .menuAnchor(),
+            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) }
+        )
+        ExposedDropdownMenu(
+            expanded = expanded,
+            onDismissRequest = { expanded = false }
+        ) {
+            options.forEach { renderer ->
+                DropdownMenuItem(
+                    text = { Text(renderer.label) },
+                    onClick = {
+                        onSelected(renderer)
+                        expanded = false
+                    }
                 )
             }
         }

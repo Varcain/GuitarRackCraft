@@ -8,6 +8,8 @@ package com.varcain.guitarrackcraft
 import android.app.Application
 import android.util.Log
 import com.varcain.guitarrackcraft.engine.NativeEngine
+import com.varcain.guitarrackcraft.engine.RendererPreferenceManager
+import com.varcain.guitarrackcraft.engine.WineEnvFile
 import com.varcain.guitarrackcraft.ui.vst.VstHostSetup
 import com.varcain.guitarrackcraft.ui.vst.VstRegistry
 import kotlinx.coroutines.CoroutineScope
@@ -49,6 +51,14 @@ class VstHostApplication : Application() {
             val ok = VstHostSetup.ensureWineRoot(this@VstHostApplication)
             Log.i(TAG, "ensureWineRoot ok=$ok in ${System.currentTimeMillis() - t0} ms")
             if (!ok) return@launch
+            // Sync the chosen plugin-editor renderer into cache/wine_env.txt BEFORE
+            // any plugin can be activated (the wine subprocess is forked at
+            // activate() and reads the file then). Defaults to Turnip on Adreno,
+            // lavapipe elsewhere; preserves any other dev lines in the file.
+            WineEnvFile.applyRenderer(
+                this@VstHostApplication,
+                RendererPreferenceManager.getRenderer(this@VstHostApplication)
+            )
             // Re-seed each existing imported VST's prefix (idempotent).
             val entries = VstRegistry.read(this@VstHostApplication)
             for (e in entries) {
