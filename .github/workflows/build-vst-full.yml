@@ -574,6 +574,18 @@ jobs:
           ccache --set-config=compression=true
           ccache --zero-stats
 
+      # ── build-lavapipe (run inside the turnip phase below) links LLVM 18 via
+      #    meson's cmake method, which needs meson >= 1.4; ubuntu's apt ships 1.3.2.
+      #    Create the isolated venv meson at the path build-lavapipe-android.sh
+      #    auto-detects (.cache/meson-venv/bin/meson) — no system meson upgrade.
+      - name: Set up meson >= 1.4 for the lavapipe LLVM 18 build
+        run: |
+          sudo apt-get install -y --no-install-recommends python3-venv
+          python3 -m venv vsthost_lib/.cache/meson-venv
+          vsthost_lib/.cache/meson-venv/bin/pip install --quiet --upgrade pip
+          vsthost_lib/.cache/meson-venv/bin/pip install --quiet 'meson==1.7.2'
+          vsthost_lib/.cache/meson-venv/bin/meson --version
+
       # ── The cheap remainder of the vsthost pipeline against the restored
       #    component outputs: turnip fetch, libadrenotools (NDK CMake from the
       #    submodule → the Turnip HAL hook libs), vst_host/vst3_host/uihost
