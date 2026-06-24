@@ -538,9 +538,15 @@ void WineHostProcess::setupWineEnvChild(const Config& cfg) {
      * See vstpocIsPluginPrefix + feedback_wm_throttle_chromium_tax. Read once
      * by the shared-per-prefix wineserver — kill wineserver to apply. */
     const bool vstpocPluginPfx = vstpocIsPluginPrefix(cfg.winePrefix);
-    ::setenv("WINE_VSTPOC_COALESCE_POSTS",   vstpocPluginPfx ? "1"   : "0", 1);
-    ::setenv("WINE_VSTPOC_USER_STORM_BREAK", vstpocPluginPfx ? "500" : "0", 1);
-    ::setenv("WINE_VSTPOC_POST_GAP_MS",      vstpocPluginPfx ? "50"  : "0", 1);
+    /* vstpoc 0061: the kernel-object-wait sent-message drain is the REAL fix for the
+     * JUCE WaitableEvent cross-thread deadlock (TH-U), confirmed with the throttle OFF
+     * — so the WM-storm THROTTLE is now disabled by default (it was only a probability
+     * dial for that deadlock and taxes Chromium/Electron ~100x). The drain is GUI-gated
+     * (TEB server_queue) + plugin-prefix-gated. See feedback_thu_deep_deadlock. */
+    ::setenv("WINE_VSTPOC_DRAIN_KERNEL_WAIT", vstpocPluginPfx ? "1" : "0", 1);
+    ::setenv("WINE_VSTPOC_COALESCE_POSTS",   "0", 1);
+    ::setenv("WINE_VSTPOC_USER_STORM_BREAK", "0", 1);
+    ::setenv("WINE_VSTPOC_POST_GAP_MS",      "0", 1);
     /* vstpoc: registry open-handle cache (ntdll patch 0053). Heavy IK plugins
      * (AmpliTube 5) re-open the same key chain (HKLM\SOFTWARE\IK Multimedia\
      * AmpliTube 5) and re-query their license serial ~7000x/sec as a runtime
@@ -1144,10 +1150,14 @@ bool WineHostProcess::start() {
          * OFF (Chromium msg-pump tax). MUST match the setupWineEnvChild copy
          * above (the dual-env-block trap). See feedback_wm_throttle_chromium_tax. */
         const bool vstpocPluginPfx = vstpocIsPluginPrefix(cfg_.winePrefix);
-        ::setenv("WINE_VSTPOC_COALESCE_POSTS",   vstpocPluginPfx ? "1"   : "0", 1);
-        ::setenv("WINE_VSTPOC_USER_STORM_BREAK", vstpocPluginPfx ? "500" : "0", 1);
+        /* vstpoc 0061: drain is the real JUCE-WaitableEvent deadlock fix → WM-storm
+         * throttle now disabled by default. MUST match the setupWineEnvChild copy
+         * above (dual-env-block trap). See feedback_thu_deep_deadlock. */
+        ::setenv("WINE_VSTPOC_DRAIN_KERNEL_WAIT", vstpocPluginPfx ? "1" : "0", 1);
+        ::setenv("WINE_VSTPOC_COALESCE_POSTS",   "0", 1);
+        ::setenv("WINE_VSTPOC_USER_STORM_BREAK", "0", 1);
         ::setenv("WINE_VSTPOC_TIMER_GAP_MS",   "0", 1);  /* patch 029 off (code not ported) */
-        ::setenv("WINE_VSTPOC_POST_GAP_MS",      vstpocPluginPfx ? "50"  : "0", 1);
+        ::setenv("WINE_VSTPOC_POST_GAP_MS",      "0", 1);
         /* vstpoc: registry open-handle cache (ntdll patch 0053) — non-plugin
          * (e/installer) prefixes ON, v-prefix plugins OFF. MUST match the
          * setupWineEnvChild copy above (dual-env-block trap). Kills AmpliTube's

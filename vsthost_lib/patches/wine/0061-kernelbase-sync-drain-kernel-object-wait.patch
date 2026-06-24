@@ -1,0 +1,161 @@
+From: Kamil Lulko <limakzagan@gmail.com>
+Subject: kernelbase/sync: drain sent-messages on the kernel-object wait (JUCE WaitableEvent deadlock)
+
+Extends patch 0015's sent-message drain from the futex/CV wait path
+(RtlWaitOnAddress / RtlSleepConditionVariableSRW = JUCE CriticalSection / condvar)
+to the kernel-object wait path (NtWaitForSingleObject = JUCE WaitableEvent::wait()),
+which 0015 never touched. A GUI thread parked in an INFINITE WaitForSingleObject,
+waiting for a signal from a sibling that is itself blocked SendMessage-ing back to
+it, never services the send -> both hang. This is the TH-U editor deadlock: latent
+on native x86 wine, exposed by FEX's slower timing (proven by elimination + native
+A/B; see feedback_thu_deep_deadlock).
+
+For a GUI thread only (server_queue != NULL, a pure TEB read -- MANDATORY so the
+NtUserPeekMessage drain never CREATES a queue on an audio thread) doing an INFINITE
+wait in a plugin prefix (env WINE_VSTPOC_DRAIN_KERNEL_WAIT), poll at 200ms and drain
+queued cross-thread sent-messages each tick via win32u NtUserPeekMessage. The waited
+object stays in the set every iteration so a signal landing in the drain gap is
+observed by the next wait (events hold their signal). Reuses 0015's stack-headroom
+guard. getenv is unavailable in kernelbase (-nodefaultlibs) so the env is read via
+GetEnvironmentVariableA.
+
+Confirmed 2026-06-24: with the WM-storm throttle OFF and only this drain ON, the
+TH-U editor deadlock no longer reproduces -- the drain alone is the fix, superseding
+the storm-throttle probability dial.
+diff --git a/dlls/kernelbase/sync.c b/dlls/kernelbase/sync.c
+index 94036acfad4..e02aa0ce5ac 100644
+--- a/dlls/kernelbase/sync.c
++++ b/dlls/kernelbase/sync.c
+@@ -398,6 +398,100 @@ DWORD WINAPI DECLSPEC_HOTPATCH WaitForSingleObject( HANDLE handle, DWORD timeout
+ }
+ 
+ 
++/* ===== vstpoc patch 0061: drain cross-thread sent messages while a GUI thread
++ * blocks INFINITELY on a kernel object (JUCE WaitableEvent / WaitForSingleObject).
++ * Mirrors patch 0015's drain on the CV / RtlWaitOnAddress path. Under FEX, TH-U
++ * (and JUCE editors generally) can deadlock when one UI thread parks in an
++ * infinite NtWaitForSingleObject waiting for a signal from a sibling that is
++ * itself blocked SendMessage-ing back to the waiter: the waiter never services
++ * the sent message, the sender never returns to signal. 0015 fixes the futex/CV
++ * variant; this fixes the kernel-object variant. Gated to GUI threads (queue
++ * already owned) in plugin prefixes via WINE_VSTPOC_DRAIN_KERNEL_WAIT. See
++ * feedback_thu_deep_deadlock and the 0015 asymmetry. ===== */
++typedef int VSTPOC_KMSG_t[16]; /* opaque, >= sizeof(MSG) */
++typedef BOOL (WINAPI *PFN_vstpoc_kpeek)(VSTPOC_KMSG_t *, HWND, UINT, UINT, UINT);
++
++static BOOL vstpoc_kdrain_enabled(void)
++{
++    static int cached = -1;
++    if (cached < 0)
++    {
++        char buf[8];
++        DWORD n = GetEnvironmentVariableA( "WINE_VSTPOC_DRAIN_KERNEL_WAIT", buf, sizeof(buf) );
++        cached = (n > 0 && n < sizeof(buf) && buf[0] != '0') ? 1 : 0;
++    }
++    return cached;
++}
++
++/* Pure TEB read: true once this thread owns a message queue (= GUI thread), so
++ * the NtUserPeekMessage drain never *creates* a queue on an audio/worker thread
++ * (which would turn it into a GUI thread and tax the audio path). user_thread_info
++ * lives in TEB->Win32ClientInfo with client_info (struct ntuser_thread_info) at
++ * offset 0 and server_queue right after it; layout pinned to wine 11.9
++ * (include/ntuser.h struct ntuser_thread_info + dlls/win32u/ntuser_private.h). */
++static BOOL vstpoc_thread_is_gui(void)
++{
++    struct vstpoc_nti {                /* mirror of struct ntuser_thread_info */
++        DWORD  message_time, message_pos;
++        UINT64 message_extra;
++        DWORD  msg_source[2];          /* INPUT_MESSAGE_SOURCE */
++        WORD   recursion_count;
++        UINT   receive_flags, top_window, msg_window, dpi_context, default_imc;
++        UINT64 client_imm, wmchar_data;
++    };
++    struct vstpoc_uti { struct vstpoc_nti client_info; HANDLE server_queue; } *ui;
++    ui = (struct vstpoc_uti *)NtCurrentTeb()->Win32ClientInfo;
++    return ui && ui->server_queue != NULL;
++}
++
++static inline BOOL vstpoc_kdrain_gui_now( const LARGE_INTEGER *timeout )
++{
++    /* only INFINITE waits (timeout == NULL) are deadlock candidates */
++    return !timeout && vstpoc_kdrain_enabled() && vstpoc_thread_is_gui();
++}
++
++static void vstpoc_kdrain_sent_messages(void)
++{
++    static PFN_vstpoc_kpeek peek;
++    static BOOL tried;
++    TEB *teb = NtCurrentTeb();
++    char local;
++    /* stack-headroom guard (0015): the peek dispatches a WindowProc that can
++     * re-block and recurse ~32KB/level; stop ~1MB before the guard page. */
++    if (teb && teb->DeallocationStack &&
++        (ULONG_PTR)&local < (ULONG_PTR)teb->DeallocationStack + 0x100000)
++        return;
++    if (!tried)
++    {
++        HMODULE win32u;
++        tried = TRUE;
++        if ((win32u = GetModuleHandleW( L"win32u.dll" )))
++            peek = (PFN_vstpoc_kpeek)GetProcAddress( win32u, "NtUserPeekMessage" );
++    }
++    if (peek) { VSTPOC_KMSG_t dummy; peek( &dummy, NULL, 0, 0, 0 ); }
++}
++
++/* Poll an INFINITE kernel-object wait at 200ms and drain queued cross-thread
++ * sent messages each tick so a SendMessage to this thread can complete and
++ * unwedge the cycle. The waited handles stay in the set every iteration, so a
++ * signal landing in the drain gap is observed by the next wait (events hold
++ * their signal). Only reached via vstpoc_kdrain_gui_now(). */
++static NTSTATUS vstpoc_wait_draining_infinite( DWORD count, const HANDLE *handles,
++                                               BOOLEAN wait_all, BOOLEAN alertable )
++{
++    NTSTATUS status;
++    LARGE_INTEGER poll;
++    poll.QuadPart = -2000000LL; /* 200ms */
++    for (;;)
++    {
++        status = NtWaitForMultipleObjects( count, handles, wait_all ? WaitAll : WaitAny,
++                                           alertable, &poll );
++        if (status != STATUS_TIMEOUT) return status;
++        vstpoc_kdrain_sent_messages();
++    }
++}
++/* ===== end vstpoc 0061 ===== */
++
+ /***********************************************************************
+  *           WaitForSingleObjectEx   (kernelbase.@)
+  */
+@@ -405,9 +499,13 @@ DWORD WINAPI DECLSPEC_HOTPATCH WaitForSingleObjectEx( HANDLE handle, DWORD timeo
+ {
+     NTSTATUS status;
+     LARGE_INTEGER time;
++    HANDLE h = normalize_std_handle( handle );
++    const LARGE_INTEGER *t = get_nt_timeout( &time, timeout );
+ 
+-    status = NtWaitForSingleObject( normalize_std_handle( handle ), alertable,
+-                                    get_nt_timeout( &time, timeout ) );
++    if (vstpoc_kdrain_gui_now( t ))
++        status = vstpoc_wait_draining_infinite( 1, &h, FALSE, alertable );
++    else
++        status = NtWaitForSingleObject( h, alertable, t );
+ 
+     if (NT_ERROR(status))
+     {
+@@ -446,8 +544,13 @@ DWORD WINAPI DECLSPEC_HOTPATCH WaitForMultipleObjectsEx( DWORD count, const HAND
+     }
+     for (i = 0; i < count; i++) hloc[i] = normalize_std_handle( handles[i] );
+ 
+-    status = NtWaitForMultipleObjects( count, hloc, wait_all ? WaitAll : WaitAny, alertable,
+-                                       get_nt_timeout( &time, timeout ) );
++    {
++        const LARGE_INTEGER *t = get_nt_timeout( &time, timeout );
++        if (vstpoc_kdrain_gui_now( t ))
++            status = vstpoc_wait_draining_infinite( count, hloc, wait_all, alertable );
++        else
++            status = NtWaitForMultipleObjects( count, hloc, wait_all ? WaitAll : WaitAny, alertable, t );
++    }
+     if (NT_ERROR(status))
+     {
+         SetLastError( RtlNtStatusToDosError(status) );
