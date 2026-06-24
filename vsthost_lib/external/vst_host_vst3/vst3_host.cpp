@@ -1462,6 +1462,15 @@ static DWORD WINAPI editor_thread_proc(LPVOID arg)
     uint64_t wm_user_window = 0;
     uint64_t wm_paint_total = 0;
     DWORD window_start = GetTickCount();
+    /* vstpoc: on a native compositing desktop (e.g. KWin) the editor's repaint
+     * is not pushed to screen until the next event flushes wine's X buffer, so
+     * the UI "needs a kick" to display an earlier action. VSTPOC_FORCE_FLUSH
+     * forces deferred paints to render + flushes wine's X connection each pump
+     * cycle. OFF by default: on Android the editor is presented by a continuous
+     * 60fps render-thread loop (X11NativeDisplay), so it never has this deferral
+     * and per-cycle forced repaints would only waste CPU. */
+    const char *ff_env = getenv("VSTPOC_FORCE_FLUSH");
+    bool force_flush = (ff_env && *ff_env && *ff_env != '0');
     while (!(g_shm && g_shm->stop_flag)) {
         while (PeekMessageA(&msg, NULL, 0, 0, PM_REMOVE)) {
             if (msg.message == WM_PAINT) {
@@ -1483,7 +1492,16 @@ static DWORD WINAPI editor_thread_proc(LPVOID arg)
             wm_user_window = 0;
             window_start = now;
         }
-        Sleep(5);
+        if (force_flush) {
+            /* Wake promptly on input and flush wine's X request buffer each cycle
+             * so a compositing WM (KWin) repaints without waiting for the next
+             * event — instead of Sleep(5), which never flushes. NO forced
+             * WM_PAINT: TH-U's editor renders on its own GL present thread, and
+             * RedrawWindow(RDW_ALLCHILDREN) into it crashes the plugin. */
+            MsgWaitForMultipleObjectsEx(0, NULL, 5, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
+        } else {
+            Sleep(5);
+        }
     }
 
     LOG("editor: closing view\n");
