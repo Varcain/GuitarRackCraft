@@ -872,7 +872,53 @@ bool WineHostProcess::start() {
         cfg_.primaryExe,
     };
     if (!cfg_.shmPath.empty()) argv_owned.push_back(cfg_.shmPath);
-    for (const auto& p : cfg_.pluginPaths) argv_owned.push_back(p);
+    /* vstpoc 2026-06-25: stage user plugins onto the C: drive (drive_c) and pass a
+     * C:\ path instead of the unix path wine otherwise sees as Z:. A plugin that
+     * probes its own volume — GetVolumeInformationA(<drive root>) — FAILS on Android's
+     * Z: because Z: maps to the real root "/", which the untrusted_app SELinux sandbox
+     * cannot open (NtOpenFile("/")→denied → GVI returns 0); the plugin then self-
+     * disables (6505Red: skips constructing its core singleton → VSTPluginMain+0x3c
+     * NULL deref → c0000005). C: maps to the app-owned drive_c, which IS openable, so
+     * GVI succeeds (device-validated). Hardlink (same fs → no copy) into
+     * drive_c/vstplugins/<uid>/; fall back to a copy across fs, or to the raw Z: path
+     * if staging fails. Per-<uid> subdir avoids collisions in a chain (every imported
+     * plugin is named "plugin.dll"). Stages the DLL only (current import flow is
+     * single-DLL); a multi-file plugin would need its whole dir. Harmless for
+     * non-probing plugins. See reference_6505red_copy_protected. */
+    for (const auto& p : cfg_.pluginPaths) {
+        std::string arg = p;
+        if (!cfg_.winePrefix.empty() && p.size() > 1 && p[0] == '/') {
+            const auto sl = p.find_last_of('/');
+            const std::string base   = p.substr(sl + 1);
+            const std::string parent = p.substr(0, sl);
+            const auto psl = parent.find_last_of('/');
+            const std::string uid = (psl == std::string::npos) ? std::string("0")
+                                                               : parent.substr(psl + 1);
+            const std::string vdir   = cfg_.winePrefix + "/drive_c/vstplugins";
+            const std::string sdir   = vdir + "/" + uid;
+            const std::string staged = sdir + "/" + base;
+            ::mkdir(vdir.c_str(), 0700);
+            ::mkdir(sdir.c_str(), 0700);
+            ::unlink(staged.c_str());                      /* idempotent; handles re-import */
+            bool ok = (::link(p.c_str(), staged.c_str()) == 0);
+            if (!ok) {                                     /* cross-fs: copy */
+                const int in  = ::open(p.c_str(), O_RDONLY);
+                const int out = ::open(staged.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0600);
+                if (in >= 0 && out >= 0) {
+                    char buf[65536]; ssize_t n; ok = true;
+                    while ((n = ::read(in, buf, sizeof buf)) > 0)
+                        if (::write(out, buf, n) != n) { ok = false; break; }
+                    if (n < 0) ok = false;
+                }
+                if (in  >= 0) ::close(in);
+                if (out >= 0) ::close(out);
+            }
+            if (ok) arg = "C:\\vstplugins\\" + uid + "\\" + base;
+            else LOGE("WineHostProcess: failed to stage plugin %s on C: (%s); using Z: "
+                      "path — volume-probing plugins may crash", p.c_str(), std::strerror(errno));
+        }
+        argv_owned.push_back(arg);
+    }
     for (const auto& a : cfg_.extraArgs)   argv_owned.push_back(a);
 
     const std::string hostLog = cfg_.logSuffix.empty()
