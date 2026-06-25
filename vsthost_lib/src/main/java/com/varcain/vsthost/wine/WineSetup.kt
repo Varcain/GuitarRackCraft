@@ -130,6 +130,9 @@ object WineSetup {
         seedCryptoOids(ctx, winePrefix)  // Cryptography\OID function table (SHA256 catalog verify) for signature-checking installers
         seedWinTrust(ctx, winePrefix)    // wintrust trust providers + root certs (WinVerifyTrust on signed catalogs / drivers)
         seedComClasses(winePrefix)
+        seedWicDecoders(winePrefix)    // WIC PNG/JPEG/etc. decoders → plugin skins decode (6505Red white editor)
+        seedWicMetadataReaders(winePrefix)  // WIC PNG metadata chunk readers → plugins reading PNG metadata don't crash (6505Red)
+        seedWow64ClassesLink(winePrefix)  // REG_LINK so 32-bit plugins can SEE the Wow6432Node\Classes seeds above
         seedWow64Emulator(winePrefix)  // wine 11.x: point ARM64EC/wow64 at FEX
         seedDisableCrashDialog(winePrefix)  // no winedbg popup on subprocess crashes
         seedOleMarshalers(ctx, winePrefix)  // ole32 PSFactory + OLE/DCOM interface proxy-stubs (IRemUnknown etc.) for cross-process COM (iLok install)
@@ -160,7 +163,7 @@ object WineSetup {
         winePrefix.parentFile?.listFiles { f ->
             f.isDirectory && f.name.startsWith("wineprefix_")
         }?.forEach { p ->
-            seedCryptoProviders(p); seedComClasses(p); seedFonts(ctx, p); seedUserFolders(ctx, p)
+            seedCryptoProviders(p); seedComClasses(p); seedWicDecoders(p); seedWicMetadataReaders(p); seedWow64ClassesLink(p); seedFonts(ctx, p); seedUserFolders(ctx, p)
             seedOleMarshalers(ctx, p)  // cross-process COM proxy-stubs (reach prefixes cloned before this seed)
             seedCryptoOids(ctx, p)     // Cryptography\OID table (reach prefixes cloned before this seed)
             seedWinTrust(ctx, p)       // wintrust providers + root certs (reach prefixes cloned before this seed)
@@ -1121,6 +1124,180 @@ object WineSetup {
         }
         systemReg.appendText(sb.toString())
         Log.i(TAG, "seeded COM class registrations in ${winePrefix.name}/system.reg")
+    }
+
+    /** Register the WIC bitmap decoders (PNG/JPEG/BMP/GIF/TIFF/ICO) into the prefix.
+     *  wine.inf is absent from our minimal tree, so wineboot never ran the built-in
+     *  windowscodecs COM/category registrations ("failed to update … wine.inf" in
+     *  every log). Without them, WICImagingFactory::CreateDecoder enumerates the
+     *  CATID_WICBitmapDecoders category, finds nothing whose ContainerFormat matches,
+     *  and returns null — so ANY plugin that loads its skin via WIC/GDI+
+     *  (GdipLoadImageFromStream) gets a null bitmap and falls back to a bare render.
+     *  6505Red showed only its own vector "graph-paper" grid because its 4 embedded
+     *  PNG skins never decoded. windowscodecs.dll itself ships (built with libpng);
+     *  it just needs registering. Same class as seedComClasses, but WIC needs the
+     *  fuller schema that dlls/windowscodecs/regsvr.c::register_decoders writes: the
+     *  "ContainerFormat" value (what CreateDecoder matches on — load-bearing) plus the
+     *  CATID_WICBitmapDecoders\Instance\<clsid> entry so the enumerator finds it.
+     *  Purely additive registry entries for a shipped built-in DLL → safe for all
+     *  plugins. See reference_6505red_copy_protected + feedback_com_class_registration_seed. */
+    private fun seedWicDecoders(winePrefix: File) {
+        val systemReg = File(winePrefix, "system.reg")
+        if (!systemReg.exists()) return
+        val catid = "7ed96837-96f0-4812-b211-f13c24117ed3"      // CATID_WICBitmapDecoders
+        val marker = "Wow6432Node\\\\CLSID\\\\{$catid}\\\\Instance\\\\{389ea17b" // 32-bit PNG instance = dual-view seeded
+        if (systemReg.readText().contains(marker)) return
+        val now = System.currentTimeMillis() / 1000
+        val vendorMs = "{f0e749ca-edef-4589-a73a-ee0e626a2a2b}"  // GUID_VendorMicrosoft
+        // clsid, container-format guid, friendly name, mime types, file extensions
+        data class Dec(val clsid: String, val container: String, val name: String, val mime: String, val ext: String)
+        val decoders = listOf(
+            Dec("389ea17b-5078-4cde-b6ef-25c15175c751", "1b7cfaf4-713f-473c-bbcd-6137425faeaf", "PNG Decoder",  "image/png",  ".png"),
+            Dec("9456a480-e88b-43ea-9e73-0b2d9b71b1ca", "19e4a5aa-5662-4fc5-a0c0-1758028e1057", "JPEG Decoder", "image/jpeg", ".jpeg,.jpe,.jpg,.jfif,.exif"),
+            Dec("6b462062-7cbf-400d-9fdb-813dd10f2778", "0af1d87e-fcfe-4188-bdeb-a7906471cbe3", "BMP Decoder",  "image/bmp",  ".bmp,.dib,.rle"),
+            Dec("381dda3c-9ce9-4834-a23e-1f98f8fc52be", "1f8a5601-7d4d-4cbd-9c82-1bc8d4eeb9a5", "GIF Decoder",  "image/gif",  ".gif"),
+            Dec("b54e85d9-fe23-499f-8b88-6acea713752b", "163bcc30-e2e9-4f0b-961d-a3e9fdb788a3", "TIFF Decoder", "image/tiff,image/tif", ".tiff,.tif"),
+            Dec("c61bfcdf-2e0f-4aad-a8d7-e06bafebcdfe", "a3a860c4-338f-4c17-919a-fba4b5628f21", "ICO Decoder",  "image/ico,image/x-icon", ".ico,.icon"),
+        )
+        val sb = StringBuilder("\n")
+        // Write BOTH the 64-bit (CLSID) and 32-bit (Wow6432Node\CLSID) views. 6505Red is a
+        // 32-bit (i386) plugin, and wine redirects a WoW64 process's COM/registry lookups to
+        // the Wow6432Node view (server/registry.c). The 64-bit-only seed (like seedComClasses,
+        // fine for 64-bit editors) is invisible to it → CreateDecoder COMPONENTNOTFOUND → the
+        // plugin's vector-grid fallback. Same dual-view need as seedCryptoProvidersFull.
+        val views = listOf("Software\\\\Classes\\\\CLSID", "Software\\\\Classes\\\\Wow6432Node\\\\CLSID")
+        for (view in views) for (d in decoders) {
+            // CLSID key + metadata — "ContainerFormat" is what CreateDecoder matches on.
+            sb.append("[$view\\\\{${d.clsid}}] $now\n")
+            sb.append("@=\"${d.name}\"\n")
+            sb.append("\"ContainerFormat\"=\"{${d.container}}\"\n")
+            sb.append("\"Vendor\"=\"$vendorMs\"\n")
+            sb.append("\"MimeTypes\"=\"${d.mime}\"\n")
+            sb.append("\"FileExtensions\"=\"${d.ext}\"\n\n")
+            // InprocServer32 → the shipped codec DLL.
+            sb.append("[$view\\\\{${d.clsid}}\\\\InprocServer32] $now\n")
+            sb.append("@=\"C:\\\\windows\\\\system32\\\\windowscodecs.dll\"\n")
+            sb.append("\"ThreadingModel\"=\"Both\"\n\n")
+            // Category Instance → so the WICImagingFactory enumerator finds it.
+            sb.append("[$view\\\\{$catid}\\\\Instance\\\\{${d.clsid}}] $now\n")
+            sb.append("@=\"${d.name}\"\n")
+            sb.append("\"CLSID\"=\"{${d.clsid}}\"\n\n")
+        }
+        systemReg.appendText(sb.toString())
+        Log.i(TAG, "seeded WIC bitmap decoders in ${winePrefix.name}/system.reg")
+    }
+
+    /** Create the WoW64 `HKLM\Software\Wow6432Node\Classes` registry SYMLINK that
+     *  wine.inf's [Wow64] section installs (loader/wine.inf.in L1149) — absent here
+     *  because wine.inf never ran in our minimal prefix. A 32-bit (WoW64) process's
+     *  access to HKLM\Software\Classes (i.e. HKCR) is redirected to
+     *  Software\Wow6432Node\Classes, which MUST be a REG_LINK pointing at
+     *  \Registry\Machine\Software\Classes\Wow6432Node (the real 32-bit class storage).
+     *  Without that symlink the key is a bare empty node, so a 32-bit plugin sees NO
+     *  class registrations at all — which is why [seedWicDecoders]' correctly-placed
+     *  Software\Classes\Wow6432Node\CLSID entries stayed invisible and 6505Red's
+     *  WICImagingFactory::CreateDecoder returned COMPONENTNOTFOUND (skin PNGs never
+     *  decoded → vector-grid fallback). A symlink is a REG_LINK (`#link`) value the
+     *  plain-text seeders can't emit, so we generate the UTF-16LE hex(6) target (no
+     *  trailing NUL — matches wine's on-disk symlinks) and convert the bare key in
+     *  place. See reference_6505red_copy_protected. */
+    private fun seedWow64ClassesLink(winePrefix: File) {
+        val systemReg = File(winePrefix, "system.reg")
+        if (!systemReg.exists()) return
+        val orig = systemReg.readText()
+        var text = orig
+        // SCRUB residue from the pre-fix buggy seed (the Regex.replace backslash-collapse, since
+        // fixed). Runs even on already-symlinked prefixes so corrupted ones self-heal:
+        //  (a) the malformed SINGLE-backslash [Software\Wow6432Node\Classes] block — wine parses it
+        //      as a garbage key; on some prefixes the wineserver turned it into a self-link on the
+        //      real 32-bit storage that killed the whole Wow6432Node\CLSID subtree (3504 errors);
+        //  (b) defensively, a #link wrongly left on the real storage [Software\\Classes\\Wow6432Node].
+        // (a) matches one backslash (`\\` in a raw regex), so it can't hit the correct double-bs key.
+        text = text.replace(Regex("""\[Software\\Wow6432Node\\Classes\][^\[]*?\n\n"""), "")
+        text = text.replace(
+            Regex("""(\[Software\\\\Classes\\\\Wow6432Node\] \d+\r?\n(?:#time=[0-9a-fA-F]+\r?\n)?)#link\r?\n"SymbolicLinkValue"=[^\[]*?\n\n"""),
+            "$1\n")
+        // Ensure the correct symlink exists (skip if the Classes key block already carries a #link).
+        if (!Regex("""\[Software\\\\Wow6432Node\\\\Classes\][^\[]*#link""").containsMatchIn(text)) {
+            val now = System.currentTimeMillis() / 1000
+            val target = "\\Registry\\Machine\\Software\\Classes\\Wow6432Node"
+            val hex = target.toByteArray(Charsets.UTF_16LE).joinToString(",") { "%02x".format(it.toInt() and 0xFF) }
+            val block = "[Software\\\\Wow6432Node\\\\Classes] $now\n#link\n\"SymbolicLinkValue\"=hex(6):$hex\n"
+            // Convert the existing bare key (key line + optional #time) in place; else append.
+            // NB: lambda form of replace() — the (text, String) overload interprets '\' and '$' in
+            // the replacement, collapsing the path's '\\'→'\' and corrupting the key (the very bug
+            // whose residue we scrub above).
+            val bareRe = Regex("""\[Software\\\\Wow6432Node\\\\Classes\] \d+\r?\n(#time=[0-9a-fA-F]+\r?\n)?""")
+            text = if (bareRe.containsMatchIn(text)) bareRe.replace(text) { block } else text.trimEnd() + "\n\n" + block
+        }
+        if (text == orig) return
+        systemReg.writeText(text)
+        Log.i(TAG, "seeded/repaired WoW64 Classes registry symlink in ${winePrefix.name}/system.reg")
+    }
+
+    /** Register the WIC PNG metadata chunk readers (cHRM/gAMA/hIST/tEXt/tIME/bKGD) that
+     *  windowscodecs' DllRegisterServer installs (regsvr.c register_metadatareaders) — absent
+     *  here for the same reason as the decoders (wine.inf/regsvr32 never ran). With the decoders
+     *  now resolving (see [seedWicDecoders] + [seedWow64ClassesLink]), a plugin that reads a PNG's
+     *  metadata calls ComponentFactory::CreateMetadataReaderFromContainer, which enumerates
+     *  CATID_WICMetadataReader, matches the container (PNG) + the chunk's byte pattern, and
+     *  CoCreateInstance's the reader. Unregistered → it returns 0x80070002 and 6505Red dereferences
+     *  the NULL → 0xc0000005. We seed each reader's CLSID + metadata, InprocServer32, the
+     *  Containers\{PNG}\0 byte-pattern (the 4-byte chunk name at offset 4), and the
+     *  CATID_WICMetadataReader Instance — in BOTH views (32-bit 6505Red resolves via Wow6432Node).
+     *  Mirrors [seedWicDecoders]. */
+    private fun seedWicMetadataReaders(winePrefix: File) {
+        val systemReg = File(winePrefix, "system.reg")
+        if (!systemReg.exists()) return
+        val catid = "05af94d8-7174-4cd2-be4a-4124b80ee4b8"  // CATID_WICMetadataReader
+        val png = "1b7cfaf4-713f-473c-bbcd-6137425faeaf"    // GUID_ContainerFormatPng
+        val marker = "Instance\\\\{4b59afcc"                 // the tEXt reader instance = seeded
+        if (systemReg.readText().contains(marker)) return
+        val now = System.currentTimeMillis() / 1000
+        val vendorMs = "{f0e749ca-edef-4589-a73a-ee0e626a2a2b}"  // GUID_VendorMicrosoft
+        // clsid, metadata-format guid, PNG chunk name (the 4-byte match pattern)
+        data class Rdr(val clsid: String, val format: String, val chunk: String)
+        val readers = listOf(
+            Rdr("f90b5f36-367b-402a-9dd1-bc0fd59d8f62", "9db3655b-2842-44b3-8067-12e9b375556a", "cHRM"),
+            Rdr("3692ca39-e082-4350-9e1f-3704cb083cd5", "f00935a5-1d5d-4cd1-81b2-9324d7eca781", "gAMA"),
+            Rdr("877a0bb7-a313-4491-87b5-2e6d0594f520", "c59a82da-db74-48a4-bd6a-b69c4931ef95", "hIST"),
+            Rdr("4b59afcc-b8c3-408a-b670-89e5fab6fda7", "568d8936-c0a9-4923-905d-df2b38238fbc", "tEXt"),
+            Rdr("d94edf02-efe5-4f0d-85c8-f5a68b3000b1", "6b00ae2d-e24b-460a-98b6-878bd03072fd", "tIME"),
+            Rdr("0ce7a4a6-03e8-4a60-9d15-282ef32ee7da", "e14d3571-6b47-4dea-b60a-87ce0a78dfb7", "bKGD"),
+        )
+        val views = listOf("Software\\\\Classes\\\\CLSID", "Software\\\\Classes\\\\Wow6432Node\\\\CLSID")
+        val sb = StringBuilder("\n")
+        for (view in views) for (r in readers) {
+            val name = "Chunk ${r.chunk} Reader"
+            val patHex = r.chunk.toByteArray(Charsets.US_ASCII).joinToString(",") { "%02x".format(it.toInt() and 0xFF) }
+            // CLSID key + reader metadata ("MetadataFormat" identifies it to the factory).
+            sb.append("[$view\\\\{${r.clsid}}] $now\n")
+            sb.append("@=\"$name\"\n")
+            sb.append("\"Author\"=\"The Wine Project\"\n")
+            sb.append("\"FriendlyName\"=\"$name\"\n")
+            sb.append("\"Vendor\"=\"$vendorMs\"\n")
+            sb.append("\"MetadataFormat\"=\"{${r.format}}\"\n")
+            sb.append("\"Version\"=\"1.0.0.0\"\n")
+            sb.append("\"SpecVersion\"=\"1.0.0.0\"\n")
+            sb.append("\"RequiresFullStream\"=dword:00000000\n")
+            sb.append("\"SupportsPadding\"=dword:00000000\n\n")
+            // InprocServer32 → the shipped codec DLL.
+            sb.append("[$view\\\\{${r.clsid}}\\\\InprocServer32] $now\n")
+            sb.append("@=\"C:\\\\windows\\\\system32\\\\windowscodecs.dll\"\n")
+            sb.append("\"ThreadingModel\"=\"Both\"\n\n")
+            // Container byte-pattern: the PNG chunk name at offset 4 (mask all, data at +4).
+            sb.append("[$view\\\\{${r.clsid}}\\\\Containers\\\\{$png}\\\\0] $now\n")
+            sb.append("\"Position\"=dword:00000004\n")
+            sb.append("\"Pattern\"=hex:$patHex\n")
+            sb.append("\"Mask\"=hex:ff,ff,ff,ff\n")
+            sb.append("\"DataOffset\"=dword:00000004\n\n")
+            // CATID_WICMetadataReader Instance → so the enumerator finds it.
+            sb.append("[$view\\\\{$catid}\\\\Instance\\\\{${r.clsid}}] $now\n")
+            sb.append("@=\"$name\"\n")
+            sb.append("\"CLSID\"=\"{${r.clsid}}\"\n\n")
+        }
+        systemReg.appendText(sb.toString())
+        Log.i(TAG, "seeded WIC PNG metadata readers in ${winePrefix.name}/system.reg")
     }
 
     /** Symlink every PE DLL from <wineRoot>/lib/wine/aarch64-windows/ into
