@@ -17,6 +17,7 @@ import android.view.inputmethod.InputConnection
 import android.view.inputmethod.InputMethodManager
 import android.content.res.Configuration
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -64,13 +65,18 @@ fun PluginSurface(
 
     val isLandscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
     val aspect = pluginWidth.toFloat() / pluginHeight.toFloat()
-    Box(
+    BoxWithConstraints(
         modifier = if (isLandscape) modifier.fillMaxSize() else modifier.fillMaxWidth(),
         contentAlignment = Alignment.Center,
     ) {
+        // Fit-inside (letterbox), never fill-and-crop: match whichever viewport edge actually
+        // binds. A very wide editor (Anvil 892x210, aspect ~4.25) in landscape is wider than the
+        // viewport (~2.2), so match WIDTH; a taller-relative editor matches HEIGHT. Hardcoding
+        // matchHeightConstraintsFirst=true made wide editors overflow the width → zoomed+cropped.
+        val viewportAspect = maxWidth / maxHeight
         AndroidView(
             modifier = if (isLandscape) {
-                Modifier.fillMaxSize().aspectRatio(aspect, matchHeightConstraintsFirst = true)
+                Modifier.fillMaxSize().aspectRatio(aspect, matchHeightConstraintsFirst = aspect <= viewportAspect)
             } else {
                 Modifier.fillMaxWidth().aspectRatio(aspect)
             },
