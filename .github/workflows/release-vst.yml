@@ -372,6 +372,10 @@ jobs:
       contents: write
 
     steps:
+      - name: Free disk space
+        uses: jlumbroso/free-disk-space@main
+        with: { android: false, tool-cache: false, dotnet: true, haskell: true, large-packages: true, docker-images: true, swap-storage: true }
+
       # ── 1. Checkout & submodules ────────────────────────────────────────
       - name: Checkout
         uses: actions/checkout@v4
