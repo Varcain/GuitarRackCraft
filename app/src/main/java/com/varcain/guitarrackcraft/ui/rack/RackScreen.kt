@@ -1553,8 +1553,30 @@ fun PluginCard(
                 // attachSurface drains any prior render thread on re-attach.
                 if (isVstPlugin && com.varcain.guitarrackcraft.BuildConfig.HAS_VST_HOST &&
                     currentUiMode == UiType.X11) {
-                    Box(modifier = if (isFullscreen) Modifier.fillMaxSize() else Modifier.fillMaxWidth()) {
-                        com.varcain.guitarrackcraft.ui.vst.VstInlineEditor(pluginIndex, isFullscreen = isFullscreen)
+                    var vstUiReady by remember { mutableStateOf(false) }
+                    Box(
+                        modifier = if (isFullscreen) Modifier.fillMaxSize() else Modifier.fillMaxWidth(),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        // Mirror the LV2 X11 scale machinery: auto-scale tall/stompbox editors
+                        // down (defaultScaleForAspectRatio) and honor the user scale slider /
+                        // resize bar. Fullscreen ignores the scale (it fits the screen instead).
+                        val userScale = if (isFullscreen) 1f else if (x11UserScale.isNaN()) 1f else x11UserScale
+                        val effectiveScale = if (isFullscreen) 1f else userScale.coerceIn(0.3f, 1f)
+                        Box(modifier = if (isFullscreen) Modifier.fillMaxSize() else Modifier.fillMaxWidth(fraction = effectiveScale)) {
+                            com.varcain.guitarrackcraft.ui.vst.VstInlineEditor(
+                                pluginIndex,
+                                isFullscreen = isFullscreen,
+                                onPluginSizeKnown = { w, h ->
+                                    x11PluginNaturalW = w
+                                    x11PluginNaturalH = h
+                                    if (x11UserScale.isNaN()) {
+                                        x11UserScale = defaultScaleForAspectRatio(w, h)
+                                    }
+                                    vstUiReady = true
+                                }
+                            )
+                        }
                         if (isFullscreen) {
                             IconButton(
                                 onClick = onExitFullscreen,
@@ -1570,6 +1592,14 @@ fun PluginCard(
                                 )
                             }
                         }
+                    }
+                    // Resize handle — the scale "bar" below the VST editor, hidden in fullscreen.
+                    if (!isFullscreen && vstUiReady) {
+                        ResizeHandle(
+                            currentScale = if (x11UserScale.isNaN()) 1f else x11UserScale,
+                            onScaleChange = { x11UserScale = it },
+                            modifier = Modifier.align(Alignment.CenterHorizontally)
+                        )
                     }
                 }
 

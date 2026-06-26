@@ -40,7 +40,11 @@ import kotlinx.coroutines.delay
  * Modifier.aspectRatio for letterboxing.
  */
 @Composable
-fun VstInlineEditor(pluginIndex: Int, isFullscreen: Boolean = false) {
+fun VstInlineEditor(
+    pluginIndex: Int,
+    isFullscreen: Boolean = false,
+    onPluginSizeKnown: (width: Int, height: Int) -> Unit = { _, _ -> },
+) {
     val displayNumber = remember(pluginIndex) {
         runCatching {
             NativeEngine.getInstance().nativeGetRackPluginX11Display(pluginIndex)
@@ -72,6 +76,7 @@ fun VstInlineEditor(pluginIndex: Int, isFullscreen: Boolean = false) {
                 Log.i("VstInlineEditor", "plugin[$pluginIndex] editor size: ${w}x$h → display=$displayNumber")
                 NativeBridge.nativeSetX11PluginSize(displayNumber, w, h)
                 size = w to h
+                onPluginSizeKnown(w, h)
             } else {
                 delay(250)
             }
