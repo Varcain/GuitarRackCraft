@@ -61,7 +61,9 @@ data class PluginMetadata(
     val descriptions: Map<String, String>,
     val thumbnails: Map<String, String>,
     val authors: Map<String, String>,
-    val categories: Map<String, String>
+    val categories: Map<String, String>,
+    /** displayName (lowercased) -> is64Bit, for imported Windows VSTs from the registry. */
+    val archByName: Map<String, Boolean> = emptyMap()
 )
 
 object PluginCategoryMapping {
@@ -72,6 +74,7 @@ object PluginCategoryMapping {
     const val AUTHOR_AIDA_DSP = "Aida DSP"
     const val AUTHOR_BRUMMER10 = "brummer10"
     const val AUTHOR_UNKNOWN = "Unknown"
+    const val AUTHOR_WINDOWS_VST = "Windows VST"
 
     /** Maps LV2 plugin class names to display categories. */
     private val LV2_CLASS_TO_CATEGORY = mapOf(
@@ -114,7 +117,10 @@ object PluginCategoryMapping {
      * Determines the author for a plugin.
      * Currently identifies GxPlugins based on name prefix.
      */
-    fun getAuthor(pluginName: String, metadataAuthors: Map<String, String> = emptyMap()): String {
+    fun getAuthor(pluginName: String, format: String = "", metadataAuthors: Map<String, String> = emptyMap()): String {
+        // Windows VST plugins (VST2/VST3) group under their own "Windows VST" header,
+        // regardless of vendor metadata, instead of scattering into Unknown / per-vendor groups.
+        if (format == "VST2" || format == "VST3") return AUTHOR_WINDOWS_VST
         // Check metadata authors map first (case-insensitive)
         val normalizedName = pluginName.lowercase()
         metadataAuthors.entries.find { it.key.lowercase() == normalizedName }?.let {
@@ -224,31 +230,29 @@ class PluginBrowserViewModel(application: Application) : AndroidViewModel(applic
 
                 // Runtime overlay: imported VSTs (full flavor) live in
                 // filesDir/vst_plugins/registry.json and aren't in the static
-                // plugin_metadata.json. Stamp each displayName with author
-                // "Varcain". DO NOT append to `available` — the native engine
-                // already enumerates VSTs via the registered VstFactory, and
-                // adding to `available` flips the filter from "show all" to
-                // "show only listed", which hides every LV2 plugin.
+                // plugin_metadata.json. Extract each one's architecture (is64Bit ->
+                // x86/x64) for the arch badge; the author group is handled by
+                // getAuthor() returning "Windows VST" for VST formats. DO NOT append to
+                // `available` — the native engine already enumerates VSTs via the
+                // registered VstFactory, and adding to `available` flips the filter from
+                // "show all" to "show only listed", which hides every LV2 plugin.
+                val vstArch = mutableMapOf<String, Boolean>()
                 runCatching {
                     val regFile = java.io.File(appContext.filesDir, "vst_plugins/registry.json")
                     if (regFile.exists()) {
-                        val body = regFile.readText()
-                        val arr = JSONObject(body).optJSONArray("plugins")
+                        val arr = JSONObject(regFile.readText()).optJSONArray("plugins")
                         if (arr != null) {
                             for (i in 0 until arr.length()) {
                                 val obj = arr.optJSONObject(i) ?: continue
                                 val name = obj.optString("displayName").orEmpty()
-                                if (name.isNotEmpty()) {
-                                    authors[name] = "Varcain"
-                                }
+                                if (name.isNotEmpty()) vstArch[name.lowercase()] = obj.optBoolean("is64Bit", true)
                             }
-                            android.util.Log.i("PluginBrowser",
-                                "Tagged ${arr.length()} imported VST(s) under author 'Varcain'")
+                            android.util.Log.i("PluginBrowser", "Loaded arch for ${arr.length()} imported VST(s)")
                         }
                     }
                 }
 
-                pluginMetadata = PluginMetadata(descriptions, thumbnails, authors, categories)
+                pluginMetadata = PluginMetadata(descriptions, thumbnails, authors, categories, vstArch)
                 availablePlugins = available
 
                 android.util.Log.i("PluginBrowser", "Loaded ${available.size} available plugins with binaries")
@@ -279,9 +283,19 @@ class PluginBrowserViewModel(application: Application) : AndroidViewModel(applic
             .find { it.key.lowercase() == normalizedPluginName }
             ?.value ?: ""
         
+        // Architecture for the badge: Windows VSTs are x86/x64 (from the registry's
+        // is64Bit), LV2 plugins are native (ARM).
+        val arch = when {
+            plugin.format == "VST2" || plugin.format == "VST3" ->
+                metadata.archByName[normalizedPluginName]?.let { if (it) "x64" else "x86" } ?: ""
+            plugin.format == "LV2" -> "native"
+            else -> ""
+        }
+
         return plugin.copy(
             description = description,
-            thumbnailPath = thumbnailPath
+            thumbnailPath = thumbnailPath,
+            arch = arch
         )
     }
 
@@ -324,7 +338,7 @@ class PluginBrowserViewModel(application: Application) : AndroidViewModel(applic
     private fun groupPluginsByAuthorAndCategory(plugins: List<PluginInfo>): List<AuthorGroup> {
         val metadataAuthors = pluginMetadata?.authors ?: emptyMap()
         val metadataCategories = pluginMetadata?.categories ?: emptyMap()
-        val byAuthor = plugins.groupBy { PluginCategoryMapping.getAuthor(it.name, metadataAuthors) }
+        val byAuthor = plugins.groupBy { PluginCategoryMapping.getAuthor(it.name, it.format, metadataAuthors) }
 
         val authorGroups = byAuthor.map { (author, authorPlugins) ->
             val byCategory = authorPlugins.groupBy { PluginCategoryMapping.getCategory(it.name, metadataCategories) }
@@ -346,12 +360,13 @@ class PluginBrowserViewModel(application: Application) : AndroidViewModel(applic
             )
         }.sortedBy {
             when (it.name) {
-                PluginCategoryMapping.AUTHOR_NEURAL_AMP -> 0
-                PluginCategoryMapping.AUTHOR_AIDA_DSP -> 1
-                PluginCategoryMapping.AUTHOR_GUITARIX -> 2
-                PluginCategoryMapping.AUTHOR_BRUMMER10 -> 3
-                PluginCategoryMapping.AUTHOR_GXPLUGINS -> 4
-                else -> 5
+                PluginCategoryMapping.AUTHOR_WINDOWS_VST -> 0
+                PluginCategoryMapping.AUTHOR_NEURAL_AMP -> 1
+                PluginCategoryMapping.AUTHOR_AIDA_DSP -> 2
+                PluginCategoryMapping.AUTHOR_GUITARIX -> 3
+                PluginCategoryMapping.AUTHOR_BRUMMER10 -> 4
+                PluginCategoryMapping.AUTHOR_GXPLUGINS -> 5
+                else -> 6
             }
         }
 

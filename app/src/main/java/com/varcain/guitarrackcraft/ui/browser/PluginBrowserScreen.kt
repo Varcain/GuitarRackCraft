@@ -46,6 +46,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
@@ -436,16 +437,43 @@ fun PluginItem(
                     // distinguishable when two plugins share the same display
                     // name (e.g. AmpCraft.dll + AmpCraft.vst3 imported into
                     // the same library).
+                    // Per-format badge colors so VST3 / VST2 / LV2 are tellable at a glance.
+                    val (badgeBg, badgeFg) = when (plugin.format) {
+                        "VST3" -> Color(0xFF1976D2) to Color.White  // blue
+                        "VST2" -> Color(0xFFE64A19) to Color.White  // deep orange
+                        "LV2"  -> Color(0xFF388E3C) to Color.White  // green
+                        else   -> MaterialTheme.colorScheme.secondaryContainer to MaterialTheme.colorScheme.onSecondaryContainer
+                    }
                     Surface(
                         shape = androidx.compose.foundation.shape.RoundedCornerShape(4.dp),
-                        color = MaterialTheme.colorScheme.secondaryContainer,
+                        color = badgeBg,
                     ) {
                         Text(
                             text = plugin.format,
                             style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSecondaryContainer,
+                            color = badgeFg,
                             modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
                         )
+                    }
+                    // Architecture badge (x86 / x64 / native) — colors distinct from the format badge.
+                    if (plugin.arch.isNotEmpty()) {
+                        val (archBg, archFg) = when (plugin.arch) {
+                            "x64"    -> Color(0xFF7B1FA2) to Color.White  // purple
+                            "x86"    -> Color(0xFF00838F) to Color.White  // teal
+                            "native" -> Color(0xFF546E7A) to Color.White  // blue-grey
+                            else     -> MaterialTheme.colorScheme.secondaryContainer to MaterialTheme.colorScheme.onSecondaryContainer
+                        }
+                        Surface(
+                            shape = androidx.compose.foundation.shape.RoundedCornerShape(4.dp),
+                            color = archBg,
+                        ) {
+                            Text(
+                                text = plugin.arch,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = archFg,
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                            )
+                        }
                     }
                     Text(
                         text = plugin.guiTypes.joinToString(", ") { it.displayName },

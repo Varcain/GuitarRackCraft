@@ -80,7 +80,9 @@ data class PluginInfo(
     /** Path to the thumbnail image in assets (e.g., "GxPlugins.lv2/GxVoodooFuzz.lv2/modgui/thumbnail-gxvoodoofuzz.png"). */
     val thumbnailPath: String = "",
     /** Plugin description from README.md (may be empty). */
-    val description: String = ""
+    val description: String = "",
+    /** Architecture: "x86"/"x64" for Windows VST PE plugins, "native" for LV2, "" if unknown. */
+    val arch: String = ""
 ) {
     val fullId: String
         get() = "$format:$id"
