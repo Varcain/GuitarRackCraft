@@ -132,6 +132,9 @@ object WineSetup {
         seedComClasses(winePrefix)
         seedWicDecoders(winePrefix)    // WIC PNG/JPEG/etc. decoders → plugin skins decode (6505Red white editor)
         seedWicMetadataReaders(winePrefix)  // WIC PNG metadata chunk readers → plugins reading PNG metadata don't crash (6505Red)
+        seedWicFactory(winePrefix)  // WICImagingFactory CLSID → plugins that CoCreateInstance it don't crash (The Anvil)
+        seedWicPatterns(winePrefix)  // decoder magic-byte Patterns → CreateDecoderFromStream works (The Anvil amp art)
+        seedWicPixelFormats(winePrefix)  // WIC pixel formats → IWICFormatConverter works → D2D draws decoded images (The Anvil)
         seedWow64ClassesLink(winePrefix)  // REG_LINK so 32-bit plugins can SEE the Wow6432Node\Classes seeds above
         seedWow64Emulator(winePrefix)  // wine 11.x: point ARM64EC/wow64 at FEX
         seedDisableCrashDialog(winePrefix)  // no winedbg popup on subprocess crashes
@@ -163,7 +166,7 @@ object WineSetup {
         winePrefix.parentFile?.listFiles { f ->
             f.isDirectory && f.name.startsWith("wineprefix_")
         }?.forEach { p ->
-            seedCryptoProviders(p); seedComClasses(p); seedWicDecoders(p); seedWicMetadataReaders(p); seedWow64ClassesLink(p); seedFonts(ctx, p); seedUserFolders(ctx, p)
+            seedCryptoProviders(p); seedComClasses(p); seedWicDecoders(p); seedWicMetadataReaders(p); seedWicFactory(p); seedWicPatterns(p); seedWicPixelFormats(p); seedWow64ClassesLink(p); seedFonts(ctx, p); seedUserFolders(ctx, p)
             seedOleMarshalers(ctx, p)  // cross-process COM proxy-stubs (reach prefixes cloned before this seed)
             seedCryptoOids(ctx, p)     // Cryptography\OID table (reach prefixes cloned before this seed)
             seedWinTrust(ctx, p)       // wintrust providers + root certs (reach prefixes cloned before this seed)
@@ -1298,6 +1301,126 @@ object WineSetup {
         }
         systemReg.appendText(sb.toString())
         Log.i(TAG, "seeded WIC PNG metadata readers in ${winePrefix.name}/system.reg")
+    }
+
+    /** Register the WICImagingFactory coclasses (CLSID_WICImagingFactory / …Factory2).
+     *  [seedWicDecoders] registers the decoders, but a plugin that obtains the factory via
+     *  CoCreateInstance (rather than the WICCreateImagingFactory_Proxy export 6505Red used)
+     *  needs the factory CLSID registered too. Unregistered → CoCreateInstance returns
+     *  REGDB_E_CLASSNOTREG (0x80040154) and the plugin (The Anvil's Direct2D/DWrite/WIC editor)
+     *  calls a vtable method on the NULL factory → 0xc0000005 → white editor. windowscodecs.dll
+     *  serves both CLSIDs (clsfactory.c → ImagingFactory_CreateInstance), so a plain
+     *  CLSID→InprocServer32 in both views is all that's needed. */
+    private fun seedWicFactory(winePrefix: File) {
+        val systemReg = File(winePrefix, "system.reg")
+        if (!systemReg.exists()) return
+        if (systemReg.readText().contains("{cacaf262-9370-4615-a13b-9f5539da4c0a}")) return
+        val now = System.currentTimeMillis() / 1000
+        val factories = listOf(
+            "cacaf262-9370-4615-a13b-9f5539da4c0a",  // CLSID_WICImagingFactory(1)
+            "317d06e8-5f24-433d-bdf7-79ce68d8abc2",  // CLSID_WICImagingFactory2
+        )
+        val views = listOf("Software\\\\Classes\\\\CLSID", "Software\\\\Classes\\\\Wow6432Node\\\\CLSID")
+        val sb = StringBuilder("\n")
+        for (view in views) for (f in factories) {
+            sb.append("[$view\\\\{$f}] $now\n")
+            sb.append("@=\"WIC Imaging Factory\"\n\n")
+            sb.append("[$view\\\\{$f}\\\\InprocServer32] $now\n")
+            sb.append("@=\"C:\\\\windows\\\\system32\\\\windowscodecs.dll\"\n")
+            sb.append("\"ThreadingModel\"=\"Both\"\n\n")
+        }
+        systemReg.appendText(sb.toString())
+        Log.i(TAG, "seeded WIC ImagingFactory CLSIDs in ${winePrefix.name}/system.reg")
+    }
+
+    /** Add the magic-byte Patterns subkey to each WIC decoder. Plugins that decode images via
+     *  IWICImagingFactory::CreateDecoderFromStream (The Anvil's amp-front artwork) select a decoder
+     *  by sniffing the stream's leading bytes against each decoder's registered `Patterns`
+     *  (find_decoder→MatchesPattern→read_bitmap_patterns). [seedWicDecoders] only wrote
+     *  ContainerFormat (used by the by-format CreateDecoder that 6505Red uses), so
+     *  CreateDecoderFromStream returned COMPONENTNOTFOUND even for a literal \x89PNG stream → black.
+     *  Both views. (regsvr.c png_patterns etc.) */
+    private fun seedWicPatterns(winePrefix: File) {
+        val systemReg = File(winePrefix, "system.reg")
+        if (!systemReg.exists()) return
+        if (systemReg.readText().contains("{389ea17b-5078-4cde-b6ef-25c15175c751}\\\\Patterns")) return
+        val now = System.currentTimeMillis() / 1000
+        // decoder clsid → its magic-byte pattern(s): leading bytes (hex), matched at position 0
+        data class Dp(val clsid: String, val patterns: List<String>)
+        val decoders = listOf(
+            Dp("389ea17b-5078-4cde-b6ef-25c15175c751", listOf("89,50,4e,47,0d,0a,1a,0a")),                // PNG
+            Dp("9456a480-e88b-43ea-9e73-0b2d9b71b1ca", listOf("ff,d8")),                                   // JPEG
+            Dp("6b462062-7cbf-400d-9fdb-813dd10f2778", listOf("42,4d")),                                   // BMP
+            Dp("381dda3c-9ce9-4834-a23e-1f98f8fc52be", listOf("47,49,46,38,37,61", "47,49,46,38,39,61")),  // GIF87a/89a
+            Dp("b54e85d9-fe23-499f-8b88-6acea713752b", listOf("49,49,2a,00", "4d,4d,00,2a")),              // TIFF LE/BE
+            Dp("c61bfcdf-2e0f-4aad-a8d7-e06bafebcdfe", listOf("00,00,01,00")),                             // ICO
+        )
+        val views = listOf("Software\\\\Classes\\\\CLSID", "Software\\\\Classes\\\\Wow6432Node\\\\CLSID")
+        val sb = StringBuilder("\n")
+        for (view in views) for (d in decoders) {
+            d.patterns.forEachIndexed { i, pat ->
+                val len = (pat.length + 1) / 3  // "ab,cd" (3n-1 chars) → n bytes
+                val mask = (0 until len).joinToString(",") { "ff" }
+                sb.append("[$view\\\\{${d.clsid}}\\\\Patterns\\\\$i] $now\n")
+                sb.append("\"Position\"=dword:00000000\n")
+                sb.append("\"Length\"=dword:${"%08x".format(len)}\n")
+                sb.append("\"Pattern\"=hex:$pat\n")
+                sb.append("\"Mask\"=hex:$mask\n")
+                sb.append("\"EndOfStream\"=dword:00000000\n\n")
+            }
+        }
+        systemReg.appendText(sb.toString())
+        Log.i(TAG, "seeded WIC decoder Patterns in ${winePrefix.name}/system.reg")
+    }
+
+    /** Register the WIC pixel-format components under CATID_WICPixelFormats. IWICFormatConverter
+     *  (the standard WIC→Direct2D path) calls CreateComponentInfo on the source and destination
+     *  pixel formats; unregistered → FormatConverter::Initialize fails (converting a decoded PNG to
+     *  32bppPBGRA for D2D), so the bitmap is never drawn — The Anvil's amp-front panel stayed black
+     *  even after decoding worked. Each = a CLSID class key (BitLength/ChannelCount/
+     *  NumericRepresentation/SupportsTransparency) + a CATID_WICPixelFormats Instance entry. Both
+     *  views. NB: regsvr32 windowscodecs.dll (DllRegisterServer) HANGS under FEX — hand-seed only.
+     *  (regsvr.c register_pixelformats / pixelformat_list.) */
+    private fun seedWicPixelFormats(winePrefix: File) {
+        val systemReg = File(winePrefix, "system.reg")
+        if (!systemReg.exists()) return
+        val catid = "2b46e70f-cda7-473e-89f6-dc9630a2390b"  // CATID_WICPixelFormats
+        if (systemReg.readText().contains("$catid\\\\Instance\\\\{6fddc324-4e03-4bfe-b185-3d77768dc90f")) return
+        val now = System.currentTimeMillis() / 1000
+        // clsid, BitLength, ChannelCount, NumericRepresentation, SupportsTransparency (wine pixelformat_list)
+        data class Pf(val clsid: String, val bl: Int, val cc: Int, val nr: Int, val st: Int)
+        val formats = listOf(
+            Pf("05ec7c2b-f1e6-4961-ad46-e1cc810a87d2", 16, 4, 2, 1), Pf("3cc4a650-a527-4d37-a916-3142c7ebedba", 32, 4, 2, 1),
+            Pf("6fddc324-4e03-4bfe-b185-3d77768dc901", 1, 1, 1, 0),  Pf("6fddc324-4e03-4bfe-b185-3d77768dc902", 2, 1, 1, 0),
+            Pf("6fddc324-4e03-4bfe-b185-3d77768dc903", 4, 1, 1, 0),  Pf("6fddc324-4e03-4bfe-b185-3d77768dc904", 8, 1, 1, 0),
+            Pf("6fddc324-4e03-4bfe-b185-3d77768dc905", 1, 1, 2, 0),  Pf("6fddc324-4e03-4bfe-b185-3d77768dc906", 2, 1, 2, 0),
+            Pf("6fddc324-4e03-4bfe-b185-3d77768dc907", 4, 1, 2, 0),  Pf("6fddc324-4e03-4bfe-b185-3d77768dc908", 8, 1, 2, 0),
+            Pf("6fddc324-4e03-4bfe-b185-3d77768dc909", 16, 3, 2, 0), Pf("6fddc324-4e03-4bfe-b185-3d77768dc90a", 16, 3, 2, 0),
+            Pf("6fddc324-4e03-4bfe-b185-3d77768dc90b", 16, 1, 2, 0), Pf("6fddc324-4e03-4bfe-b185-3d77768dc90c", 24, 3, 2, 0),
+            Pf("6fddc324-4e03-4bfe-b185-3d77768dc90d", 24, 3, 2, 0), Pf("6fddc324-4e03-4bfe-b185-3d77768dc90e", 32, 3, 2, 0),
+            Pf("6fddc324-4e03-4bfe-b185-3d77768dc90f", 32, 4, 2, 1), Pf("6fddc324-4e03-4bfe-b185-3d77768dc910", 32, 4, 2, 1),
+            Pf("6fddc324-4e03-4bfe-b185-3d77768dc911", 32, 1, 5, 0), Pf("6fddc324-4e03-4bfe-b185-3d77768dc915", 48, 3, 2, 0),
+            Pf("6fddc324-4e03-4bfe-b185-3d77768dc916", 64, 4, 2, 1), Pf("6fddc324-4e03-4bfe-b185-3d77768dc917", 64, 4, 2, 1),
+            Pf("6fddc324-4e03-4bfe-b185-3d77768dc919", 128, 4, 5, 1), Pf("6fddc324-4e03-4bfe-b185-3d77768dc91a", 128, 4, 5, 1),
+            Pf("6fddc324-4e03-4bfe-b185-3d77768dc91b", 128, 3, 5, 0), Pf("6fddc324-4e03-4bfe-b185-3d77768dc91c", 32, 4, 2, 0),
+            Pf("6fddc324-4e03-4bfe-b185-3d77768dc91f", 64, 4, 2, 0), Pf("d98c6b95-3efe-47d6-bb25-eb1748ab0cf1", 32, 3, 2, 0),
+            Pf("e3fed78f-e8db-4acf-84c1-e97f6136b327", 96, 3, 5, 0), Pf("f5c7ad2d-6a8d-43dd-a7a8-a29935261ae9", 32, 4, 2, 1),
+        )
+        val views = listOf("Software\\\\Classes\\\\CLSID", "Software\\\\Classes\\\\Wow6432Node\\\\CLSID")
+        val sb = StringBuilder("\n")
+        for (view in views) for (p in formats) {
+            sb.append("[$view\\\\{${p.clsid}}] $now\n")
+            sb.append("@=\"WIC Pixel Format\"\n")
+            sb.append("\"Author\"=\"The Wine Project\"\n")
+            sb.append("\"BitLength\"=dword:${"%08x".format(p.bl)}\n")
+            sb.append("\"ChannelCount\"=dword:${"%08x".format(p.cc)}\n")
+            sb.append("\"NumericRepresentation\"=dword:${"%08x".format(p.nr)}\n")
+            sb.append("\"SupportsTransparency\"=dword:${"%08x".format(p.st)}\n\n")
+            sb.append("[$view\\\\{$catid}\\\\Instance\\\\{${p.clsid}}] $now\n")
+            sb.append("\"CLSID\"=\"{${p.clsid}}\"\n\n")
+        }
+        systemReg.appendText(sb.toString())
+        Log.i(TAG, "seeded WIC pixel formats in ${winePrefix.name}/system.reg")
     }
 
     /** Symlink every PE DLL from <wineRoot>/lib/wine/aarch64-windows/ into
