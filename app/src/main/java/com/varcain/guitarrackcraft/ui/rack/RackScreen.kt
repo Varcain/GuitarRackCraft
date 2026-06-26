@@ -1578,18 +1578,35 @@ fun PluginCard(
                             )
                         }
                         if (isFullscreen) {
-                            IconButton(
-                                onClick = onExitFullscreen,
+                            Column(
                                 modifier = Modifier
                                     .align(Alignment.TopStart)
-                                    .padding(16.dp)
-                                    .background(Color.Black.copy(alpha = 0.5f), CircleShape)
+                                    .padding(16.dp),
+                                verticalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
-                                Icon(
-                                    Icons.Default.Close,
-                                    contentDescription = "Exit fullscreen",
-                                    tint = Color.White
-                                )
+                                IconButton(
+                                    onClick = onExitFullscreen,
+                                    modifier = Modifier.background(Color.Black.copy(alpha = 0.5f), CircleShape)
+                                ) {
+                                    Icon(
+                                        Icons.Default.Close,
+                                        contentDescription = "Exit fullscreen",
+                                        tint = Color.White
+                                    )
+                                }
+                                // Soft-keyboard toggle — mirrors the exe-installer fullscreen
+                                // control; raises the IME against the wine editor surface for
+                                // plugins with text fields (license keys, in-editor search).
+                                IconButton(
+                                    onClick = { com.varcain.guitarrackcraft.ui.vst.VstKeyboardAction.showKeyboard(pluginIndex) },
+                                    modifier = Modifier.background(Color.Black.copy(alpha = 0.5f), CircleShape)
+                                ) {
+                                    Icon(
+                                        Icons.Default.Keyboard,
+                                        contentDescription = "Toggle keyboard",
+                                        tint = Color.White
+                                    )
+                                }
                             }
                         }
                     }
