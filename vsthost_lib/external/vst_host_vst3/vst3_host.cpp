@@ -1107,6 +1107,27 @@ private:
     std::atomic<uint32> refCount_{1};
 };
 
+/* Set by restartComponent(kIoChanged) on the plugin's UI thread, consumed by
+ * the audio thread to re-query the bus arrangement when a plugin switches
+ * Mono<->Stereo at runtime (The Anvil does this from its own footer). */
+static std::atomic<int> g_ioChanged{0};
+
+/* Lock-free SPSC ring relaying the controller's parameter edits (performEdit,
+ * UI thread) to the audio thread, which drains them into process()'s
+ * inputParameterChanges. Without this the processor runs forever on its initial
+ * state and the plugin's own UI knobs (The Anvil gain/channel/drive) do nothing. */
+struct ParamEdit { ParamID id; ParamValue value; };
+static ParamEdit g_paramRing[2048];
+static std::atomic<uint32_t> g_paramHead{0};  /* producer: performEdit (UI thread)   */
+static std::atomic<uint32_t> g_paramTail{0};  /* consumer: process_block (audio thread) */
+static inline void push_param_edit(ParamID id, ParamValue v) {
+    uint32_t h = g_paramHead.load(std::memory_order_relaxed);
+    uint32_t t = g_paramTail.load(std::memory_order_acquire);
+    if (h - t >= 2048u) return;  /* ring full (knob spam) — drop rather than block */
+    g_paramRing[h & 2047u] = { id, v };
+    g_paramHead.store(h + 1, std::memory_order_release);
+}
+
 /* ---- Minimal IComponentHandler --------------------------------------
  * The SDK's HostApplication implements ONLY IHostApplication, NOT
  * IComponentHandler — so without this, editController->setComponentHandler
@@ -1129,9 +1150,18 @@ public:
      * Gated because performEdit is hot and this binary also runs on Android. */
     static bool logEdits() { static bool on = getenv("VSTPOC_LOG_EDITS") != nullptr; return on; }
     tresult PLUGIN_API beginEdit (ParamID id) SMTG_OVERRIDE { if (logEdits()) LOG("EDIT beginEdit id=%u\n", (unsigned)id); return kResultOk; }
-    tresult PLUGIN_API performEdit (ParamID id, ParamValue v) SMTG_OVERRIDE { if (logEdits()) LOG("EDIT performEdit id=%u val=%.5f\n", (unsigned)id, (double)v); return kResultOk; }
+    tresult PLUGIN_API performEdit (ParamID id, ParamValue v) SMTG_OVERRIDE {
+        if (logEdits()) LOG("EDIT performEdit id=%u val=%.5f\n", (unsigned)id, (double)v);
+        push_param_edit(id, v);  /* relay the edit to the audio component via process() */
+        return kResultOk;
+    }
     tresult PLUGIN_API endEdit (ParamID id) SMTG_OVERRIDE { if (logEdits()) LOG("EDIT endEdit id=%u\n", (unsigned)id); return kResultOk; }
-    tresult PLUGIN_API restartComponent (int32) SMTG_OVERRIDE { return kResultOk; }
+    tresult PLUGIN_API restartComponent (int32 flags) SMTG_OVERRIDE {
+        /* The Anvil toggles Mono<->Stereo from its UI and signals kIoChanged;
+         * flag the audio thread to re-query the bus arrangement. */
+        if (flags & kIoChanged) g_ioChanged.store(1, std::memory_order_release);
+        return kResultOk;
+    }
 
     /* --- IComponentHandler2 (the interface TH-U needs) ---
      * vstpoc 2026-05-29: confirmed via denied-IID logging that TH-U queries
@@ -1552,6 +1582,35 @@ static void activate_main_buses(IComponent* comp)
     if (nOut > 0) comp->activateBus(kAudio, kOutput, 0, true);
 }
 
+/* The plugin's actual audio channel counts, set during setup from the
+ * arrangement the plugin accepts (see the setBusArrangements block). Default
+ * stereo; strictly-mono plugins (The Anvil, Helix Native) drop to 1 so
+ * process() gets a ProcessData whose channel count matches the plugin's bus —
+ * otherwise the output is garbage / appears unprocessed. */
+static int g_pluginInChannels  = 2;
+static int g_pluginOutChannels = 2;
+static IComponent* g_component = nullptr;  /* for getBusInfo channel counts */
+
+/* Re-read the plugin's current per-bus channel count and update what process()
+ * feeds it. getBusInfo is reliable even for plugins that reject
+ * setBusArrangements and don't implement getBusArrangement (The Anvil rejects
+ * both stereo and mono). Called at setup and on a runtime I/O change.
+ * RT-callable: const queries + two int stores. */
+static void update_channel_layout(IAudioProcessor* /*processor*/)
+{
+    if (!g_component) return;
+    int ic = g_pluginInChannels, oc = g_pluginOutChannels;
+    BusInfo bi{};
+    if (g_component->getBusInfo(kAudio, kInput,  0, bi) == kResultTrue) ic = bi.channelCount >= 2 ? 2 : 1;
+    if (g_component->getBusInfo(kAudio, kOutput, 0, bi) == kResultTrue) oc = bi.channelCount >= 2 ? 2 : 1;
+    if (ic != g_pluginInChannels || oc != g_pluginOutChannels) {
+        LOG("plugin audio channels: in %d->%d out %d->%d\n",
+            g_pluginInChannels, ic, g_pluginOutChannels, oc);
+        g_pluginInChannels  = ic;
+        g_pluginOutChannels = oc;
+    }
+}
+
 /* Process one block of stereo audio. Uses the existing ring layout —
  * deinterleave from `audio_in`, deinterleave/reinterleave through VST3
  * (which wants per-channel buffers), interleave back into `audio`. */
@@ -1567,19 +1626,37 @@ static void process_block(IAudioProcessor* processor,
     float* inChans[2]  = { (float*)in_l,  (float*)in_r  };
     float* outChans[2] = { out_l, out_r };
 
-    inBus.numChannels       = 2;
+    /* Map the stereo ring to the plugin's current channel count. A mono plugin
+     * writes one output channel into monoOut, fanned out to both ring channels
+     * after process(); a mono input simply reads the left channel (inChans[0]). */
+    static float monoOut[8192];
+    if (g_pluginOutChannels == 1) outChans[0] = monoOut;
+
+    inBus.numChannels       = g_pluginInChannels;
     inBus.silenceFlags      = 0;
     inBus.channelBuffers32  = inChans;
 
-    outBus.numChannels      = 2;
+    outBus.numChannels      = g_pluginOutChannels;
     outBus.silenceFlags     = 0;
     outBus.channelBuffers32 = outChans;
 
-    /* Empty parameter and event lists — fine for initial testing, we
-     * route DAW parameter changes via the existing setParameter path
-     * once we wire it up in the audio loop below. */
-    ParameterChanges noParams;
-    EventList        noEvents;
+    /* Drain the controller's queued parameter edits (performEdit) into this
+     * block's input changes so the processor actually applies the user's gain /
+     * channel / drive changes. Persistent so the SDK reuses its per-parameter
+     * queues (no per-block allocation after warmup). */
+    static ParameterChanges paramChanges;
+    paramChanges.clearQueue();
+    {
+        uint32_t t = g_paramTail.load(std::memory_order_relaxed);
+        uint32_t h = g_paramHead.load(std::memory_order_acquire);
+        for (; t != h; ++t) {
+            const ParamEdit& e = g_paramRing[t & 2047u];
+            int32 qi = 0; IParamValueQueue* q = paramChanges.addParameterData(e.id, qi);
+            if (q) { int32 pi = 0; q->addPoint(0, e.value, pi); }
+        }
+        g_paramTail.store(t, std::memory_order_release);
+    }
+    EventList noEvents;
 
     ProcessData data;
     data.processMode          = kRealtime;
@@ -1589,13 +1666,20 @@ static void process_block(IAudioProcessor* processor,
     data.numOutputs           = 1;
     data.inputs               = &inBus;
     data.outputs              = &outBus;
-    data.inputParameterChanges  = &noParams;
+    data.inputParameterChanges  = &paramChanges;
     data.outputParameterChanges = nullptr;
     data.inputEvents          = &noEvents;
     data.outputEvents         = nullptr;
     data.processContext       = nullptr;
 
     processor->process(data);
+
+    /* Fan a mono plugin's single output out to both ring channels so the stereo
+     * speaker ring isn't half-silent. */
+    if (g_pluginOutChannels == 1) {
+        int32 n = nFrames > 8192 ? 8192 : nFrames;
+        for (int32 i = 0; i < n; ++i) { out_l[i] = monoOut[i]; out_r[i] = monoOut[i]; }
+    }
 }
 
 /* vstpoc 2026-06-11: dedicated real-time audio-producer thread. Runs ONLY the
@@ -1648,6 +1732,11 @@ static DWORD WINAPI audio_thread_proc(LPVOID arg)
         }
         __atomic_store_n(&g_shm->audio_in_tail, it + blockFrames, __ATOMIC_RELEASE);
 
+        /* Adapt to a runtime Mono<->Stereo switch: re-query when the plugin
+         * signals an I/O change (restartComponent kIoChanged), and poll every
+         * 64 blocks as a fallback for plugins that don't signal it. */
+        if (g_ioChanged.exchange(0, std::memory_order_acquire) || (stats_blocks & 63) == 0)
+            update_channel_layout(processor);
         uint64_t pw0 = qpc_us();
         process_block(processor, in_l, in_r, out_l, out_r, blockFrames);
         uint64_t proc_us = qpc_us() - pw0;
@@ -1901,7 +1990,26 @@ int main(int argc, char** argv)
         SpeakerArrangement outSA = SpeakerArr::kStereo;
         tresult arrRes = processor->setBusArrangements(&inSA, 1, &outSA, 1);
         LOG("setBusArrangements(stereo,stereo) returned 0x%x\n", (unsigned)arrRes);
+        if (arrRes != kResultTrue) {
+            /* Strictly-mono plugin (The Anvil, Helix Native default): stereo was
+             * rejected, so request mono in / mono out instead. */
+            inSA = SpeakerArr::kMono; outSA = SpeakerArr::kMono;
+            tresult r2 = processor->setBusArrangements(&inSA, 1, &outSA, 1);
+            LOG("setBusArrangements(mono,mono) returned 0x%x\n", (unsigned)r2);
+        }
     }
+    /* Record the channel count the plugin settled on (kept current at runtime by
+     * the audio thread). Feeding the wrong channel count produces broken /
+     * unprocessed output. */
+    g_component = component;
+    {
+        BusInfo bi{};
+        if (component->getBusInfo(kAudio, kInput,  0, bi) == kResultTrue)
+            LOG("audio IN  bus0: ch=%d type=%d flags=0x%x\n", (int)bi.channelCount, (int)bi.busType, (unsigned)bi.flags);
+        if (component->getBusInfo(kAudio, kOutput, 0, bi) == kResultTrue)
+            LOG("audio OUT bus0: ch=%d type=%d flags=0x%x\n", (int)bi.channelCount, (int)bi.busType, (unsigned)bi.flags);
+    }
+    update_channel_layout(processor);
 
     /* Audio setup. Use the same 48k/512 the launcher uses by default. */
     ProcessSetup setup;
