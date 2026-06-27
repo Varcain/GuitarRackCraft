@@ -13,6 +13,32 @@
 
 namespace vsthost {
 
+namespace {
+
+size_t boundedStringLength(const char* value, size_t maxLen) {
+    size_t len = 0;
+    while (len < maxLen && value[len] != '\0') ++len;
+    return len;
+}
+
+std::string flattenWin32FilterPatterns(const char* filter, size_t maxLen) {
+    std::string patterns;
+    size_t pos = 0;
+    bool nextIsPattern = false;
+    while (pos < maxLen && filter[pos] != '\0') {
+        const size_t len = boundedStringLength(filter + pos, maxLen - pos);
+        if (nextIsPattern && len > 0) {
+            if (!patterns.empty()) patterns.push_back('\n');
+            patterns.append(filter + pos, len);
+        }
+        nextIsPattern = !nextIsPattern;
+        pos += len + 1;
+    }
+    return patterns;
+}
+
+} // namespace
+
 WineVstPlugin::WineVstPlugin(RegistryEntry entry,
                              std::string filesDir,
                              std::string wineRoot,
@@ -68,9 +94,10 @@ void WineVstPlugin::activate(float sampleRate, uint32_t bufferSize) {
     // at their environment's wineprefix_e<uuid>); empty => legacy per-plugin
     // wineprefix_v<uuid>. shm/picker/display stay keyed by uuid (see below) so
     // two plugins sharing a prefix still get distinct IPC + X11 displays.
-    cfg.winePrefix        = entry_.prefixPath.empty()
+    winePrefix_           = entry_.prefixPath.empty()
                               ? (filesDir_ + "/wineprefix_v" + entry_.uuid)
                               : entry_.prefixPath;
+    cfg.winePrefix        = winePrefix_;
     // Use the 64-bit host for x86_64 PE plugins, 32-bit host otherwise.
     cfg.primaryExe        = assetsDir_ + (entry_.is64Bit ? "/vst_host.exe" : "/vst_host_x86.exe");
     cfg.shmPath           = shmPath;
@@ -244,6 +271,37 @@ int32_t WineVstPlugin::getEditorWidth() const {
 
 int32_t WineVstPlugin::getEditorHeight() const {
     return (ring_ && ring_->raw()) ? ring_->raw()->editor_height : 0;
+}
+
+bool WineVstPlugin::pollNativeFilePicker(guitarrackcraft::NativeFilePickerRequest& request) {
+    if (!picker_) return false;
+
+    uint32_t seq = 0;
+    if (!picker_->hasRequest(&seq)) return false;
+
+    char title[VSTPOC_PICKER_TITLE_LEN] = {};
+    char filter[VSTPOC_PICKER_FILTER_LEN] = {};
+    char initialDir[VSTPOC_PICKER_PATH_LEN] = {};
+    picker_->readRequest(title, filter, initialDir);
+
+    request.sequence = seq;
+    request.title = title;
+    request.filterPatterns = flattenWin32FilterPatterns(filter, sizeof(filter));
+    request.initialDir = initialDir;
+
+    const std::string prefix = winePrefix_.empty()
+        ? (entry_.prefixPath.empty() ? (filesDir_ + "/wineprefix_v" + entry_.uuid) : entry_.prefixPath)
+        : winePrefix_;
+    request.copyDirLinux = prefix + "/drive_c/vstpoc_picker";
+    request.copyDirWindows = "C:\\vstpoc_picker";
+    return true;
+}
+
+void WineVstPlugin::respondNativeFilePicker(uint32_t sequence,
+                                            bool cancelled,
+                                            const std::string& windowsPath) {
+    if (!picker_) return;
+    picker_->writeResponse(sequence, cancelled, windowsPath.c_str());
 }
 
 guitarrackcraft::PluginInfo WineVstPlugin::getInfo() const {

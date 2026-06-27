@@ -5,7 +5,12 @@
 
 package com.varcain.guitarrackcraft.ui.vst
 
+import android.content.Context
+import android.net.Uri
+import android.provider.OpenableColumns
 import android.util.Log
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
@@ -18,15 +23,32 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import com.varcain.guitarrackcraft.engine.NativeEngine
 import com.varcain.vsthost.NativeBridge
 import com.varcain.vsthost.ui.PluginSurface
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.io.File
+import java.io.IOException
+
+private data class VstFilePickerRequest(
+    val sequence: Int,
+    val title: String,
+    val filterPatterns: String,
+    val initialDir: String,
+    val copyDirLinux: String,
+    val copyDirWindows: String,
+)
 
 /**
  * Embed a wine-rendered VST editor inline in the rack row. The displayNumber
@@ -44,6 +66,14 @@ fun VstInlineEditor(
     pluginIndex: Int,
     isFullscreen: Boolean = false,
     onPluginSizeKnown: (width: Int, height: Int) -> Unit = { _, _ -> },
+    onFilePickerRequested: (
+        sequence: Int,
+        title: String,
+        filterPatterns: String,
+        initialDir: String,
+        copyDirLinux: String,
+        copyDirWindows: String,
+    ) -> Boolean = { _, _, _, _, _, _ -> false },
 ) {
     val displayNumber = remember(pluginIndex) {
         runCatching {
@@ -56,6 +86,82 @@ fun VstInlineEditor(
             Text("VST display unavailable", color = Color.White)
         }
         return
+    }
+
+    val context = LocalContext.current
+    val engine = remember { NativeEngine.getInstance() }
+    val currentOnFilePickerRequested by rememberUpdatedState(onFilePickerRequested)
+    val scope = rememberCoroutineScope()
+    var pendingPickerRequest by remember(pluginIndex) { mutableStateOf<VstFilePickerRequest?>(null) }
+    var pickerInFlight by remember(pluginIndex) { mutableStateOf(false) }
+
+    val filePickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        val request = pendingPickerRequest
+        if (request == null) {
+            pickerInFlight = false
+            return@rememberLauncherForActivityResult
+        }
+
+        scope.launch {
+            if (uri == null) {
+                engine.nativeRespondVstFilePicker(pluginIndex, request.sequence, true, "")
+            } else {
+                val windowsPath = runCatching {
+                    withContext(Dispatchers.IO) {
+                        copySafUriIntoWinePrefix(context, uri, request)
+                    }
+                }.getOrElse { error ->
+                    Log.e("VstInlineEditor", "plugin[$pluginIndex] VST picker copy failed", error)
+                    ""
+                }
+                engine.nativeRespondVstFilePicker(
+                    pluginIndex,
+                    request.sequence,
+                    windowsPath.isEmpty(),
+                    windowsPath
+                )
+            }
+            pendingPickerRequest = null
+            pickerInFlight = false
+        }
+    }
+
+    LaunchedEffect(pluginIndex) {
+        while (true) {
+            val raw = runCatching {
+                engine.nativePollVstFilePickerRequest(pluginIndex)
+            }.getOrNull()
+            if (pickerInFlight) {
+                if (raw == null) pickerInFlight = false
+            } else if (raw != null && raw.size >= 6) {
+                val request = VstFilePickerRequest(
+                    sequence = raw[0].toIntOrNull() ?: 0,
+                    title = raw[1],
+                    filterPatterns = raw[2],
+                    initialDir = raw[3],
+                    copyDirLinux = raw[4],
+                    copyDirWindows = raw[5],
+                )
+                val handledByRack = currentOnFilePickerRequested(
+                    request.sequence,
+                    request.title,
+                    request.filterPatterns,
+                    request.initialDir,
+                    request.copyDirLinux,
+                    request.copyDirWindows,
+                )
+                if (handledByRack) {
+                    pickerInFlight = true
+                } else {
+                    pendingPickerRequest = request
+                    pickerInFlight = true
+                    filePickerLauncher.launch(mimeTypesForPicker(request))
+                }
+            }
+            delay(150)
+        }
     }
 
     // Bring up the X11 server on this display if it's not already (idempotent).
@@ -104,4 +210,80 @@ fun VstInlineEditor(
             Text("Loading editor…", color = Color.LightGray)
         }
     }
+}
+
+private fun mimeTypesForPicker(request: VstFilePickerRequest): Array<String> {
+    val patterns = request.filterPatterns.lowercase()
+    return when {
+        patterns.contains(".wav") || patterns.contains(".aif") -> arrayOf("audio/*", "*/*")
+        patterns.contains(".json") || patterns.contains(".nam") -> arrayOf("application/json", "application/octet-stream", "*/*")
+        else -> arrayOf("*/*")
+    }
+}
+
+private fun copySafUriIntoWinePrefix(
+    context: Context,
+    uri: Uri,
+    request: VstFilePickerRequest,
+): String {
+    val destDir = File(request.copyDirLinux)
+    if (!destDir.exists() && !destDir.mkdirs()) {
+        throw IOException("Could not create ${destDir.absolutePath}")
+    }
+
+    val pickedName = resolvePickedDisplayName(context, uri) ?: "picked_file"
+    val safeName = sanitizeWindowsFileName(pickedName)
+    val destFile = uniqueDestinationFile(destDir, safeName)
+
+    val input = context.contentResolver.openInputStream(uri)
+        ?: throw IOException("Could not open picked URI")
+    input.use { source ->
+        destFile.outputStream().use { target ->
+            source.copyTo(target)
+        }
+    }
+
+    val windowsDir = request.copyDirWindows.ifBlank { "C:\\vstpoc_picker" }.trimEnd('\\')
+    return "$windowsDir\\${destFile.name}"
+}
+
+private fun resolvePickedDisplayName(context: Context, uri: Uri): String? {
+    context.contentResolver.query(
+        uri,
+        arrayOf(OpenableColumns.DISPLAY_NAME),
+        null,
+        null,
+        null
+    )?.use { cursor ->
+        val index = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+        if (index >= 0 && cursor.moveToFirst()) {
+            val name = cursor.getString(index)
+            if (!name.isNullOrBlank()) return name
+        }
+    }
+    return uri.lastPathSegment?.substringAfterLast('/')?.takeIf { it.isNotBlank() }
+}
+
+private fun sanitizeWindowsFileName(name: String): String {
+    val illegal = charArrayOf('\\', '/', ':', '*', '?', '"', '<', '>', '|')
+    val cleaned = buildString(name.length) {
+        name.forEach { ch ->
+            append(if (ch.code < 32 || ch in illegal) '_' else ch)
+        }
+    }.trim().trim('.')
+    return cleaned.ifBlank { "picked_file" }.take(180)
+}
+
+private fun uniqueDestinationFile(dir: File, fileName: String): File {
+    val first = File(dir, fileName)
+    if (!first.exists()) return first
+
+    val dot = fileName.lastIndexOf('.')
+    val base = if (dot > 0) fileName.substring(0, dot) else fileName
+    val ext = if (dot > 0) fileName.substring(dot) else ""
+    for (i in 1..999) {
+        val candidate = File(dir, "${base}_$i$ext")
+        if (!candidate.exists()) return candidate
+    }
+    return File(dir, "${base}_${System.currentTimeMillis()}$ext")
 }

@@ -55,6 +55,16 @@ struct PluginState {
     std::vector<StateProperty> properties;
 };
 
+/** Pending native file-picker request from an out-of-process plugin UI. */
+struct NativeFilePickerRequest {
+    uint32_t sequence = 0;
+    std::string title;
+    std::string filterPatterns;
+    std::string initialDir;
+    std::string copyDirLinux;
+    std::string copyDirWindows;
+};
+
 /** One enumeration/scale point for a control port (label + value). */
 struct ScalePoint {
     std::string label;
@@ -156,6 +166,18 @@ public:
      * @param path Absolute file path
      */
     virtual void setFilePath(const std::string& propertyUri, const std::string& path) {}
+
+    /**
+     * Poll a pending native file-picker request from an out-of-process UI.
+     * Hosted VSTs use this to route Wine common dialogs through Android SAF.
+     */
+    virtual bool pollNativeFilePicker(NativeFilePickerRequest& request) { return false; }
+
+    /**
+     * Respond to a pending native file-picker request. windowsPath is the
+     * Win32 path the plugin should receive, or empty when cancelled is true.
+     */
+    virtual void respondNativeFilePicker(uint32_t sequence, bool cancelled, const std::string& windowsPath) {}
 
     /**
      * Inject a raw atom message into the plugin's atom input port.

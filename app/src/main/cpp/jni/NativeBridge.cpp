@@ -1147,6 +1147,63 @@ Java_com_varcain_guitarrackcraft_engine_NativeEngine_nativeDeliverFileToPluginUI
     if (pathStr) env->ReleaseStringUTFChars(filePath, pathStr);
 }
 
+JNIEXPORT jobjectArray JNICALL
+Java_com_varcain_guitarrackcraft_engine_NativeEngine_nativePollVstFilePickerRequest(
+    JNIEnv* env, jobject thiz, jint pluginIndex)
+{
+    if (!g_ctx || !g_ctx->audioEngine) return nullptr;
+
+    IPlugin* plugin = g_ctx->audioEngine->getChain().getPlugin(static_cast<int>(pluginIndex));
+    if (!plugin) return nullptr;
+
+    NativeFilePickerRequest req;
+    if (!plugin->pollNativeFilePicker(req)) return nullptr;
+
+    jclass stringClass = env->FindClass("java/lang/String");
+    jobjectArray result = env->NewObjectArray(6, stringClass, nullptr);
+    if (!result) return nullptr;
+
+    auto setElement = [&](jsize index, const std::string& value) {
+        jstring str = env->NewStringUTF(value.c_str());
+        env->SetObjectArrayElement(result, index, str);
+        env->DeleteLocalRef(str);
+    };
+
+    setElement(0, std::to_string(req.sequence));
+    setElement(1, req.title);
+    setElement(2, req.filterPatterns);
+    setElement(3, req.initialDir);
+    setElement(4, req.copyDirLinux);
+    setElement(5, req.copyDirWindows);
+    env->DeleteLocalRef(stringClass);
+
+    return result;
+}
+
+JNIEXPORT void JNICALL
+Java_com_varcain_guitarrackcraft_engine_NativeEngine_nativeRespondVstFilePicker(
+    JNIEnv* env, jobject thiz, jint pluginIndex, jint sequence, jboolean cancelled, jstring windowsPath)
+{
+    if (!g_ctx || !g_ctx->audioEngine) return;
+
+    IPlugin* plugin = g_ctx->audioEngine->getChain().getPlugin(static_cast<int>(pluginIndex));
+    if (!plugin) return;
+
+    std::string path;
+    if (windowsPath) {
+        const char* pathStr = env->GetStringUTFChars(windowsPath, nullptr);
+        if (pathStr) {
+            path = pathStr;
+            env->ReleaseStringUTFChars(windowsPath, pathStr);
+        }
+    }
+
+    plugin->respondNativeFilePicker(
+        static_cast<uint32_t>(sequence),
+        cancelled == JNI_TRUE,
+        path);
+}
+
 // --- Real-time recording ---
 
 JNIEXPORT jboolean JNICALL

@@ -11,4 +11,16 @@ import androidx.compose.runtime.Composable
  *  inline editor is a no-op (and rack code never calls it because there
  *  are no VST2-format plugins in the registry). */
 @Composable
-fun VstInlineEditor(pluginIndex: Int, isFullscreen: Boolean = false) { /* no-op */ }
+fun VstInlineEditor(
+    pluginIndex: Int,
+    isFullscreen: Boolean = false,
+    onPluginSizeKnown: (width: Int, height: Int) -> Unit = { _, _ -> },
+    onFilePickerRequested: (
+        sequence: Int,
+        title: String,
+        filterPatterns: String,
+        initialDir: String,
+        copyDirLinux: String,
+        copyDirWindows: String,
+    ) -> Boolean = { _, _, _, _, _, _ -> false },
+) { /* no-op */ }

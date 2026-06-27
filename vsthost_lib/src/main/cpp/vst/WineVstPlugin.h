@@ -41,6 +41,8 @@ public:
     guitarrackcraft::PluginInfo getInfo() const override;
     void setParameter(uint32_t portIndex, float value) override;
     float getParameter(uint32_t portIndex) const override;
+    bool pollNativeFilePicker(guitarrackcraft::NativeFilePickerRequest& request) override;
+    void respondNativeFilePicker(uint32_t sequence, bool cancelled, const std::string& windowsPath) override;
 
     /** Persist the host-side mirror of VST parameter values so presets
      *  round-trip slider state. NOT captured: knob turns inside the wine
@@ -76,6 +78,7 @@ private:
     std::string wineRoot_;
     std::string assetsDir_;
     std::string nativeLibDir_;
+    std::string winePrefix_;
     int displayNumber_ = -1;
 
     float sampleRate_ = 48000.0f;

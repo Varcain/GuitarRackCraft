@@ -135,6 +135,7 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.io.IOException
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.runtime.mutableIntStateOf
@@ -1460,6 +1461,91 @@ fun PluginCard(
                     )
                 }
 
+                var vstWineFileRequestPending by remember { mutableStateOf<VstWineFilePickerRequest?>(null) }
+                var showVstWineFilePicker by remember { mutableStateOf(false) }
+
+                fun respondVstWineFilePicker(
+                    request: VstWineFilePickerRequest,
+                    cancelled: Boolean,
+                    windowsPath: String = ""
+                ) {
+                    com.varcain.guitarrackcraft.engine.NativeEngine.getInstance()
+                        .nativeRespondVstFilePicker(
+                            request.pluginIndex,
+                            request.sequence,
+                            cancelled,
+                            windowsPath
+                        )
+                }
+
+                val vstWineFilePicker = rememberLauncherForActivityResult(
+                    contract = ActivityResultContracts.OpenDocument()
+                ) { uri ->
+                    val request = vstWineFileRequestPending ?: return@rememberLauncherForActivityResult
+                    if (uri == null) {
+                        respondVstWineFilePicker(request, cancelled = true)
+                        vstWineFileRequestPending = null
+                        return@rememberLauncherForActivityResult
+                    }
+
+                    scope.launch(Dispatchers.IO) {
+                        val windowsPath = runCatching {
+                            copySafUriForVstWinePicker(context, uri, request)
+                        }.getOrElse { error ->
+                            Log.e("GuitarRackCraft.UI", "VST picker copy failed", error)
+                            ""
+                        }
+                        withContext(Dispatchers.Main) {
+                            respondVstWineFilePicker(
+                                request,
+                                cancelled = windowsPath.isEmpty(),
+                                windowsPath = windowsPath
+                            )
+                            vstWineFileRequestPending = null
+                        }
+                    }
+                }
+
+                if (showVstWineFilePicker && vstWineFileRequestPending != null) {
+                    val request = vstWineFileRequestPending!!
+                    GenericFilePickerDialog(
+                        title = request.config.title,
+                        storageDirs = request.config.storageDirs,
+                        extensions = request.config.extensions,
+                        builtInItems = request.config.builtInItems,
+                        onFileSelected = { path ->
+                            showVstWineFilePicker = false
+                            scope.launch(Dispatchers.IO) {
+                                val windowsPath = runCatching {
+                                    copyExistingFileForVstWinePicker(path, request)
+                                }.getOrElse { error ->
+                                    Log.e("GuitarRackCraft.UI", "VST picker existing-file copy failed", error)
+                                    ""
+                                }
+                                withContext(Dispatchers.Main) {
+                                    respondVstWineFilePicker(
+                                        request,
+                                        cancelled = windowsPath.isEmpty(),
+                                        windowsPath = windowsPath
+                                    )
+                                    vstWineFileRequestPending = null
+                                }
+                            }
+                        },
+                        onBrowseFiles = {
+                            showVstWineFilePicker = false
+                            vstWineFilePicker.launch(mimeTypesForVstWinePicker(request))
+                        },
+                        onNavigateToTone3000 = {},
+                        showTone3000 = false,
+                        onDismiss = {
+                            showVstWineFilePicker = false
+                            respondVstWineFilePicker(request, cancelled = true)
+                            vstWineFileRequestPending = null
+                        }
+                    )
+                }
+
                 // CRITICAL: Always keep PluginX11UiView in composition to avoid TextureView destruction.
                 // When switching away from X11 mode, we hide it instead of removing it.
                 // This prevents the Android graphics driver from destroying shared mutexes.
@@ -1574,6 +1660,32 @@ fun PluginCard(
                                         x11UserScale = defaultScaleForAspectRatio(w, h)
                                     }
                                     vstUiReady = true
+                                },
+                                onFilePickerRequested = { sequence, title, filterPatterns, initialDir, copyDirLinux, copyDirWindows ->
+                                    val existing = vstWineFileRequestPending
+                                    if (existing != null) {
+                                        true
+                                    } else {
+                                        val classified = getVstWineFilePickerConfig(title, filterPatterns)
+                                        if (classified == null) {
+                                            false
+                                        } else {
+                                            val (kind, config) = classified
+                                            vstWineFileRequestPending = VstWineFilePickerRequest(
+                                                pluginIndex = pluginIndex,
+                                                sequence = sequence,
+                                                title = title,
+                                                filterPatterns = filterPatterns,
+                                                initialDir = initialDir,
+                                                copyDirLinux = copyDirLinux,
+                                                copyDirWindows = copyDirWindows,
+                                                kind = kind,
+                                                config = config
+                                            )
+                                            showVstWineFilePicker = true
+                                            true
+                                        }
+                                    }
                                 }
                             )
                         }
@@ -1988,6 +2100,23 @@ private data class X11FilePickerConfig(
     val builtInItems: List<Pair<String, String>> // displayName to deliveryValue
 )
 
+private enum class VstWinePickerKind {
+    MODEL,
+    IR
+}
+
+private data class VstWineFilePickerRequest(
+    val pluginIndex: Int,
+    val sequence: Int,
+    val title: String,
+    val filterPatterns: String,
+    val initialDir: String,
+    val copyDirLinux: String,
+    val copyDirWindows: String,
+    val kind: VstWinePickerKind,
+    val config: X11FilePickerConfig
+)
+
 private fun getX11FilePickerConfig(propertyUri: String): X11FilePickerConfig = when {
     propertyUri.endsWith("#json") || propertyUri.contains("rt-neural-generic#json") -> X11FilePickerConfig(
         title = "Select AIDA-X Model",
@@ -2015,6 +2144,44 @@ private fun getX11FilePickerConfig(propertyUri: String): X11FilePickerConfig = w
     )
 }
 
+private fun getVstWineFilePickerConfig(
+    title: String,
+    filterPatterns: String
+): Pair<VstWinePickerKind, X11FilePickerConfig>? {
+    val haystack = "$title\n$filterPatterns".lowercase()
+    val isIr = haystack.contains(".wav") ||
+        haystack.contains("*.wav") ||
+        haystack.contains("impulse") ||
+        Regex("""\bir\b""").containsMatchIn(haystack)
+    val isModel = haystack.contains(".nam") ||
+        haystack.contains("*.nam") ||
+        haystack.contains("nammodel") ||
+        haystack.contains("profile") ||
+        haystack.contains("model")
+
+    return when {
+        isIr -> VstWinePickerKind.IR to X11FilePickerConfig(
+            title = "Select Impulse Response",
+            storageDirs = listOf("ir_models"),
+            extensions = setOf("wav"),
+            builtInItems = emptyList()
+        )
+        isModel -> VstWinePickerKind.MODEL to X11FilePickerConfig(
+            title = "Select Neural Model",
+            storageDirs = listOf("neural_models", "aidax_models"),
+            extensions = setOf("nam", "nammodel", "json"),
+            builtInItems = emptyList()
+        )
+        else -> null
+    }
+}
+
+private fun mimeTypesForVstWinePicker(request: VstWineFilePickerRequest): Array<String> =
+    when (request.kind) {
+        VstWinePickerKind.IR -> arrayOf("audio/*", "*/*")
+        VstWinePickerKind.MODEL -> arrayOf("*/*")
+    }
+
 @Composable
 private fun GenericFilePickerDialog(
     title: String,
@@ -2024,6 +2191,7 @@ private fun GenericFilePickerDialog(
     onFileSelected: (String) -> Unit,
     onBrowseFiles: () -> Unit,
     onNavigateToTone3000: () -> Unit,
+    showTone3000: Boolean = true,
     onDismiss: () -> Unit
 ) {
     val context = LocalContext.current
@@ -2071,19 +2239,21 @@ private fun GenericFilePickerDialog(
                             Icon(Icons.Default.Folder, contentDescription = null)
                             Text("Browse files\u2026", fontWeight = FontWeight.Bold)
                         }
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable { 
-                                    onDismiss()
-                                    onNavigateToTone3000() 
-                                }
-                                .padding(vertical = 12.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(12.dp)
-                        ) {
-                            Icon(Icons.Default.Cloud, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
-                            Text("Browse TONE3000", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                        if (showTone3000) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable {
+                                        onDismiss()
+                                        onNavigateToTone3000()
+                                    }
+                                    .padding(vertical = 12.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(12.dp)
+                            ) {
+                                Icon(Icons.Default.Cloud, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                                Text("Browse TONE3000", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                            }
                         }
                     }
                 }
@@ -2409,6 +2579,96 @@ private fun resolvePickedFileName(
 
     val fallbackExtension = allowedExtensions.firstOrNull { it != "zip" } ?: return sanitized
     return "$sanitized.$fallbackExtension"
+}
+
+private fun copyExistingFileForVstWinePicker(
+    selectedPath: String,
+    request: VstWineFilePickerRequest
+): String {
+    val source = java.io.File(selectedPath)
+    if (!source.isFile) throw IOException("Selected file does not exist: $selectedPath")
+    return copyLocalFileIntoVstWinePicker(source, request)
+}
+
+private fun copySafUriForVstWinePicker(
+    context: android.content.Context,
+    uri: android.net.Uri,
+    request: VstWineFilePickerRequest
+): String {
+    val fileName = resolvePickedFileName(
+        context,
+        uri,
+        if (request.kind == VstWinePickerKind.IR) "ir" else "model",
+        request.config.extensions + if (request.kind == VstWinePickerKind.MODEL) setOf("zip") else emptySet()
+    )
+
+    val storageDir = request.config.storageDirs.first()
+    val storedFile = if (fileName.lowercase().endsWith(".zip") && request.kind == VstWinePickerKind.MODEL) {
+        val models = extractModelsFromZip(
+            context,
+            uri,
+            fileName,
+            ModelPluginConfig(
+                propertyUri = "",
+                extensions = request.config.extensions,
+                storageDirs = request.config.storageDirs,
+                placeholder = ""
+            )
+        )
+        models.firstOrNull() ?: throw IOException("No supported model files found in $fileName")
+    } else {
+        val destDir = java.io.File(context.filesDir, storageDir)
+        destDir.mkdirs()
+        val destFile = java.io.File(destDir, fileName)
+        context.contentResolver.openInputStream(uri)?.use { input ->
+            destFile.outputStream().use { output -> input.copyTo(output) }
+        } ?: throw IOException("Could not open picked URI")
+        destFile
+    }
+
+    return copyLocalFileIntoVstWinePicker(storedFile, request)
+}
+
+private fun copyLocalFileIntoVstWinePicker(
+    source: java.io.File,
+    request: VstWineFilePickerRequest
+): String {
+    val destDir = java.io.File(request.copyDirLinux)
+    if (!destDir.exists() && !destDir.mkdirs()) {
+        throw IOException("Could not create ${destDir.absolutePath}")
+    }
+
+    val safeName = sanitizeVstWineFileName(source.name)
+    val destFile = uniqueVstWineDestinationFile(destDir, safeName)
+    source.inputStream().use { input ->
+        destFile.outputStream().use { output -> input.copyTo(output) }
+    }
+
+    val windowsDir = request.copyDirWindows.ifBlank { "C:\\vstpoc_picker" }.trimEnd('\\')
+    return "$windowsDir\\${destFile.name}"
+}
+
+private fun sanitizeVstWineFileName(name: String): String {
+    val sanitized = name
+        .substringAfterLast('/')
+        .replace(Regex("[\\\\/:*?\"<>|]"), "_")
+        .trim()
+        .trim('.')
+    return sanitized.ifEmpty { "picked_file" }.take(180)
+}
+
+private fun uniqueVstWineDestinationFile(dir: java.io.File, fileName: String): java.io.File {
+    val first = java.io.File(dir, fileName)
+    if (!first.exists()) return first
+
+    val dot = fileName.lastIndexOf('.')
+    val base = if (dot > 0) fileName.substring(0, dot) else fileName
+    val ext = if (dot > 0) fileName.substring(dot) else ""
+    for (i in 1..999) {
+        val candidate = java.io.File(dir, "${base}_$i$ext")
+        if (!candidate.exists()) return candidate
+    }
+    return java.io.File(dir, "${base}_${System.currentTimeMillis()}$ext")
 }
 
 @OptIn(ExperimentalMaterial3Api::class)

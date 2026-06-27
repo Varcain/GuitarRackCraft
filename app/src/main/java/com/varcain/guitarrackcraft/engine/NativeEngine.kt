@@ -344,6 +344,17 @@ class NativeEngine private constructor() {
     /** Deliver a file path to a plugin's X11 UI via patch:Set atom. */
     external fun nativeDeliverFileToPluginUI(pluginIndex: Int, propertyUri: String, filePath: String)
 
+    /** Poll for a pending Wine common-dialog file request from a hosted VST. */
+    external fun nativePollVstFilePickerRequest(pluginIndex: Int): Array<String>?
+
+    /** Deliver a Windows path, or cancellation, to a hosted VST file dialog. */
+    external fun nativeRespondVstFilePicker(
+        pluginIndex: Int,
+        sequence: Int,
+        cancelled: Boolean,
+        windowsPath: String
+    )
+
     /** Save the complete chain state (all plugins) as a JSON string. */
     external fun nativeSaveChainState(): String?
 
