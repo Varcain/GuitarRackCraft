@@ -157,6 +157,9 @@ class PluginBrowserViewModel(application: Application) : AndroidViewModel(applic
     /** Shown as Snackbar when add-to-rack fails (e.g. plugin binary missing). */
     private val _addFailureMessage = MutableStateFlow<String?>(null)
     val addFailureMessage: StateFlow<String?> = _addFailureMessage.asStateFlow()
+
+    private val _blockingOperation = MutableStateFlow<String?>(null)
+    val blockingOperation: StateFlow<String?> = _blockingOperation.asStateFlow()
     
     private val _favorites = MutableStateFlow<Set<String>>(emptySet())
     val favorites: StateFlow<Set<String>> = _favorites.asStateFlow()
@@ -419,49 +422,66 @@ class PluginBrowserViewModel(application: Application) : AndroidViewModel(applic
         }
     }
 
-    suspend fun addPluginToRack(plugin: PluginInfo, position: Int = -1): Boolean =
-            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-        // Off the main thread because for VST plugins, RackManager.addPlugin
-        // chains through WineVstPlugin::activate() which can block for ~5s
-        // waiting on guest_ready (wine + FEX + plugin DLL load is slow).
-        // Running this on the main thread triggers Android's input-dispatch
-        // ANR watchdog and the system SIGKILLs the app.
-        android.util.Log.i("PluginBrowser", "[LIFECYCLE] addPluginToRack called: ${plugin.name} (${plugin.fullId})")
-        try {
-            val index = RackManager.addPlugin(plugin.fullId, position)
-            android.util.Log.i("PluginBrowser", "[LIFECYCLE] addPluginToRack result: ${plugin.name} -> index=$index")
-            if (index >= 0) {
-                true
-            } else {
-                _addFailureMessage.value = "Could not add plugin. Plugin binaries (.so) are not included in this build—only metadata is available."
-                false
-            }
-        } catch (e: Exception) {
-            android.util.Log.e("PluginBrowser", "[LIFECYCLE] addPluginToRack failed: ${plugin.name}", e)
-            _addFailureMessage.value = "Failed to add plugin: ${e.message}"
-            false
+    private suspend fun <T> withBlockingOperation(label: String, block: suspend () -> T): T {
+        _blockingOperation.value = label
+        return try {
+            block()
+        } finally {
+            _blockingOperation.value = null
         }
     }
 
-    suspend fun replacePluginInRack(position: Int, plugin: PluginInfo): Boolean =
+    suspend fun addPluginToRack(plugin: PluginInfo, position: Int = -1): Boolean {
+        if (_blockingOperation.value != null) return false
+        return withBlockingOperation("Adding plugin") {
             kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-        // Same off-main-thread reason as addPluginToRack — VST replace
-        // triggers activate() which blocks on guest_ready.
-        android.util.Log.i("PluginBrowser", "[LIFECYCLE] replacePluginInRack called: position=$position, ${plugin.name} (${plugin.fullId})")
-        try {
-            RackManager.removePlugin(position)
-            val index = RackManager.addPlugin(plugin.fullId, position)
-            android.util.Log.i("PluginBrowser", "[LIFECYCLE] replacePluginInRack result: ${plugin.name} -> index=$index")
-            if (index >= 0) {
-                true
-            } else {
-                _addFailureMessage.value = "Could not add plugin. Plugin binaries (.so) are not included in this build—only metadata is available."
-                false
+                // Off the main thread because for VST plugins, RackManager.addPlugin
+                // chains through WineVstPlugin::activate() which can block for ~5s
+                // waiting on guest_ready (wine + FEX + plugin DLL load is slow).
+                // Running this on the main thread triggers Android's input-dispatch
+                // ANR watchdog and the system SIGKILLs the app.
+                android.util.Log.i("PluginBrowser", "[LIFECYCLE] addPluginToRack called: ${plugin.name} (${plugin.fullId})")
+                try {
+                    val index = RackManager.addPlugin(plugin.fullId, position)
+                    android.util.Log.i("PluginBrowser", "[LIFECYCLE] addPluginToRack result: ${plugin.name} -> index=$index")
+                    if (index >= 0) {
+                        true
+                    } else {
+                        _addFailureMessage.value = "Could not add plugin. Plugin binaries (.so) are not included in this build—only metadata is available."
+                        false
+                    }
+                } catch (e: Exception) {
+                    android.util.Log.e("PluginBrowser", "[LIFECYCLE] addPluginToRack failed: ${plugin.name}", e)
+                    _addFailureMessage.value = "Failed to add plugin: ${e.message}"
+                    false
+                }
             }
-        } catch (e: Exception) {
-            android.util.Log.e("PluginBrowser", "[LIFECYCLE] replacePluginInRack failed: ${plugin.name}", e)
-            _addFailureMessage.value = "Failed to replace plugin: ${e.message}"
-            false
+        }
+    }
+
+    suspend fun replacePluginInRack(position: Int, plugin: PluginInfo): Boolean {
+        if (_blockingOperation.value != null) return false
+        return withBlockingOperation("Replacing plugin") {
+            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                // Same off-main-thread reason as addPluginToRack — VST replace
+                // triggers activate() which blocks on guest_ready.
+                android.util.Log.i("PluginBrowser", "[LIFECYCLE] replacePluginInRack called: position=$position, ${plugin.name} (${plugin.fullId})")
+                try {
+                    RackManager.removePlugin(position)
+                    val index = RackManager.addPlugin(plugin.fullId, position)
+                    android.util.Log.i("PluginBrowser", "[LIFECYCLE] replacePluginInRack result: ${plugin.name} -> index=$index")
+                    if (index >= 0) {
+                        true
+                    } else {
+                        _addFailureMessage.value = "Could not add plugin. Plugin binaries (.so) are not included in this build—only metadata is available."
+                        false
+                    }
+                } catch (e: Exception) {
+                    android.util.Log.e("PluginBrowser", "[LIFECYCLE] replacePluginInRack failed: ${plugin.name}", e)
+                    _addFailureMessage.value = "Failed to replace plugin: ${e.message}"
+                    false
+                }
+            }
         }
     }
 

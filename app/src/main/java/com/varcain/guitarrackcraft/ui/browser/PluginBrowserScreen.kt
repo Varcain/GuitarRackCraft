@@ -24,10 +24,12 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.KeyboardArrowDown
@@ -48,11 +50,14 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.zIndex
+import androidx.activity.compose.BackHandler
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.varcain.guitarrackcraft.engine.PluginInfo
 import com.varcain.guitarrackcraft.engine.UiType
@@ -74,6 +79,7 @@ fun PluginBrowserScreen(
     val errorMessage by viewModel.errorMessage.collectAsState()
     val addFailureMessage by viewModel.addFailureMessage.collectAsState()
     val favorites by viewModel.favorites.collectAsState()
+    val blockingOperation by viewModel.blockingOperation.collectAsState()
 
     // Scope for kicking off add/replace plugin operations off the main thread.
     // VST activate (wine fork + guest_ready wait) blocks for several seconds.
@@ -98,129 +104,135 @@ fun PluginBrowserScreen(
         }
     }
 
-    Scaffold(
-        snackbarHost = { SnackbarHost(snackbarHostState) },
-        topBar = {
-            TopAppBar(
-                title = { Text("Plugin Browser") },
-                navigationIcon = {
-                    IconButton(onClick = onNavigateBack) {
-                        Icon(Icons.Default.ArrowBack, contentDescription = "Back")
-                    }
-                },
-                actions = {
-                    IconButton(onClick = { viewModel.refresh() }) {
-                        Icon(Icons.Default.Refresh, contentDescription = "Refresh")
-                    }
-                }
-            )
-        }
-    ) { padding ->
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(padding)
-        ) {
-            when {
-                isLoading -> {
-                    CircularProgressIndicator(
-                        modifier = Modifier.align(Alignment.Center)
-                    )
-                }
-                errorMessage != null -> {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .padding(16.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.Center
-                    ) {
-                        Text(
-                            text = errorMessage ?: "Unknown error",
-                            color = MaterialTheme.colorScheme.error
-                        )
-                        Spacer(modifier = Modifier.height(16.dp))
-                        Button(onClick = { viewModel.refresh() }) {
-                            Text("Retry")
+    BackHandler(enabled = blockingOperation != null) { }
+
+    Box(modifier = Modifier.fillMaxSize()) {
+        Scaffold(
+            snackbarHost = { SnackbarHost(snackbarHostState) },
+            topBar = {
+                TopAppBar(
+                    title = { Text("Plugin Browser") },
+                    navigationIcon = {
+                        IconButton(onClick = onNavigateBack) {
+                            Icon(Icons.Default.ArrowBack, contentDescription = "Back")
+                        }
+                    },
+                    actions = {
+                        IconButton(onClick = { viewModel.refresh() }) {
+                            Icon(Icons.Default.Refresh, contentDescription = "Refresh")
                         }
                     }
-                }
-                groupedPlugins.isEmpty() -> {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .padding(16.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.Center
-                    ) {
-                        Text("No plugins available")
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Text(
-                            text = "LV2 plugins are loaded from the app's extracted assets (assets/lv2). This app ships with GxPlugins in assets—if you see nothing here, the native build may be using the LV2 stub (no lilv/serd/sord). Build the LV2 libraries and place them in app/src/main/cpp/libs/lv2/, then rebuild the app. See LV2_INTEGRATION.md.",
-                            style = MaterialTheme.typography.bodySmall
+                )
+            }
+        ) { padding ->
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(padding)
+            ) {
+                when {
+                    isLoading -> {
+                        CircularProgressIndicator(
+                            modifier = Modifier.align(Alignment.Center)
                         )
                     }
-                }
-                else -> {
-                    LazyColumn(
-                        modifier = Modifier.fillMaxSize(),
-                        contentPadding = PaddingValues(16.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        groupedPlugins.forEach { authorGroup ->
-                            // Author header
-                            item(key = "author_${authorGroup.name}") {
-                                AuthorHeader(
-                                    authorName = authorGroup.name,
-                                    pluginCount = authorGroup.categories.sumOf { it.plugins.size },
-                                    isExpanded = expandedAuthors.contains(authorGroup.name),
-                                    onToggle = { viewModel.toggleAuthor(authorGroup.name) }
-                                )
+                    errorMessage != null -> {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .padding(16.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.Center
+                        ) {
+                            Text(
+                                text = errorMessage ?: "Unknown error",
+                                color = MaterialTheme.colorScheme.error
+                            )
+                            Spacer(modifier = Modifier.height(16.dp))
+                            Button(onClick = { viewModel.refresh() }) {
+                                Text("Retry")
                             }
-                            
-                            // Categories (only show if author is expanded)
-                            if (expandedAuthors.contains(authorGroup.name)) {
-                                authorGroup.categories.forEach { category ->
-                                    val categoryKey = "${authorGroup.name}|${category.name}"
-                                    val isCategoryExpanded = expandedCategories.contains(categoryKey)
-                                    
-                                    // Category header
-                                    item(key = "category_${categoryKey}") {
-                                        CategoryHeader(
-                                            categoryName = category.name,
-                                            pluginCount = category.plugins.size,
-                                            isExpanded = isCategoryExpanded,
-                                            onToggle = { 
-                                                viewModel.toggleCategory(authorGroup.name, category.name) 
-                                            }
-                                        )
-                                    }
-                                    
-                                    // Plugins in category (only show if category is expanded)
-                                    if (isCategoryExpanded) {
-                                        items(
-                                            items = category.plugins,
-                                            key = { "${authorGroup.name}_${category.name}_${it.fullId}" }
-                                        ) { plugin ->
-                                            PluginItem(
-                                                plugin = plugin,
-                                                isFavorite = favorites.contains(plugin.fullId),
-                                                onToggleFavorite = { viewModel.toggleFavorite(plugin.fullId) },
-                                                onClick = {
-                                                    // VST activate can take ~5s (wine fork + FEX startup);
-                                                    // doing it on the main thread triggers Android's
-                                                    // input-dispatch ANR watchdog. Launch on the screen's
-                                                    // coroutine scope; the view model dispatches to IO.
-                                                    addPluginScope.launch {
-                                                        val success = if (replaceIndex >= 0) {
-                                                            viewModel.replacePluginInRack(replaceIndex, plugin)
-                                                        } else {
-                                                            viewModel.addPluginToRack(plugin)
-                                                        }
-                                                        if (success) onNavigateBack()
-                                                    }
+                        }
+                    }
+                    groupedPlugins.isEmpty() -> {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .padding(16.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.Center
+                        ) {
+                            Text("No plugins available")
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Text(
+                                text = "LV2 plugins are loaded from the app's extracted assets (assets/lv2). This app ships with GxPlugins in assets—if you see nothing here, the native build may be using the LV2 stub (no lilv/serd/sord). Build the LV2 libraries and place them in app/src/main/cpp/libs/lv2/, then rebuild the app. See LV2_INTEGRATION.md.",
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                        }
+                    }
+                    else -> {
+                        LazyColumn(
+                            modifier = Modifier.fillMaxSize(),
+                            contentPadding = PaddingValues(16.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            groupedPlugins.forEach { authorGroup ->
+                                // Author header
+                                item(key = "author_${authorGroup.name}") {
+                                    AuthorHeader(
+                                        authorName = authorGroup.name,
+                                        pluginCount = authorGroup.categories.sumOf { it.plugins.size },
+                                        isExpanded = expandedAuthors.contains(authorGroup.name),
+                                        onToggle = { viewModel.toggleAuthor(authorGroup.name) }
+                                    )
+                                }
+
+                                // Categories (only show if author is expanded)
+                                if (expandedAuthors.contains(authorGroup.name)) {
+                                    authorGroup.categories.forEach { category ->
+                                        val categoryKey = "${authorGroup.name}|${category.name}"
+                                        val isCategoryExpanded = expandedCategories.contains(categoryKey)
+
+                                        // Category header
+                                        item(key = "category_${categoryKey}") {
+                                            CategoryHeader(
+                                                categoryName = category.name,
+                                                pluginCount = category.plugins.size,
+                                                isExpanded = isCategoryExpanded,
+                                                onToggle = {
+                                                    viewModel.toggleCategory(authorGroup.name, category.name)
                                                 }
                                             )
+                                        }
+
+                                        // Plugins in category (only show if category is expanded)
+                                        if (isCategoryExpanded) {
+                                            items(
+                                                items = category.plugins,
+                                                key = { "${authorGroup.name}_${category.name}_${it.fullId}" }
+                                            ) { plugin ->
+                                                PluginItem(
+                                                    plugin = plugin,
+                                                    isFavorite = favorites.contains(plugin.fullId),
+                                                    onToggleFavorite = { viewModel.toggleFavorite(plugin.fullId) },
+                                                    onClick = {
+                                                        if (blockingOperation == null) {
+                                                            // VST activate can take ~5s (wine fork + FEX startup);
+                                                            // doing it on the main thread triggers Android's
+                                                            // input-dispatch ANR watchdog. Launch on the screen's
+                                                            // coroutine scope; the view model dispatches to IO.
+                                                            addPluginScope.launch {
+                                                                val success = if (replaceIndex >= 0) {
+                                                                    viewModel.replacePluginInRack(replaceIndex, plugin)
+                                                                } else {
+                                                                    viewModel.addPluginToRack(plugin)
+                                                                }
+                                                                if (success) onNavigateBack()
+                                                            }
+                                                        }
+                                                    }
+                                                )
+                                            }
                                         }
                                     }
                                 }
@@ -228,6 +240,48 @@ fun PluginBrowserScreen(
                         }
                     }
                 }
+            }
+        }
+        blockingOperation?.let { label ->
+            BrowserBlockingOperationOverlay(label = label)
+        }
+    }
+}
+
+@Composable
+private fun BrowserBlockingOperationOverlay(label: String) {
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .zIndex(100f)
+            .background(MaterialTheme.colorScheme.scrim.copy(alpha = 0.45f))
+            .pointerInput(Unit) {
+                awaitPointerEventScope {
+                    while (true) {
+                        val event = awaitPointerEvent()
+                        event.changes.forEach { it.consume() }
+                    }
+                }
+            },
+        contentAlignment = Alignment.Center
+    ) {
+        Surface(
+            tonalElevation = 8.dp,
+            shadowElevation = 8.dp,
+            shape = RoundedCornerShape(8.dp),
+            color = MaterialTheme.colorScheme.surface
+        ) {
+            Column(
+                modifier = Modifier.padding(horizontal = 28.dp, vertical = 22.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                CircularProgressIndicator(strokeWidth = 3.dp)
+                Text(
+                    text = "$label...",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
             }
         }
     }
