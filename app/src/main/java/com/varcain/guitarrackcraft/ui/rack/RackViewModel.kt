@@ -99,6 +99,9 @@ class RackViewModel(application: Application) : AndroidViewModel(application) {
     private val _presetMessage = MutableStateFlow<String?>(null)
     val presetMessage: StateFlow<String?> = _presetMessage.asStateFlow()
 
+    private val _blockingOperation = MutableStateFlow<String?>(null)
+    val blockingOperation: StateFlow<String?> = _blockingOperation.asStateFlow()
+
     // WAV playback state
     private val _wavLoaded = MutableStateFlow(false)
     val wavLoaded: StateFlow<Boolean> = _wavLoaded.asStateFlow()
@@ -416,32 +419,45 @@ class RackViewModel(application: Application) : AndroidViewModel(application) {
         PluginUiPreferenceManager.setStoredUiType(getApplication<Application>(), pluginFullId, uiType)
     }
 
+    private suspend fun updateRackStateNow(forceNewInstanceIds: Boolean = false) {
+        try {
+            val plugins = RackManager.getRackPlugins()
+            val oldList = _rackPlugins.value
+            // Preserve instanceIds for plugins that stayed in the rack,
+            // unless forceNewInstanceIds is set (e.g. after preset load which
+            // removes and re-adds all plugins — the native UIs are detached
+            // and Compose must tear down and recreate views).
+            val availableOld = if (forceNewInstanceIds) emptyMap()
+                else oldList.groupBy { it.pluginId }.mapValues { it.value.toMutableList() }
+            _rackPlugins.value = plugins.mapIndexed { index, pluginInfo ->
+                val fullId = pluginInfo.fullId
+                val existing = availableOld[fullId]?.removeFirstOrNull()
+                RackPlugin(
+                    index = index,
+                    name = pluginInfo.name.ifEmpty { pluginInfo.id },
+                    pluginId = fullId,
+                    instanceId = existing?.instanceId ?: RackPlugin.nextInstanceId()
+                )
+            }
+            android.util.Log.i("AudioLifecycle", "updateRackState: ok size=${plugins.size} forceNewInstanceIds=$forceNewInstanceIds")
+        } catch (e: Exception) {
+            _errorMessage.value = "Failed to get rack plugins: ${e.message}"
+            android.util.Log.e("AudioLifecycle", "updateRackState: failed (keeping previous list to avoid tearing down X11 UIs): ${e.message}", e)
+        }
+    }
+
     private fun updateRackState(forceNewInstanceIds: Boolean = false) {
         viewModelScope.launch {
-            try {
-                val plugins = RackManager.getRackPlugins()
-                val oldList = _rackPlugins.value
-                // Preserve instanceIds for plugins that stayed in the rack,
-                // unless forceNewInstanceIds is set (e.g. after preset load which
-                // removes and re-adds all plugins — the native UIs are detached
-                // and Compose must tear down and recreate views).
-                val availableOld = if (forceNewInstanceIds) emptyMap()
-                    else oldList.groupBy { it.pluginId }.mapValues { it.value.toMutableList() }
-                _rackPlugins.value = plugins.mapIndexed { index, pluginInfo ->
-                    val fullId = pluginInfo.fullId
-                    val existing = availableOld[fullId]?.removeFirstOrNull()
-                    RackPlugin(
-                        index = index,
-                        name = pluginInfo.name.ifEmpty { pluginInfo.id },
-                        pluginId = fullId,
-                        instanceId = existing?.instanceId ?: RackPlugin.nextInstanceId()
-                    )
-                }
-                android.util.Log.i("AudioLifecycle", "updateRackState: ok size=${plugins.size} forceNewInstanceIds=$forceNewInstanceIds")
-            } catch (e: Exception) {
-                _errorMessage.value = "Failed to get rack plugins: ${e.message}"
-                android.util.Log.e("AudioLifecycle", "updateRackState: failed (keeping previous list to avoid tearing down X11 UIs): ${e.message}", e)
-            }
+            updateRackStateNow(forceNewInstanceIds)
+        }
+    }
+
+    private suspend fun <T> withBlockingOperation(label: String, block: suspend () -> T): T {
+        _blockingOperation.value = label
+        return try {
+            block()
+        } finally {
+            _blockingOperation.value = null
         }
     }
 
@@ -456,8 +472,15 @@ class RackViewModel(application: Application) : AndroidViewModel(application) {
 
     fun savePreset(ctx: Context, name: String) {
         viewModelScope.launch {
-            val ok = withContext(Dispatchers.IO) {
-                presetManager.savePreset(ctx, name)
+            val ok = try {
+                withBlockingOperation("Saving preset") {
+                    withContext(Dispatchers.IO) {
+                        presetManager.savePreset(ctx, name)
+                    }
+                }
+            } catch (e: Exception) {
+                android.util.Log.e("AudioLifecycle", "savePreset failed: ${e.message}", e)
+                false
             }
             if (ok) {
                 ensureRecentManager(ctx).addRecent(name)
@@ -472,18 +495,28 @@ class RackViewModel(application: Application) : AndroidViewModel(application) {
     fun loadPreset(ctx: Context, name: String) {
         viewModelScope.launch {
             val engine = NativeEngine.getInstance()
-            val ok = withContext(Dispatchers.IO) {
-                engine.setChainBypass(true)
-                try {
-                    presetManager.loadPreset(ctx, name)
-                } finally {
-                    engine.setChainBypass(false)
+            val ok = try {
+                withBlockingOperation("Loading preset") {
+                    val loaded = withContext(Dispatchers.IO) {
+                        engine.setChainBypass(true)
+                        try {
+                            presetManager.loadPreset(ctx, name)
+                        } finally {
+                            engine.setChainBypass(false)
+                        }
+                    }
+                    if (loaded) {
+                        ensureRecentManager(ctx).addRecent(name)
+                        refreshPresets(ctx)
+                        updateRackStateNow(forceNewInstanceIds = true)
+                    }
+                    loaded
                 }
+            } catch (e: Exception) {
+                android.util.Log.e("AudioLifecycle", "loadPreset failed: ${e.message}", e)
+                false
             }
             if (ok) {
-                ensureRecentManager(ctx).addRecent(name)
-                refreshPresets(ctx)
-                refreshRack(forceNewInstanceIds = true)
                 _presetMessage.value = "Preset '$name' loaded"
             } else {
                 _presetMessage.value = "Failed to load preset (plugin count mismatch?)"
@@ -494,16 +527,26 @@ class RackViewModel(application: Application) : AndroidViewModel(application) {
     fun loadRecordingPreset(json: String) {
         viewModelScope.launch {
             val engine = NativeEngine.getInstance()
-            val ok = withContext(Dispatchers.IO) {
-                engine.setChainBypass(true)
-                try {
-                    presetManager.loadPresetFromJson(json)
-                } finally {
-                    engine.setChainBypass(false)
+            val ok = try {
+                withBlockingOperation("Loading preset") {
+                    val loaded = withContext(Dispatchers.IO) {
+                        engine.setChainBypass(true)
+                        try {
+                            presetManager.loadPresetFromJson(json)
+                        } finally {
+                            engine.setChainBypass(false)
+                        }
+                    }
+                    if (loaded) {
+                        updateRackStateNow(forceNewInstanceIds = true)
+                    }
+                    loaded
                 }
+            } catch (e: Exception) {
+                android.util.Log.e("AudioLifecycle", "loadRecordingPreset failed: ${e.message}", e)
+                false
             }
             if (ok) {
-                refreshRack(forceNewInstanceIds = true)
                 _presetMessage.value = "Recording preset loaded"
             } else {
                 _presetMessage.value = "Failed to load recording preset"

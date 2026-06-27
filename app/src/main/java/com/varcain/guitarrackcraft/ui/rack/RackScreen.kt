@@ -276,6 +276,7 @@ fun RackScreen(
     val rackPlugins by viewModel.rackPlugins.collectAsState()
     val errorMessage by viewModel.errorMessage.collectAsState()
     val presetMessage by viewModel.presetMessage.collectAsState()
+    val blockingOperation by viewModel.blockingOperation.collectAsState()
 
     val wavLoaded by viewModel.wavLoaded.collectAsState()
     val wavDurationSec by viewModel.wavDurationSec.collectAsState()
@@ -313,6 +314,7 @@ fun RackScreen(
     BackHandler(enabled = isFullscreenActive) {
         fullscreenPluginIndex = null
     }
+    BackHandler(enabled = blockingOperation != null) { }
 
     val scope = rememberCoroutineScope()
     val wavFilePickerLauncher = rememberLauncherForActivityResult(
@@ -361,10 +363,11 @@ fun RackScreen(
         }
     }
 
-    Scaffold(
-        contentWindowInsets = WindowInsets(0, 0, 0, 0),
-        snackbarHost = { SnackbarHost(snackbarHostState) },
-        topBar = {
+    Box(modifier = Modifier.fillMaxSize()) {
+        Scaffold(
+            contentWindowInsets = WindowInsets(0, 0, 0, 0),
+            snackbarHost = { SnackbarHost(snackbarHostState) },
+            topBar = {
             if (isFullscreenActive) return@Scaffold
             val statusText = if (isEngineRunning) {
                 var s = "Running · %.1f ms · CPU %.0f%%".format(latencyMs, cpuLoad * 100f)
@@ -616,7 +619,7 @@ fun RackScreen(
                 }
             }
         },
-        bottomBar = {
+            bottomBar = {
             if (isFullscreenActive) return@Scaffold
             Column {
                 if (wavLoaded) {
@@ -655,8 +658,8 @@ fun RackScreen(
                     onOpenWav = { showWavDialog = true }
                 )
             }
-        }
-    ) { padding ->
+            }
+        ) { padding ->
 
     // Preset bottom sheet
     if (showPresetSheet) {
@@ -972,9 +975,52 @@ fun RackScreen(
                 }
             }
         }
+        }
+        blockingOperation?.let { label ->
+            BlockingOperationOverlay(label = label)
+        }
     }
 }
 
+
+@Composable
+private fun BlockingOperationOverlay(label: String) {
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .zIndex(100f)
+            .background(MaterialTheme.colorScheme.scrim.copy(alpha = 0.45f))
+            .pointerInput(Unit) {
+                awaitPointerEventScope {
+                    while (true) {
+                        val event = awaitPointerEvent()
+                        event.changes.forEach { it.consume() }
+                    }
+                }
+            },
+        contentAlignment = Alignment.Center
+    ) {
+        Surface(
+            tonalElevation = 8.dp,
+            shadowElevation = 8.dp,
+            shape = RoundedCornerShape(8.dp),
+            color = MaterialTheme.colorScheme.surface
+        ) {
+            Column(
+                modifier = Modifier.padding(horizontal = 28.dp, vertical = 22.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                CircularProgressIndicator(strokeWidth = 3.dp)
+                Text(
+                    text = "$label...",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+            }
+        }
+    }
+}
 
 @Composable
 private fun EmptyRackPlaceholder(modifier: Modifier = Modifier) {
