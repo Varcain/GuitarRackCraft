@@ -34,35 +34,73 @@ int PluginChain::addPlugin(std::unique_ptr<IPlugin> plugin, int position) {
         return -1;
     }
 
-    std::unique_lock lock(chainMutex_);
+    bool pluginActivated = false;
+    float activatedSampleRate = 0.0f;
+    uint32_t activatedBufferSize = 0;
 
-    int index;
-    if (position < 0 || position >= static_cast<int>(plugins_.size())) {
-        plugins_.push_back(std::move(plugin));
-        index = static_cast<int>(plugins_.size() - 1);
-    } else {
-        plugins_.insert(plugins_.begin() + position, std::move(plugin));
-        index = position;
-    }
+    while (true) {
+        float targetSampleRate = 0.0f;
+        uint32_t targetBufferSize = 0;
+        {
+            std::shared_lock lock(chainMutex_);
+            targetSampleRate = sampleRate_;
+            targetBufferSize = bufferSize_;
+        }
 
-    // Activate the new plugin with current sample rate so it processes audio.
-    // Plugins added after the engine has started would otherwise never be activated.
-    if (sampleRate_ > 0.0f) {
-        plugins_[index]->activate(sampleRate_, bufferSize_);
+        // VST activation may start Wine and wait for the guest process. Keep
+        // that outside the exclusive chain lock so the live audio callback
+        // keeps running the existing chain until this plugin is ready.
+        if (targetSampleRate > 0.0f &&
+            (!pluginActivated ||
+             activatedSampleRate != targetSampleRate ||
+             activatedBufferSize != targetBufferSize)) {
+            if (pluginActivated) {
+                plugin->deactivate();
+            }
+            plugin->activate(targetSampleRate, targetBufferSize);
+            pluginActivated = true;
+            activatedSampleRate = targetSampleRate;
+            activatedBufferSize = targetBufferSize;
+        }
+
+        std::unique_lock lock(chainMutex_);
+        if (sampleRate_ > 0.0f &&
+            (!pluginActivated ||
+             activatedSampleRate != sampleRate_ ||
+             activatedBufferSize != bufferSize_)) {
+            continue;
+        }
+
+        int index;
+        if (position < 0 || position >= static_cast<int>(plugins_.size())) {
+            plugins_.push_back(std::move(plugin));
+            index = static_cast<int>(plugins_.size() - 1);
+        } else {
+            plugins_.insert(plugins_.begin() + position, std::move(plugin));
+            index = position;
+        }
+
+        LOGI("addPlugin: index=%d sampleRate=%.0f", index, sampleRate_);
+        return index;
     }
-    LOGI("addPlugin: index=%d sampleRate=%.0f", index, sampleRate_);
-    return index;
 }
 
 bool PluginChain::removePlugin(int index) {
-    std::unique_lock lock(chainMutex_);
-    
-    if (index < 0 || index >= static_cast<int>(plugins_.size())) {
-        return false;
+    std::unique_ptr<IPlugin> removedPlugin;
+    {
+        std::unique_lock lock(chainMutex_);
+
+        if (index < 0 || index >= static_cast<int>(plugins_.size())) {
+            return false;
+        }
+
+        removedPlugin = std::move(plugins_[index]);
+        plugins_.erase(plugins_.begin() + index);
     }
 
-    plugins_[index]->deactivate();
-    plugins_.erase(plugins_.begin() + index);
+    // Wine VST teardown can block while the helper process exits. Detach first
+    // so the audio thread can continue processing the shortened chain.
+    removedPlugin->deactivate();
     return true;
 }
 
