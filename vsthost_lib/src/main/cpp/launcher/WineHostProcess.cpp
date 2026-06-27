@@ -809,6 +809,10 @@ WineHostProcess::~WineHostProcess() {
     }
 }
 
+bool WineHostProcess::bootstrapServices() {
+    return bootServicesIfNeeded();
+}
+
 bool WineHostProcess::start() {
     if (cfg_.wineBinary.empty() || cfg_.primaryExe.empty()) {
         LOGE("WineHostProcess: wineBinary or primaryExe missing");

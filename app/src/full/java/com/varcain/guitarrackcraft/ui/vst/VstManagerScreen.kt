@@ -184,8 +184,11 @@ fun VstManagerScreen(onNavigateBack: () -> Unit) {
                 val r = VstRegistry.importFrom(context, uri)
                 if (r is ImportResult.Ok) {
                     // Per-plugin prefix needs to exist BEFORE the audio engine
-                    // tries to spawn wine. Do it now (still in IO context).
-                    VstHostSetup.ensurePluginPrefix(context, r.uuid)
+                    // tries to spawn wine. Also prime WineHostProcess' one-time
+                    // service bootstrap so first rack add doesn't pay it.
+                    if (VstHostSetup.ensurePluginPrefix(context, r.uuid)) {
+                        VstHostSetup.bootstrapPluginPrefixServices(context, r.uuid)
+                    }
                 }
                 r
             }

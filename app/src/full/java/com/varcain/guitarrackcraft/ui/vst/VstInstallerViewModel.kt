@@ -346,7 +346,7 @@ class VstInstallerViewModel(app: Application) : AndroidViewModel(app) {
                 }
 
                 for (p in vstPicks) {
-                    if (envPrefix != null) registerVstInEnvironment(envPrefix, p, existingVsts)
+                    if (envPrefix != null) registerVstInEnvironment(ctx, envPrefix, p, existingVsts)
                     else                   registerVstClone(ctx, sourcePrefix, p, existingVsts)
                 }
 
@@ -399,6 +399,7 @@ class VstInstallerViewModel(app: Application) : AndroidViewModel(app) {
             registered++
         }
         if (registered == 0) { envDir.deleteRecursively(); return null }
+        VstHostSetup.bootstrapPrefixServices(ctx, envDir)
         Log.i(TAG, "confirmPicks: environment $envId with $registered activator(s) at $envDir")
         return envDir
     }
@@ -406,6 +407,7 @@ class VstInstallerViewModel(app: Application) : AndroidViewModel(app) {
     /** Register a VST that runs DIRECTLY against the live [envPrefix] (no clone)
      *  — its license/activation stays in the environment the manager maintains. */
     private fun registerVstInEnvironment(
+        ctx: Context,
         envPrefix: File,
         p: DiscoveredPlugin,
         out: MutableList<VstRegistryEntry>,
@@ -423,6 +425,7 @@ class VstInstallerViewModel(app: Application) : AndroidViewModel(app) {
             is64Bit = p.is64Bit,
             prefixPath = envPrefix.absolutePath,   // <-- shared environment, no clone
         )
+        VstHostSetup.bootstrapPrefixServices(ctx, envPrefix)
         Log.i(TAG, "confirmPicks: VST in env ${envPrefix.name} (${p.displayName})")
     }
 
@@ -447,6 +450,7 @@ class VstInstallerViewModel(app: Application) : AndroidViewModel(app) {
             prefixDir.deleteRecursively()
             return
         }
+        VstHostSetup.bootstrapPrefixServices(ctx, prefixDir)
         out += VstRegistryEntry(
             uuid = uuid,
             displayName = p.displayName,

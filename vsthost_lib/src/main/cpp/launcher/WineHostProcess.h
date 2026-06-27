@@ -65,6 +65,10 @@ public:
     WineHostProcess& operator=(const WineHostProcess&) = delete;
 
     bool start();
+    /** Run the one-time per-prefix service bootstrap without launching
+     *  primaryExe. Used by import flows to move first-rack-add setup cost
+     *  out of the live rack path. */
+    bool bootstrapServices();
     bool waitFor(int timeoutMs);
     void killHard();
     bool isRunning() const { return pid_ > 0; }

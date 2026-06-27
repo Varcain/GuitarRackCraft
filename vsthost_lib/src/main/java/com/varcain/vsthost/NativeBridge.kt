@@ -79,6 +79,19 @@ object NativeBridge {
         timeoutSec: Int,
     ): Int
 
+    /** Run the same one-time per-prefix service bootstrap that plugin launch
+     *  would otherwise do inside WineHostProcess.start(). This primes
+     *  `.vstpoc_services_booted_v1` during import so first rack insertion
+     *  can skip the wineboot/RpcSs setup cost. */
+    external fun nativeBootstrapWineServices(
+        prefixPath: String,
+        wineBinary: String,
+        wineserverBinary: String,
+        wineDllPath: String,
+        nativeLibDir: String,
+        cacheDir: String,
+    ): Boolean
+
     // ── In-process X11 server bindings ───────────────────────────────────
     // The server listens on TCP 127.0.0.1:(6000+displayNumber). Each
     // display owns one EGL surface and renders X11 client output to it.

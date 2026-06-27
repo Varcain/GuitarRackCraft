@@ -144,6 +144,53 @@ Java_com_varcain_vsthost_NativeBridge_nativeRunWineboot(
     return -2;
 }
 
+JNIEXPORT jboolean JNICALL
+Java_com_varcain_vsthost_NativeBridge_nativeBootstrapWineServices(
+    JNIEnv* env, jobject /*thiz*/,
+    jstring jPrefixPath,
+    jstring jWineBinary, jstring jWineserverBinary, jstring jWineDllPath,
+    jstring jNativeLibDir, jstring jCacheDir) {
+    auto jstr = [&](jstring s) -> std::string {
+        if (!s) return {};
+        const char* c = env->GetStringUTFChars(s, nullptr);
+        if (!c) return {};
+        std::string r(c);
+        env->ReleaseStringUTFChars(s, c);
+        return r;
+    };
+
+    const std::string prefixPath = jstr(jPrefixPath);
+    const std::string wineBinary = jstr(jWineBinary);
+    const std::string wineserverBinary = jstr(jWineserverBinary);
+    const std::string wineDllPath = jstr(jWineDllPath);
+    const std::string nativeLibDir = jstr(jNativeLibDir);
+    const std::string cacheDir = jstr(jCacheDir);
+
+    if (prefixPath.empty() || wineBinary.empty() || wineDllPath.empty()) {
+        LOGE("nativeBootstrapWineServices: missing wine paths");
+        return JNI_FALSE;
+    }
+
+    WineHostProcess::Config cfg{
+        .nativeLibDir       = nativeLibDir,
+        .cacheDir           = cacheDir,
+        .wineBinary         = wineBinary,
+        .wineserverBinary   = wineserverBinary,
+        .wineDllPath        = wineDllPath,
+        .winePrefix         = prefixPath,
+        .primaryExe         = {},
+        .shmPath            = {},
+        .pickerShmPath      = {},
+        .pluginPaths        = {},
+        .extraArgs          = {},
+        .displayNumber      = 0,
+        .logSuffix          = "wineboot",
+    };
+
+    WineHostProcess proc(std::move(cfg));
+    return proc.bootstrapServices() ? JNI_TRUE : JNI_FALSE;
+}
+
 // --- Installer wine subprocess --------------------------------------------
 // VstInstallerScreen drives these from Kotlin. Spawn wine against a clone
 // of the base wineprefix; the user interacts with the installer wizard
