@@ -29,6 +29,21 @@
 #define VSTPOC_PICKER_FILTER_LEN    512   /* Win32 filter spec: "Wave\0*.wav\0..." double-NUL ended */
 #define VSTPOC_PICKER_PATH_LEN     1024
 
+/* Native VST state transfer channel. The command path points at a temporary
+ * host-created file; guest writes a SAVE blob there or reads a LOAD blob from
+ * it. File transport avoids putting large plugin-owned chunks into shm. */
+#define VSTPOC_STATE_PATH_LEN      1024
+#define VSTPOC_STATE_MESSAGE_LEN    256
+
+#define VSTPOC_STATE_CMD_NONE         0
+#define VSTPOC_STATE_CMD_SAVE         1
+#define VSTPOC_STATE_CMD_LOAD         2
+
+#define VSTPOC_STATE_STATUS_IDLE      0
+#define VSTPOC_STATE_STATUS_OK        1
+#define VSTPOC_STATE_STATUS_ERROR     2
+#define VSTPOC_STATE_STATUS_UNSUPPORTED 3
+
 typedef struct {
     int32_t index;
     float   value;
@@ -152,6 +167,27 @@ typedef struct {
      * (matches load_status[256]/status_message[256] pair pattern). Set
      * once; subsequent anomalies overwrite. */
     char diagnostic_summary[256];
+
+    /* Current normalized VST parameter values, written by the Wine guest
+     * after param metadata is published and refreshed as the native editor
+     * changes plugin state. Android reads this snapshot when saving presets
+     * so VST editor edits round-trip instead of only host-slider edits.
+     * param_values_seq is a seqlock: odd means write in progress, even means
+     * stable, and 0 means the guest is older or has not published values yet. */
+    _Alignas(VSTPOC_CACHELINE) uint64_t param_values_seq;
+    _Alignas(VSTPOC_CACHELINE) float    param_values[VSTPOC_MAX_PARAMS];
+
+    /* VST state command channel. Android writes state_command/state_path/
+     * state_size, then increments state_request_seq. The Wine guest handles
+     * the request on its plugin-control thread, writes state_status/state_size
+     * and optional state_message, then stores state_response_seq=request_seq. */
+    _Alignas(VSTPOC_CACHELINE) uint32_t state_request_seq;
+    _Alignas(VSTPOC_CACHELINE) uint32_t state_response_seq;
+    uint32_t state_command;
+    uint32_t state_status;
+    uint64_t state_size;
+    char     state_path[VSTPOC_STATE_PATH_LEN];
+    char     state_message[VSTPOC_STATE_MESSAGE_LEN];
 } VstpocShared;
 
 /* Native file-picker channel — lives in its OWN mmap file

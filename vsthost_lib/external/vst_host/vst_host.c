@@ -279,6 +279,7 @@ static int  g_failure_set = 0;
     } \
 } while (0)
 static int load_one_plugin(int slot, const char* dll_path);
+static void publish_param_values(VstpocShared* shm, AEffect* eff);
 
 /* Host-frame window procedure. Used ONLY when VSTPOC_HOST_FRAME=1 (the
  * PC launcher sets this; Android leaves it unset). In that mode each
@@ -509,6 +510,7 @@ static DWORD WINAPI per_plugin_editor_thread(LPVOID arg) {
     if (p == 0) InterlockedExchange(&g_editor_open_done, 1);
 
     DWORD last_idle = GetTickCount();
+    DWORD last_param_publish = 0;
     MSG msg;
     while (!(g_shm && g_shm->stop_flag)) {
         while (PeekMessageA(&msg, NULL, 0, 0, PM_REMOVE)) {
@@ -530,6 +532,10 @@ static DWORD WINAPI per_plugin_editor_thread(LPVOID arg) {
             __atomic_store_n(&g_shm->param_tail, pt, __ATOMIC_RELEASE);
         }
         DWORD now = GetTickCount();
+        if (p == 0 && g_shm && now - last_param_publish >= 100) {
+            publish_param_values((VstpocShared*)g_shm, eff);
+            last_param_publish = now;
+        }
         if (now - last_idle >= 30) {
             eff->dispatcher(eff, /*effEditIdle=*/19, 0, 0, NULL, 0.0f);
             last_idle = now;
@@ -614,10 +620,41 @@ static VstpocShared* map_shared(const char* path) {
     return s;
 }
 
-static void publish_params(VstpocShared* shm, AEffect* eff) {
-    int n = eff->numParams;
+static int clamped_param_count(AEffect* eff) {
+    int n = eff ? eff->numParams : 0;
     if (n < 0) n = 0;
     if (n > VSTPOC_MAX_PARAMS) n = VSTPOC_MAX_PARAMS;
+    return n;
+}
+
+static float clamp_normalized_param(float value) {
+    if (value < 0.0f) return 0.0f;
+    if (value > 1.0f) return 1.0f;
+    return value;
+}
+
+static void begin_param_values_write(VstpocShared* shm) {
+    __atomic_add_fetch(&shm->param_values_seq, 1, __ATOMIC_ACQ_REL);
+    __sync_synchronize();
+}
+
+static void end_param_values_write(VstpocShared* shm) {
+    __sync_synchronize();
+    __atomic_add_fetch(&shm->param_values_seq, 1, __ATOMIC_RELEASE);
+}
+
+static void publish_param_values(VstpocShared* shm, AEffect* eff) {
+    if (!shm || !eff) return;
+    int n = clamped_param_count(eff);
+    begin_param_values_write(shm);
+    for (int i = 0; i < n; i++) {
+        shm->param_values[i] = clamp_normalized_param(eff->getParameter(eff, i));
+    }
+    end_param_values_write(shm);
+}
+
+static void publish_params(VstpocShared* shm, AEffect* eff) {
+    int n = clamped_param_count(eff);
     for (int i = 0; i < n; i++) {
         char name[VSTPOC_PARAM_NAME_LEN] = {0};
         eff->dispatcher(eff, /*effGetParamName=*/8, i, 0, name, 0.0f);
@@ -625,6 +662,386 @@ static void publish_params(VstpocShared* shm, AEffect* eff) {
     }
     shm->param_count = n;
     __sync_synchronize();
+    publish_param_values(shm, eff);
+}
+
+#define VSTPOC_VST2_STATE_MAGIC "GRCVST2S"
+#define VSTPOC_VST2_STATE_VERSION 1u
+#define VSTPOC_VST2_STATE_KIND_BANK_CHUNK 1u
+#define VSTPOC_VST2_STATE_KIND_PROGRAM_CHUNK 2u
+#define VSTPOC_VST2_STATE_KIND_PARAMS 3u
+#define VSTPOC_VST2_STATE_KIND_CHUNKS 4u
+#define VSTPOC_VST2_NO_PROGRAM UINT32_MAX
+#define VSTPOC_GUEST_STATE_MAX_BYTES (64u * 1024u * 1024u)
+
+#pragma pack(push, 1)
+typedef struct {
+    char magic[8];
+    uint32_t version;
+    uint32_t kind;
+    uint32_t param_count;
+    uint32_t reserved;
+    uint64_t payload_size;
+} VstpocVst2StateHeader;
+
+typedef struct {
+    uint32_t current_program;
+    uint32_t reserved;
+    uint64_t bank_size;
+    uint64_t program_size;
+} VstpocVst2ChunksPayloadHeader;
+#pragma pack(pop)
+
+typedef struct {
+    void* data;
+    uint64_t size;
+} VstpocVst2ChunkCopy;
+
+static int write_exact(FILE* f, const void* data, size_t len) {
+    if (len == 0) return 1;
+    return fwrite(data, 1, len, f) == len;
+}
+
+static int read_exact(FILE* f, void* data, size_t len) {
+    if (len == 0) return 1;
+    return fread(data, 1, len, f) == len;
+}
+
+static int write_vst2_state_file(const char* path, uint32_t kind, uint32_t param_count,
+                                 const void* payload, uint64_t payload_size) {
+    if (!path || !*path) return 0;
+    if (payload_size > VSTPOC_GUEST_STATE_MAX_BYTES) return 0;
+    FILE* f = fopen(path, "wb");
+    if (!f) return 0;
+
+    VstpocVst2StateHeader h;
+    memset(&h, 0, sizeof(h));
+    memcpy(h.magic, VSTPOC_VST2_STATE_MAGIC, sizeof(h.magic));
+    h.version = VSTPOC_VST2_STATE_VERSION;
+    h.kind = kind;
+    h.param_count = param_count;
+    h.payload_size = payload_size;
+
+    int ok = write_exact(f, &h, sizeof(h)) &&
+             (payload_size == 0 || (payload && write_exact(f, payload, (size_t)payload_size)));
+    fclose(f);
+    return ok;
+}
+
+static const char* vst2_chunk_name(int index) {
+    return index == 0 ? "bank" : "program";
+}
+
+static void free_vst2_chunk_copy(VstpocVst2ChunkCopy* copy) {
+    if (!copy) return;
+    if (copy->data) free(copy->data);
+    copy->data = NULL;
+    copy->size = 0;
+}
+
+static int get_vst2_chunk_copy(AEffect* eff, int index, VstpocVst2ChunkCopy* out) {
+    if (!eff || !out) return -1;
+    out->data = NULL;
+    out->size = 0;
+
+    void* chunk = NULL;
+    intptr_t bytes = eff->dispatcher(eff, effGetChunk, index, 0, &chunk, 0.0f);
+    LOG("state: effGetChunk(%s) -> %lld bytes ptr=%p\n",
+        vst2_chunk_name(index), (long long)bytes, chunk);
+    if (bytes <= 0 || !chunk) return 0;
+    if ((uint64_t)bytes > VSTPOC_GUEST_STATE_MAX_BYTES) return -1;
+
+    void* data = malloc((size_t)bytes);
+    if (!data) return -1;
+    memcpy(data, chunk, (size_t)bytes);
+    out->data = data;
+    out->size = (uint64_t)bytes;
+    return 1;
+}
+
+static uint32_t get_current_vst2_program(AEffect* eff) {
+    if (!eff || eff->numPrograms <= 0) return VSTPOC_VST2_NO_PROGRAM;
+    intptr_t program = eff->dispatcher(eff, effGetProgram, 0, 0, NULL, 0.0f);
+    if (program < 0 || program >= eff->numPrograms) return VSTPOC_VST2_NO_PROGRAM;
+    return (uint32_t)program;
+}
+
+static void set_vst2_program_if_valid(AEffect* eff, uint32_t program) {
+    if (!eff || program == VSTPOC_VST2_NO_PROGRAM) return;
+    if (eff->numPrograms <= 0 || program >= (uint32_t)eff->numPrograms) return;
+    eff->dispatcher(eff, effSetProgram, 0, (intptr_t)program, NULL, 0.0f);
+}
+
+static int write_vst2_chunks_state_file(const char* path,
+                                        uint32_t current_program,
+                                        const VstpocVst2ChunkCopy* bank,
+                                        const VstpocVst2ChunkCopy* program,
+                                        uint64_t* out_size) {
+    if (out_size) *out_size = 0;
+    if (!path || !*path) return 0;
+
+    uint64_t payload_size = (uint64_t)sizeof(VstpocVst2ChunksPayloadHeader);
+    const uint64_t bank_size = bank ? bank->size : 0;
+    const uint64_t program_size = program ? program->size : 0;
+    if (bank_size > VSTPOC_GUEST_STATE_MAX_BYTES - payload_size) return 0;
+    payload_size += bank_size;
+    if (program_size > VSTPOC_GUEST_STATE_MAX_BYTES - payload_size) return 0;
+    payload_size += program_size;
+
+    FILE* f = fopen(path, "wb");
+    if (!f) return 0;
+
+    VstpocVst2StateHeader h;
+    memset(&h, 0, sizeof(h));
+    memcpy(h.magic, VSTPOC_VST2_STATE_MAGIC, sizeof(h.magic));
+    h.version = VSTPOC_VST2_STATE_VERSION;
+    h.kind = VSTPOC_VST2_STATE_KIND_CHUNKS;
+    h.param_count = 0;
+    h.payload_size = payload_size;
+
+    VstpocVst2ChunksPayloadHeader ch;
+    memset(&ch, 0, sizeof(ch));
+    ch.current_program = current_program;
+    ch.bank_size = bank_size;
+    ch.program_size = program_size;
+
+    int ok = write_exact(f, &h, sizeof(h)) &&
+             write_exact(f, &ch, sizeof(ch)) &&
+             (bank_size == 0 || write_exact(f, bank->data, (size_t)bank_size)) &&
+             (program_size == 0 || write_exact(f, program->data, (size_t)program_size));
+    fclose(f);
+    if (!ok) return 0;
+    if (out_size) *out_size = (uint64_t)sizeof(h) + payload_size;
+    return 1;
+}
+
+static int save_vst2_state_to_file(VstpocShared* shm, AEffect* eff,
+                                   const char* path, uint64_t* out_size) {
+    (void)shm;
+    if (!eff || !path || !*path) return VSTPOC_STATE_STATUS_ERROR;
+    if (out_size) *out_size = 0;
+
+    if (eff->flags & effFlagsProgramChunks) {
+        VstpocVst2ChunkCopy bank = {0};
+        VstpocVst2ChunkCopy program = {0};
+        int bank_status = get_vst2_chunk_copy(eff, 0, &bank);
+        int program_status = get_vst2_chunk_copy(eff, 1, &program);
+        if (bank_status < 0 || program_status < 0) {
+            free_vst2_chunk_copy(&bank);
+            free_vst2_chunk_copy(&program);
+            return VSTPOC_STATE_STATUS_ERROR;
+        }
+        if (bank.size > 0 || program.size > 0) {
+            const uint32_t current_program = get_current_vst2_program(eff);
+            int ok = write_vst2_chunks_state_file(path, current_program,
+                                                  &bank, &program, out_size);
+            LOG("state: saved VST2 chunks bank=%llu program=%llu currentProgram=%u ok=%d\n",
+                (unsigned long long)bank.size,
+                (unsigned long long)program.size,
+                current_program == VSTPOC_VST2_NO_PROGRAM ? 0xffffffffu : current_program,
+                ok);
+            free_vst2_chunk_copy(&bank);
+            free_vst2_chunk_copy(&program);
+            if (!ok) {
+                return VSTPOC_STATE_STATUS_ERROR;
+            }
+            return VSTPOC_STATE_STATUS_OK;
+        }
+        free_vst2_chunk_copy(&bank);
+        free_vst2_chunk_copy(&program);
+    }
+
+    int n = clamped_param_count(eff);
+    if (n <= 0) return VSTPOC_STATE_STATUS_UNSUPPORTED;
+    float* values = (float*)calloc((size_t)n, sizeof(float));
+    if (!values) return VSTPOC_STATE_STATUS_ERROR;
+    for (int i = 0; i < n; i++) {
+        values[i] = clamp_normalized_param(eff->getParameter(eff, i));
+    }
+    const uint64_t payload_size = (uint64_t)n * sizeof(float);
+    int ok = write_vst2_state_file(path, VSTPOC_VST2_STATE_KIND_PARAMS,
+                                   (uint32_t)n, values, payload_size);
+    free(values);
+    if (!ok) return VSTPOC_STATE_STATUS_ERROR;
+    if (out_size) *out_size = (uint64_t)sizeof(VstpocVst2StateHeader) + payload_size;
+    LOG("state: saved VST2 parameter fallback (%d params)\n", n);
+    return VSTPOC_STATE_STATUS_OK;
+}
+
+static void begin_vst2_state_restore(AEffect* eff) {
+    if (!eff) return;
+    eff->dispatcher(eff, effStopProcess, 0, 0, NULL, 0.0f);
+    eff->dispatcher(eff, effMainsChanged, 0, 0, NULL, 0.0f);
+}
+
+static void end_vst2_state_restore(AEffect* eff) {
+    if (!eff) return;
+    eff->dispatcher(eff, effMainsChanged, 0, 1, NULL, 0.0f);
+    eff->dispatcher(eff, effStartProcess, 0, 0, NULL, 0.0f);
+}
+
+static intptr_t set_vst2_chunk(AEffect* eff, int index,
+                               const void* payload, uint64_t payload_size) {
+    intptr_t ret = eff->dispatcher(eff, effSetChunk, index,
+                                   (intptr_t)payload_size, (void*)payload, 0.0f);
+    LOG("state: effSetChunk(%s, %llu bytes) -> %lld\n",
+        vst2_chunk_name(index),
+        (unsigned long long)payload_size,
+        (long long)ret);
+    return ret;
+}
+
+static int load_vst2_state_from_file(VstpocShared* shm, AEffect* eff, const char* path) {
+    if (!eff || !path || !*path) return VSTPOC_STATE_STATUS_ERROR;
+    FILE* f = fopen(path, "rb");
+    if (!f) return VSTPOC_STATE_STATUS_ERROR;
+
+    VstpocVst2StateHeader h;
+    if (!read_exact(f, &h, sizeof(h))) {
+        fclose(f);
+        return VSTPOC_STATE_STATUS_ERROR;
+    }
+    if (memcmp(h.magic, VSTPOC_VST2_STATE_MAGIC, sizeof(h.magic)) != 0 ||
+        h.version != VSTPOC_VST2_STATE_VERSION ||
+        h.payload_size > VSTPOC_GUEST_STATE_MAX_BYTES) {
+        fclose(f);
+        return VSTPOC_STATE_STATUS_ERROR;
+    }
+
+    void* payload = NULL;
+    if (h.payload_size > 0) {
+        payload = malloc((size_t)h.payload_size);
+        if (!payload || !read_exact(f, payload, (size_t)h.payload_size)) {
+            if (payload) free(payload);
+            fclose(f);
+            return VSTPOC_STATE_STATUS_ERROR;
+        }
+    }
+    fclose(f);
+
+    int status = VSTPOC_STATE_STATUS_OK;
+    if (h.kind == VSTPOC_VST2_STATE_KIND_BANK_CHUNK ||
+        h.kind == VSTPOC_VST2_STATE_KIND_PROGRAM_CHUNK) {
+        if (!payload || h.payload_size == 0 || h.payload_size > (uint64_t)INTPTR_MAX) {
+            status = VSTPOC_STATE_STATUS_ERROR;
+        } else {
+            const int index = (h.kind == VSTPOC_VST2_STATE_KIND_BANK_CHUNK) ? 0 : 1;
+            begin_vst2_state_restore(eff);
+            set_vst2_chunk(eff, index, payload, h.payload_size);
+            end_vst2_state_restore(eff);
+            LOG("state: restored VST2 %s chunk (%llu bytes payload)\n",
+                index == 0 ? "bank" : "program",
+                (unsigned long long)h.payload_size);
+        }
+    } else if (h.kind == VSTPOC_VST2_STATE_KIND_CHUNKS) {
+        if (!payload || h.payload_size < (uint64_t)sizeof(VstpocVst2ChunksPayloadHeader)) {
+            status = VSTPOC_STATE_STATUS_ERROR;
+        } else {
+            VstpocVst2ChunksPayloadHeader ch;
+            memcpy(&ch, payload, sizeof(ch));
+            const uint64_t expected_size = (uint64_t)sizeof(ch) + ch.bank_size + ch.program_size;
+            if (ch.bank_size > VSTPOC_GUEST_STATE_MAX_BYTES ||
+                ch.program_size > VSTPOC_GUEST_STATE_MAX_BYTES ||
+                expected_size != h.payload_size ||
+                ch.bank_size > (uint64_t)INTPTR_MAX ||
+                ch.program_size > (uint64_t)INTPTR_MAX) {
+                status = VSTPOC_STATE_STATUS_ERROR;
+            } else {
+                const unsigned char* cursor = (const unsigned char*)payload + sizeof(ch);
+                const unsigned char* bank = cursor;
+                const unsigned char* program = bank + ch.bank_size;
+                int applied = 0;
+
+                begin_vst2_state_restore(eff);
+                set_vst2_program_if_valid(eff, ch.current_program);
+                if (ch.bank_size > 0) {
+                    set_vst2_chunk(eff, 0, bank, ch.bank_size);
+                    applied = 1;
+                }
+                set_vst2_program_if_valid(eff, ch.current_program);
+                if (ch.program_size > 0) {
+                    set_vst2_chunk(eff, 1, program, ch.program_size);
+                    applied = 1;
+                }
+                set_vst2_program_if_valid(eff, ch.current_program);
+                end_vst2_state_restore(eff);
+
+                if (!applied) {
+                    status = VSTPOC_STATE_STATUS_ERROR;
+                } else {
+                    LOG("state: restored VST2 chunks bank=%llu program=%llu currentProgram=%u\n",
+                        (unsigned long long)ch.bank_size,
+                        (unsigned long long)ch.program_size,
+                        ch.current_program == VSTPOC_VST2_NO_PROGRAM ? 0xffffffffu : ch.current_program);
+                }
+            }
+        }
+    } else if (h.kind == VSTPOC_VST2_STATE_KIND_PARAMS) {
+        if (!payload || h.payload_size < (uint64_t)h.param_count * sizeof(float)) {
+            status = VSTPOC_STATE_STATUS_ERROR;
+        } else {
+            const int n = clamped_param_count(eff);
+            const int count = (h.param_count < (uint32_t)n) ? (int)h.param_count : n;
+            float* values = (float*)payload;
+            for (int i = 0; i < count; i++) {
+                eff->setParameter(eff, i, clamp_normalized_param(values[i]));
+            }
+            LOG("state: restored VST2 parameter fallback (%d params)\n", count);
+        }
+    } else {
+        status = VSTPOC_STATE_STATUS_ERROR;
+    }
+
+    if (payload) free(payload);
+    if (status == VSTPOC_STATE_STATUS_OK) publish_param_values(shm, eff);
+    return status;
+}
+
+static void complete_state_request(VstpocShared* shm, uint32_t seq,
+                                   uint32_t status, uint64_t size,
+                                   const char* message) {
+    if (!shm) return;
+    __atomic_store_n(&shm->state_size, size, __ATOMIC_RELEASE);
+    if (message && *message) {
+        size_t n = strlen(message);
+        if (n >= VSTPOC_STATE_MESSAGE_LEN) n = VSTPOC_STATE_MESSAGE_LEN - 1;
+        memcpy(shm->state_message, message, n);
+        shm->state_message[n] = '\0';
+    } else {
+        shm->state_message[0] = '\0';
+    }
+    __atomic_store_n(&shm->state_status, status, __ATOMIC_RELEASE);
+    __atomic_store_n(&shm->state_response_seq, seq, __ATOMIC_RELEASE);
+}
+
+static void handle_state_request(VstpocShared* shm, AEffect* eff) {
+    static uint32_t handled_seq = 0;
+    if (!shm || !eff) return;
+
+    const uint32_t seq = __atomic_load_n(&shm->state_request_seq, __ATOMIC_ACQUIRE);
+    if (seq == 0 || seq == handled_seq) return;
+    handled_seq = seq;
+
+    char path[VSTPOC_STATE_PATH_LEN];
+    memcpy(path, shm->state_path, sizeof(path));
+    path[sizeof(path) - 1] = '\0';
+    const uint32_t command = __atomic_load_n(&shm->state_command, __ATOMIC_ACQUIRE);
+    uint64_t size = 0;
+    uint32_t status = VSTPOC_STATE_STATUS_ERROR;
+    const char* message = NULL;
+
+    if (command == VSTPOC_STATE_CMD_SAVE) {
+        status = (uint32_t)save_vst2_state_to_file(shm, eff, path, &size);
+        if (status == VSTPOC_STATE_STATUS_UNSUPPORTED) message = "VST2 state unsupported";
+        else if (status != VSTPOC_STATE_STATUS_OK) message = "VST2 state save failed";
+    } else if (command == VSTPOC_STATE_CMD_LOAD) {
+        status = (uint32_t)load_vst2_state_from_file(shm, eff, path);
+        if (status != VSTPOC_STATE_STATUS_OK) message = "VST2 state load failed";
+    } else {
+        message = "unknown VST2 state command";
+    }
+
+    complete_state_request(shm, seq, status, size, message);
 }
 
 /* Load one VST2 plugin DLL into g_plugins[slot]. Extracted from main()'s
@@ -956,6 +1373,7 @@ int main(int argc, char** argv) {
                 TranslateMessage(&msg);
                 DispatchMessageA(&msg);
             }
+            handle_state_request(shm, eff);
             Sleep(10);
             waited_ms += 10;
         }
@@ -1016,6 +1434,7 @@ int main(int argc, char** argv) {
                 DispatchMessageA(&msg);
             }
         }
+        handle_state_request(shm, eff);
         /* Param draining moved to the editor thread to avoid a user32-CS
          * deadlock: WagnerSharp's setParameter touches its GUI state and
          * acquires the wine user32 critical section, which the editor

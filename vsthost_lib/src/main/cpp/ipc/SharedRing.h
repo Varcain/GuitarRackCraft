@@ -20,6 +20,7 @@ public:
 
     bool valid() const { return data_ != nullptr; }
     VstpocShared* raw() { return data_; }
+    const VstpocShared* raw() const { return data_; }
 
     // Host (audio thread): pull up to maxFrames stereo samples from the
     // audio ring. Returns frames actually drained (may be < maxFrames on

@@ -37,6 +37,9 @@ extern "C" {
 #include <string.h>
 #include <stdint.h>
 #include <atomic>
+#include <fstream>
+#include <string>
+#include <vector>
 
 /* Steinberg VST3 SDK */
 #include "pluginterfaces/base/funknown.h"
@@ -1120,12 +1123,348 @@ struct ParamEdit { ParamID id; ParamValue value; };
 static ParamEdit g_paramRing[2048];
 static std::atomic<uint32_t> g_paramHead{0};  /* producer: performEdit (UI thread)   */
 static std::atomic<uint32_t> g_paramTail{0};  /* consumer: process_block (audio thread) */
+static ParamID g_sharedParamIds[VSTPOC_MAX_PARAMS] = {};
+static int32_t g_sharedParamCount = 0;
+static std::atomic<int> g_stateBlocksProcess{0};
+static std::atomic<int> g_processInFlight{0};
 static inline void push_param_edit(ParamID id, ParamValue v) {
     uint32_t h = g_paramHead.load(std::memory_order_relaxed);
     uint32_t t = g_paramTail.load(std::memory_order_acquire);
     if (h - t >= 2048u) return;  /* ring full (knob spam) — drop rather than block */
     g_paramRing[h & 2047u] = { id, v };
     g_paramHead.store(h + 1, std::memory_order_release);
+}
+
+static bool enter_process_call() {
+    if (g_stateBlocksProcess.load(std::memory_order_acquire)) return false;
+    g_processInFlight.fetch_add(1, std::memory_order_acq_rel);
+    if (g_stateBlocksProcess.load(std::memory_order_acquire)) {
+        g_processInFlight.fetch_sub(1, std::memory_order_acq_rel);
+        return false;
+    }
+    return true;
+}
+
+static void leave_process_call() {
+    g_processInFlight.fetch_sub(1, std::memory_order_acq_rel);
+}
+
+static void begin_state_operation() {
+    g_stateBlocksProcess.store(1, std::memory_order_release);
+    while (g_processInFlight.load(std::memory_order_acquire) != 0) {
+        Sleep(1);
+    }
+}
+
+static void end_state_operation() {
+    g_stateBlocksProcess.store(0, std::memory_order_release);
+}
+
+static float clamp_normalized_param(ParamValue value) {
+    if (!(value == value)) return 0.0f;  /* NaN */
+    if (value < 0.0) return 0.0f;
+    if (value > 1.0) return 1.0f;
+    return (float)value;
+}
+
+static int find_shared_param_index(ParamID id) {
+    for (int i = 0; i < g_sharedParamCount; ++i) {
+        if (g_sharedParamIds[i] == id) return i;
+    }
+    return -1;
+}
+
+static void begin_param_values_write(VstpocShared* shm) {
+    __atomic_add_fetch(&shm->param_values_seq, 1, __ATOMIC_ACQ_REL);
+    __sync_synchronize();
+}
+
+static void end_param_values_write(VstpocShared* shm) {
+    __sync_synchronize();
+    __atomic_add_fetch(&shm->param_values_seq, 1, __ATOMIC_RELEASE);
+}
+
+static void publish_shared_param_value(ParamID id, ParamValue value) {
+    VstpocShared* shm = (VstpocShared*)g_shm;
+    if (!shm) return;
+    int idx = find_shared_param_index(id);
+    if (idx < 0) return;
+    begin_param_values_write(shm);
+    shm->param_values[idx] = clamp_normalized_param(value);
+    end_param_values_write(shm);
+}
+
+static void publish_current_param_values(IEditController* controller) {
+    VstpocShared* shm = (VstpocShared*)g_shm;
+    if (!shm || !controller || g_sharedParamCount <= 0) return;
+    begin_param_values_write(shm);
+    for (int i = 0; i < g_sharedParamCount; ++i) {
+        shm->param_values[i] = clamp_normalized_param(
+            controller->getParamNormalized(g_sharedParamIds[i]));
+    }
+    end_param_values_write(shm);
+}
+
+static void copy_param_title(char* dst, size_t dstLen, const String128& title, int fallbackIndex) {
+    if (!dst || dstLen == 0) return;
+    memset(dst, 0, dstLen);
+    size_t out = 0;
+    const size_t maxIn = sizeof(title) / sizeof(title[0]);
+    for (size_t i = 0; i < maxIn && out + 1 < dstLen; ++i) {
+        unsigned int ch = (unsigned int)title[i];
+        if (ch == 0) break;
+        dst[out++] = (ch >= 32 && ch < 127) ? (char)ch : '?';
+    }
+    if (out == 0) {
+        snprintf(dst, dstLen, "Param %d", fallbackIndex + 1);
+    }
+}
+
+static void publish_param_metadata(IEditController* controller) {
+    VstpocShared* shm = (VstpocShared*)g_shm;
+    if (!shm || !controller) return;
+
+    int32 n = controller->getParameterCount();
+    if (n < 0) n = 0;
+    int out = 0;
+    for (int32 i = 0; i < n && out < VSTPOC_MAX_PARAMS; ++i) {
+        ParameterInfo info{};
+        if (controller->getParameterInfo(i, info) != kResultOk) continue;
+        g_sharedParamIds[out] = info.id;
+        copy_param_title(shm->param_names[out], VSTPOC_PARAM_NAME_LEN, info.title, out);
+        ++out;
+    }
+    g_sharedParamCount = out;
+    shm->param_count = out;
+    __sync_synchronize();
+    publish_current_param_values(controller);
+    LOG("published %d VST3 parameter(s)\n", out);
+}
+
+static void drain_host_param_ring(IEditController* controller) {
+    VstpocShared* shm = (VstpocShared*)g_shm;
+    if (!shm || !controller) return;
+
+    uint64_t ph = __atomic_load_n(&shm->param_head, __ATOMIC_ACQUIRE);
+    uint64_t pt = __atomic_load_n(&shm->param_tail, __ATOMIC_RELAXED);
+    while (pt != ph) {
+        VstpocParamMsg pmsg = shm->params[pt & (VSTPOC_PARAM_RING_MSGS - 1)];
+        if (pmsg.index >= 0 && pmsg.index < g_sharedParamCount) {
+            ParamID id = g_sharedParamIds[pmsg.index];
+            ParamValue value = (ParamValue)clamp_normalized_param(pmsg.value);
+            controller->setParamNormalized(id, value);
+            push_param_edit(id, value);
+            publish_shared_param_value(id, value);
+        }
+        ++pt;
+    }
+    __atomic_store_n(&shm->param_tail, pt, __ATOMIC_RELEASE);
+}
+
+#define VSTPOC_VST3_STATE_MAGIC "GRCVST3S"
+#define VSTPOC_VST3_STATE_VERSION 1u
+#define VSTPOC_GUEST_STATE_MAX_BYTES (64u * 1024u * 1024u)
+
+#pragma pack(push, 1)
+struct VstpocVst3StateHeader {
+    char magic[8];
+    uint32_t version;
+    uint32_t reserved;
+    uint64_t component_size;
+    uint64_t controller_size;
+};
+#pragma pack(pop)
+
+static bool write_exact(FILE* f, const void* data, size_t len) {
+    if (len == 0) return true;
+    return fwrite(data, 1, len, f) == len;
+}
+
+static bool read_file(const char* path, std::vector<uint8_t>& out) {
+    FILE* f = fopen(path, "rb");
+    if (!f) return false;
+    if (fseek(f, 0, SEEK_END) != 0) {
+        fclose(f);
+        return false;
+    }
+    long size = ftell(f);
+    if (size < 0 || (uint64_t)size > VSTPOC_GUEST_STATE_MAX_BYTES) {
+        fclose(f);
+        return false;
+    }
+    rewind(f);
+    out.resize((size_t)size);
+    bool ok = out.empty() || fread(out.data(), 1, out.size(), f) == out.size();
+    fclose(f);
+    return ok;
+}
+
+static bool stream_has_data(const MemoryStream& stream, uint64_t* size) {
+    TSize s = stream.getSize();
+    if (s <= 0) {
+        if (size) *size = 0;
+        return false;
+    }
+    if ((uint64_t)s > VSTPOC_GUEST_STATE_MAX_BYTES) {
+        if (size) *size = 0;
+        return false;
+    }
+    if (size) *size = (uint64_t)s;
+    return stream.getData() != nullptr;
+}
+
+static uint32_t save_vst3_state_to_file(IComponent* component,
+                                        IEditController* controller,
+                                        const char* path,
+                                        uint64_t* outSize) {
+    if (outSize) *outSize = 0;
+    if (!component || !path || !*path) return VSTPOC_STATE_STATUS_ERROR;
+
+    MemoryStream componentStream;
+    MemoryStream controllerStream;
+
+    begin_state_operation();
+    tresult componentResult = component->getState(&componentStream);
+    tresult controllerResult = controller ? controller->getState(&controllerStream) : kNotImplemented;
+    end_state_operation();
+
+    uint64_t componentSize = 0;
+    uint64_t controllerSize = 0;
+    if (componentResult != kResultOk ||
+        !stream_has_data(componentStream, &componentSize)) {
+        componentSize = 0;
+    }
+    if (controllerResult != kResultOk ||
+        !stream_has_data(controllerStream, &controllerSize)) {
+        controllerSize = 0;
+    }
+    if (componentSize == 0 && controllerSize == 0) {
+        return VSTPOC_STATE_STATUS_UNSUPPORTED;
+    }
+    if (componentSize + controllerSize > VSTPOC_GUEST_STATE_MAX_BYTES) {
+        return VSTPOC_STATE_STATUS_ERROR;
+    }
+
+    FILE* f = fopen(path, "wb");
+    if (!f) return VSTPOC_STATE_STATUS_ERROR;
+    VstpocVst3StateHeader h{};
+    memcpy(h.magic, VSTPOC_VST3_STATE_MAGIC, sizeof(h.magic));
+    h.version = VSTPOC_VST3_STATE_VERSION;
+    h.component_size = componentSize;
+    h.controller_size = controllerSize;
+
+    bool ok = write_exact(f, &h, sizeof(h)) &&
+              (componentSize == 0 ||
+               write_exact(f, componentStream.getData(), (size_t)componentSize)) &&
+              (controllerSize == 0 ||
+               write_exact(f, controllerStream.getData(), (size_t)controllerSize));
+    fclose(f);
+    if (!ok) return VSTPOC_STATE_STATUS_ERROR;
+    if (outSize) *outSize = (uint64_t)sizeof(h) + componentSize + controllerSize;
+    LOG("state: saved VST3 component=%llu controller=%llu bytes\n",
+        (unsigned long long)componentSize, (unsigned long long)controllerSize);
+    return VSTPOC_STATE_STATUS_OK;
+}
+
+static uint32_t load_vst3_state_from_file(IComponent* component,
+                                          IEditController* controller,
+                                          const char* path) {
+    if (!component || !path || !*path) return VSTPOC_STATE_STATUS_ERROR;
+
+    std::vector<uint8_t> bytes;
+    if (!read_file(path, bytes) || bytes.size() < sizeof(VstpocVst3StateHeader)) {
+        return VSTPOC_STATE_STATUS_ERROR;
+    }
+
+    VstpocVst3StateHeader h{};
+    memcpy(&h, bytes.data(), sizeof(h));
+    if (memcmp(h.magic, VSTPOC_VST3_STATE_MAGIC, sizeof(h.magic)) != 0 ||
+        h.version != VSTPOC_VST3_STATE_VERSION ||
+        h.component_size + h.controller_size > VSTPOC_GUEST_STATE_MAX_BYTES ||
+        sizeof(h) + h.component_size + h.controller_size > bytes.size()) {
+        return VSTPOC_STATE_STATUS_ERROR;
+    }
+
+    uint8_t* componentData = bytes.data() + sizeof(h);
+    uint8_t* controllerData = componentData + h.component_size;
+    bool applied = false;
+
+    begin_state_operation();
+    if (h.component_size > 0) {
+        MemoryStream componentStream(componentData, (TSize)h.component_size);
+        tresult sr = component->setState(&componentStream);
+        applied = applied || (sr == kResultOk);
+
+        if (controller) {
+            int64 ignored = 0;
+            componentStream.seek(0, IBStream::kIBSeekSet, &ignored);
+            tresult scs = controller->setComponentState(&componentStream);
+            applied = applied || (scs == kResultOk);
+        }
+    }
+    if (controller && h.controller_size > 0) {
+        MemoryStream controllerStream(controllerData, (TSize)h.controller_size);
+        tresult cr = controller->setState(&controllerStream);
+        applied = applied || (cr == kResultOk);
+    }
+    end_state_operation();
+
+    if (applied) {
+        publish_current_param_values(controller);
+        LOG("state: restored VST3 component=%llu controller=%llu bytes\n",
+            (unsigned long long)h.component_size,
+            (unsigned long long)h.controller_size);
+        return VSTPOC_STATE_STATUS_OK;
+    }
+    return VSTPOC_STATE_STATUS_ERROR;
+}
+
+static void complete_state_request(uint32_t seq, uint32_t status,
+                                   uint64_t size, const char* message) {
+    VstpocShared* shm = (VstpocShared*)g_shm;
+    if (!shm) return;
+    __atomic_store_n(&shm->state_size, size, __ATOMIC_RELEASE);
+    if (message && *message) {
+        size_t n = strlen(message);
+        if (n >= VSTPOC_STATE_MESSAGE_LEN) n = VSTPOC_STATE_MESSAGE_LEN - 1;
+        memcpy(shm->state_message, message, n);
+        shm->state_message[n] = '\0';
+    } else {
+        shm->state_message[0] = '\0';
+    }
+    __atomic_store_n(&shm->state_status, status, __ATOMIC_RELEASE);
+    __atomic_store_n(&shm->state_response_seq, seq, __ATOMIC_RELEASE);
+}
+
+static void handle_state_request(IComponent* component, IEditController* controller) {
+    static uint32_t handledSeq = 0;
+    VstpocShared* shm = (VstpocShared*)g_shm;
+    if (!shm || !component) return;
+
+    uint32_t seq = __atomic_load_n(&shm->state_request_seq, __ATOMIC_ACQUIRE);
+    if (seq == 0 || seq == handledSeq) return;
+    handledSeq = seq;
+
+    char path[VSTPOC_STATE_PATH_LEN];
+    memcpy(path, shm->state_path, sizeof(path));
+    path[sizeof(path) - 1] = '\0';
+    uint32_t command = __atomic_load_n(&shm->state_command, __ATOMIC_ACQUIRE);
+    uint64_t size = 0;
+    uint32_t status = VSTPOC_STATE_STATUS_ERROR;
+    const char* message = nullptr;
+
+    if (command == VSTPOC_STATE_CMD_SAVE) {
+        status = save_vst3_state_to_file(component, controller, path, &size);
+        if (status == VSTPOC_STATE_STATUS_UNSUPPORTED) message = "VST3 state unsupported";
+        else if (status != VSTPOC_STATE_STATUS_OK) message = "VST3 state save failed";
+    } else if (command == VSTPOC_STATE_CMD_LOAD) {
+        status = load_vst3_state_from_file(component, controller, path);
+        if (status != VSTPOC_STATE_STATUS_OK) message = "VST3 state load failed";
+    } else {
+        message = "unknown VST3 state command";
+    }
+
+    complete_state_request(seq, status, size, message);
 }
 
 /* ---- Minimal IComponentHandler --------------------------------------
@@ -1672,7 +2011,15 @@ static void process_block(IAudioProcessor* processor,
     data.outputEvents         = nullptr;
     data.processContext       = nullptr;
 
+    if (!enter_process_call()) {
+        for (int32 i = 0; i < nFrames; ++i) {
+            out_l[i] = 0.0f;
+            out_r[i] = 0.0f;
+        }
+        return;
+    }
     processor->process(data);
+    leave_process_call();
 
     /* Fan a mono plugin's single output out to both ring channels so the stereo
      * speaker ring isn't half-silent. */
@@ -1954,6 +2301,7 @@ int main(int argc, char** argv)
             LOG("component->getState returned 0x%x (skipping setComponentState)\n",
                 (unsigned)gs);
         }
+        publish_param_metadata(editController);
     }
 
     /* Connect Component <-> EditController via IConnectionPoint. JUCE-based
@@ -2143,12 +2491,22 @@ int main(int argc, char** argv)
      * callback (WM_USER+123) messages. MsgWaitForMultipleObjectsEx sleeps until a
      * message arrives — no busy-spin, since audio no longer lives here — or the
      * 100ms timeout lets us re-check stop_flag. */
+    DWORD lastParamPublish = GetTickCount();
     while (g_shm && !g_shm->stop_flag) {
         MsgWaitForMultipleObjectsEx(0, NULL, 100, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
         MSG msg;
         while (PeekMessageA(&msg, NULL, 0, 0, PM_REMOVE)) {
             TranslateMessage(&msg);
             DispatchMessageA(&msg);
+        }
+        handle_state_request(component, editController);
+        if (editController) {
+            drain_host_param_ring(editController);
+            DWORD now = GetTickCount();
+            if (now - lastParamPublish >= 100) {
+                publish_current_param_values(editController);
+                lastParamPublish = now;
+            }
         }
     }
 

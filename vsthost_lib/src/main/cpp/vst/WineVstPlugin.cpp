@@ -3,6 +3,7 @@
 #include "../x11/X11NativeDisplay.h"
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstring>
 #include <fstream>
 #include <sstream>
@@ -14,6 +15,15 @@
 namespace vsthost {
 
 namespace {
+
+constexpr uint32_t kNumAudioPorts = 4;
+constexpr int kGuestReadyForStateTimeoutMs = 30000;
+constexpr int kGuestStateTimeoutMs = 10000;
+constexpr size_t kMaxGuestStateBytes = 64u * 1024u * 1024u;
+constexpr char kVstStatePropertyKey[] = "urn:guitarrackcraft:vst:state";
+constexpr char kBinaryType[] = "application/octet-stream";
+
+std::atomic<uint32_t> gStateTransferSeq{0};
 
 size_t boundedStringLength(const char* value, size_t maxLen) {
     size_t len = 0;
@@ -35,6 +45,69 @@ std::string flattenWin32FilterPatterns(const char* filter, size_t maxLen) {
         pos += len + 1;
     }
     return patterns;
+}
+
+float sanitizeNormalizedParam(float value) {
+    if (!std::isfinite(value)) return 0.0f;
+    return std::clamp(value, 0.0f, 1.0f);
+}
+
+bool readGuestParamSnapshot(const SharedRing* ring, std::vector<float>& out) {
+    const VstpocShared* shared = ring ? ring->raw() : nullptr;
+    if (!shared) return false;
+
+    for (int attempt = 0; attempt < 4; ++attempt) {
+        const uint64_t seqBefore = __atomic_load_n(&shared->param_values_seq, __ATOMIC_ACQUIRE);
+        if (seqBefore == 0) return false;
+        if ((seqBefore & 1u) != 0) continue;
+
+        const int32_t count = std::max(0, std::min<int32_t>(shared->param_count, VSTPOC_MAX_PARAMS));
+        if (count <= 0) return false;
+
+        std::vector<float> snapshot(static_cast<size_t>(count));
+        for (int32_t i = 0; i < count; ++i) {
+            snapshot[static_cast<size_t>(i)] = sanitizeNormalizedParam(shared->param_values[i]);
+        }
+
+        const uint64_t seqAfter = __atomic_load_n(&shared->param_values_seq, __ATOMIC_ACQUIRE);
+        if (seqBefore == seqAfter && (seqAfter & 1u) == 0) {
+            out = std::move(snapshot);
+            return true;
+        }
+    }
+    return false;
+}
+
+std::string makeStateTransferPath(const std::string& filesDir, const std::string& uuid) {
+    const std::string tmpDir = filesDir + "/tmp";
+    ::mkdir(tmpDir.c_str(), 0700);
+    const uint32_t seq = gStateTransferSeq.fetch_add(1, std::memory_order_relaxed) + 1;
+    return tmpDir + "/vst_state_v" + uuid + "_" + std::to_string(::getpid()) +
+           "_" + std::to_string(seq) + ".bin";
+}
+
+bool readBinaryFile(const std::string& path, std::vector<uint8_t>& out) {
+    std::ifstream f(path, std::ios::binary | std::ios::ate);
+    if (!f) return false;
+    const std::streamoff size = f.tellg();
+    if (size < 0 || static_cast<uint64_t>(size) > kMaxGuestStateBytes) return false;
+    f.seekg(0, std::ios::beg);
+    out.resize(static_cast<size_t>(size));
+    if (!out.empty()) {
+        f.read(reinterpret_cast<char*>(out.data()), static_cast<std::streamsize>(out.size()));
+    }
+    return f.good() || f.eof();
+}
+
+bool writeBinaryFile(const std::string& path, const std::vector<uint8_t>& bytes) {
+    if (bytes.size() > kMaxGuestStateBytes) return false;
+    std::ofstream f(path, std::ios::binary | std::ios::trunc);
+    if (!f) return false;
+    if (!bytes.empty()) {
+        f.write(reinterpret_cast<const char*>(bytes.data()),
+                static_cast<std::streamsize>(bytes.size()));
+    }
+    return f.good();
 }
 
 } // namespace
@@ -187,6 +260,10 @@ void WineVstPlugin::activate(float sampleRate, uint32_t bufferSize) {
                  entry_.displayName.c_str());
         } else if (shared) {
             paramMirror_.assign(static_cast<size_t>(std::max(0, shared->param_count)), 0.5f);
+            std::vector<float> guestValues;
+            if (readGuestParamSnapshot(ring_.get(), guestValues)) {
+                paramMirror_ = std::move(guestValues);
+            }
             LOGI("WineVstPlugin[%s] guest_ready param_count=%d",
                  entry_.displayName.c_str(), shared->param_count);
         }
@@ -353,43 +430,210 @@ guitarrackcraft::PluginInfo WineVstPlugin::getInfo() const {
 
 void WineVstPlugin::setParameter(uint32_t portIndex, float value) {
     // Control port indices start past the audio ports (4 = 2 in + 2 out).
-    const int32_t numAudio = 4;
-    const int32_t vstIdx = static_cast<int32_t>(portIndex) - numAudio;
+    const int32_t vstIdx = static_cast<int32_t>(portIndex) - static_cast<int32_t>(kNumAudioPorts);
     if (vstIdx < 0) return;
     if (vstIdx >= static_cast<int32_t>(paramMirror_.size())) {
         paramMirror_.resize(static_cast<size_t>(vstIdx) + 1, 0.5f);
     }
-    paramMirror_[vstIdx] = value;
-    if (ring_) ring_->pushParam(vstIdx, value);
+    const float normalized = sanitizeNormalizedParam(value);
+    paramMirror_[vstIdx] = normalized;
+    if (ring_) ring_->pushParam(vstIdx, normalized);
 }
 
 float WineVstPlugin::getParameter(uint32_t portIndex) const {
-    const int32_t numAudio = 4;
-    const int32_t vstIdx = static_cast<int32_t>(portIndex) - numAudio;
+    const int32_t vstIdx = static_cast<int32_t>(portIndex) - static_cast<int32_t>(kNumAudioPorts);
     if (vstIdx < 0) return 0.0f;
+    std::vector<float> guestValues;
+    if (readGuestParamSnapshot(ring_.get(), guestValues) &&
+        vstIdx < static_cast<int32_t>(guestValues.size())) {
+        paramMirror_ = std::move(guestValues);
+        return paramMirror_[static_cast<size_t>(vstIdx)];
+    }
     if (vstIdx >= static_cast<int32_t>(paramMirror_.size())) return 0.5f;
     return paramMirror_[vstIdx];
+}
+
+bool WineVstPlugin::requestGuestState(uint32_t command,
+                                      const std::string& path,
+                                      uint64_t size,
+                                      uint64_t* outSize,
+                                      std::string* error) const {
+    VstpocShared* shared = ring_ ? ring_->raw() : nullptr;
+    if (!shared) {
+        if (error) *error = "guest not ready";
+        return false;
+    }
+
+    const auto readyDeadline = std::chrono::steady_clock::now() +
+                               std::chrono::milliseconds(kGuestReadyForStateTimeoutMs);
+    while (__atomic_load_n(&shared->guest_ready, __ATOMIC_ACQUIRE) == 0 &&
+           std::chrono::steady_clock::now() < readyDeadline) {
+        if (__atomic_load_n(&shared->stop_flag, __ATOMIC_ACQUIRE) != 0) break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(25));
+    }
+    if (__atomic_load_n(&shared->guest_ready, __ATOMIC_ACQUIRE) == 0) {
+        if (error) *error = "guest not ready";
+        return false;
+    }
+    if (path.empty() || path.size() >= VSTPOC_STATE_PATH_LEN) {
+        if (error) *error = "state transfer path too long";
+        return false;
+    }
+
+    std::memset(shared->state_path, 0, sizeof(shared->state_path));
+    std::memcpy(shared->state_path, path.data(), path.size());
+    std::memset(shared->state_message, 0, sizeof(shared->state_message));
+    __atomic_store_n(&shared->state_size, size, __ATOMIC_RELEASE);
+    __atomic_store_n(&shared->state_status, VSTPOC_STATE_STATUS_IDLE, __ATOMIC_RELEASE);
+    __atomic_store_n(&shared->state_command, command, __ATOMIC_RELEASE);
+    __sync_synchronize();
+
+    const uint32_t requestSeq =
+        __atomic_add_fetch(&shared->state_request_seq, 1, __ATOMIC_RELEASE);
+    const auto deadline = std::chrono::steady_clock::now() +
+                          std::chrono::milliseconds(kGuestStateTimeoutMs);
+    while (std::chrono::steady_clock::now() < deadline) {
+        const uint32_t responseSeq =
+            __atomic_load_n(&shared->state_response_seq, __ATOMIC_ACQUIRE);
+        if (responseSeq == requestSeq) {
+            const uint32_t status =
+                __atomic_load_n(&shared->state_status, __ATOMIC_ACQUIRE);
+            if (outSize) {
+                *outSize = __atomic_load_n(&shared->state_size, __ATOMIC_ACQUIRE);
+            }
+            if (status == VSTPOC_STATE_STATUS_OK) return true;
+            if (error) {
+                const size_t len = boundedStringLength(shared->state_message,
+                                                       sizeof(shared->state_message));
+                *error = len > 0 ? std::string(shared->state_message, len)
+                                 : (status == VSTPOC_STATE_STATUS_UNSUPPORTED
+                                        ? "guest state unsupported"
+                                        : "guest state request failed");
+            }
+            return false;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+
+    if (error) *error = "guest state request timed out";
+    return false;
+}
+
+std::vector<uint8_t> WineVstPlugin::saveGuestStateBlob() const {
+    const std::string path = makeStateTransferPath(filesDir_, entry_.uuid);
+    ::unlink(path.c_str());
+
+    uint64_t size = 0;
+    std::string error;
+    if (!requestGuestState(VSTPOC_STATE_CMD_SAVE, path, 0, &size, &error)) {
+        if (!error.empty() && error.find("unsupported") == std::string::npos) {
+            LOGW("WineVstPlugin[%s]: save guest state failed: %s",
+                 entry_.displayName.c_str(), error.c_str());
+        }
+        ::unlink(path.c_str());
+        return {};
+    }
+    if (size == 0 || size > kMaxGuestStateBytes) {
+        LOGW("WineVstPlugin[%s]: guest state size invalid: %llu",
+             entry_.displayName.c_str(), (unsigned long long)size);
+        ::unlink(path.c_str());
+        return {};
+    }
+
+    std::vector<uint8_t> blob;
+    if (!readBinaryFile(path, blob)) {
+        LOGW("WineVstPlugin[%s]: failed to read guest state file %s",
+             entry_.displayName.c_str(), path.c_str());
+        blob.clear();
+    }
+    ::unlink(path.c_str());
+    return blob;
+}
+
+bool WineVstPlugin::restoreGuestStateBlob(const std::vector<uint8_t>& blob) const {
+    if (blob.empty()) return false;
+    const std::string path = makeStateTransferPath(filesDir_, entry_.uuid);
+    if (!writeBinaryFile(path, blob)) {
+        LOGW("WineVstPlugin[%s]: failed to write guest state file %s",
+             entry_.displayName.c_str(), path.c_str());
+        ::unlink(path.c_str());
+        return false;
+    }
+
+    uint64_t ignored = 0;
+    std::string error;
+    const bool ok = requestGuestState(VSTPOC_STATE_CMD_LOAD, path, blob.size(), &ignored, &error);
+    if (!ok) {
+        LOGW("WineVstPlugin[%s]: restore guest state failed: %s",
+             entry_.displayName.c_str(),
+             error.empty() ? "unknown error" : error.c_str());
+    }
+    ::unlink(path.c_str());
+    return ok;
 }
 
 guitarrackcraft::PluginState WineVstPlugin::saveState() {
     guitarrackcraft::PluginState ps;
     ps.pluginUri = entry_.uuid;
     ps.format    = entry_.format;
-    const uint32_t numAudio = 4;
-    for (size_t i = 0; i < paramMirror_.size(); ++i) {
-        ps.controlPortValues.emplace_back(static_cast<uint32_t>(numAudio + i), paramMirror_[i]);
+
+    std::vector<float> values;
+    if (readGuestParamSnapshot(ring_.get(), values)) {
+        paramMirror_ = values;
+    } else {
+        values = paramMirror_;
+    }
+
+    for (size_t i = 0; i < values.size(); ++i) {
+        ps.controlPortValues.emplace_back(static_cast<uint32_t>(kNumAudioPorts + i),
+                                          sanitizeNormalizedParam(values[i]));
+    }
+
+    std::vector<uint8_t> stateBlob = saveGuestStateBlob();
+    if (!stateBlob.empty()) {
+        LOGI("WineVstPlugin[%s]: saved guest state blob %zu bytes",
+             entry_.displayName.c_str(), stateBlob.size());
+        guitarrackcraft::StateProperty prop;
+        prop.keyUri = kVstStatePropertyKey;
+        prop.typeUri = kBinaryType;
+        prop.flags = 0;
+        prop.value = std::move(stateBlob);
+        ps.properties.push_back(std::move(prop));
     }
     return ps;
 }
 
 bool WineVstPlugin::restoreState(const guitarrackcraft::PluginState& state) {
+    bool hadStateBlob = false;
+    bool restoredStateBlob = false;
+    for (const auto& prop : state.properties) {
+        if (prop.keyUri == kVstStatePropertyKey && !prop.value.empty()) {
+            hadStateBlob = true;
+            restoredStateBlob = restoreGuestStateBlob(prop.value);
+            break;
+        }
+    }
+    if (restoredStateBlob) {
+        std::vector<float> guestValues;
+        if (readGuestParamSnapshot(ring_.get(), guestValues)) {
+            paramMirror_ = std::move(guestValues);
+        }
+        LOGI("WineVstPlugin[%s]: restored guest state blob; skipped %zu control fallback values",
+             entry_.displayName.c_str(), state.controlPortValues.size());
+        return true;
+    }
+    if (hadStateBlob) {
+        LOGW("WineVstPlugin[%s]: guest state blob restore failed; replaying %zu control fallback values",
+             entry_.displayName.c_str(), state.controlPortValues.size());
+    }
+
     // Push each saved param back through setParameter — that updates the
     // host mirror AND forwards to the param ring so the wine editor's
     // knobs reflect the restored value.
     for (const auto& [portIndex, value] : state.controlPortValues) {
         setParameter(portIndex, value);
     }
-    return true;
+    return !hadStateBlob || !state.controlPortValues.empty();
 }
 
 } // namespace vsthost

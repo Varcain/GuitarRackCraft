@@ -44,11 +44,8 @@ public:
     bool pollNativeFilePicker(guitarrackcraft::NativeFilePickerRequest& request) override;
     void respondNativeFilePicker(uint32_t sequence, bool cancelled, const std::string& windowsPath) override;
 
-    /** Persist the host-side mirror of VST parameter values so presets
-     *  round-trip slider state. NOT captured: knob turns inside the wine
-     *  editor — the guest doesn't push values back to host yet (would need
-     *  a `param_values` array in shared_layout.h + a vst_host.exe rebuild).
-     *  Slider-driven workflow saves/restores correctly. */
+    /** Persist the latest normalized VST parameter values published by the
+     *  Wine guest, falling back to the host-side mirror for legacy guests. */
     guitarrackcraft::PluginState saveState() override;
 
     uint32_t getNumInputPorts() const override  { return 2; }
@@ -57,12 +54,8 @@ public:
     int32_t getEditorWidth()  const override;
     int32_t getEditorHeight() const override;
 
-    /** No control-port / state-property save-restore yet — we'd need to
-     *  query wine for current param values via shm. For now the override
-     *  exists only so loadPreset doesn't return false (default returns
-     *  false → PresetManager flags the whole load as failed). The plugin
-     *  is still re-instantiated correctly; it just loads in its DAW-default
-     *  param state, which is also the standalone-vstpoc behaviour today. */
+    /** Restore normalized parameter values through the host→guest parameter
+     *  ring so the plugin processor and native editor receive the preset. */
     bool restoreState(const guitarrackcraft::PluginState& state) override;
 
     int32_t getUnderrunCount() const override {
@@ -92,10 +85,15 @@ private:
     // Reused per process() call to avoid alloc on the audio thread.
     std::vector<float> interleaved_;
 
-    // Host-side mirror of param values pushed via setParameter. Source of
-    // truth for getParameter() readback + saveState. NOT updated by guest
-    // (wine editor's knob turns aren't reflected here — see saveState doc).
+    // Host-side mirror of param values pushed via setParameter or refreshed
+    // from the guest snapshot. Used as a fallback for legacy guest builds.
     mutable std::vector<float> paramMirror_;
+
+    bool requestGuestState(uint32_t command, const std::string& path,
+                           uint64_t size, uint64_t* outSize,
+                           std::string* error) const;
+    std::vector<uint8_t> saveGuestStateBlob() const;
+    bool restoreGuestStateBlob(const std::vector<uint8_t>& blob) const;
 
     std::atomic<int32_t> underruns_{0};
 };
