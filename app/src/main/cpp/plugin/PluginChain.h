@@ -20,10 +20,13 @@
 #ifndef GUITARRACKCRAFT_PLUGIN_CHAIN_H
 #define GUITARRACKCRAFT_PLUGIN_CHAIN_H
 
+#include <condition_variable>
+#include <deque>
 #include <vector>
 #include <memory>
 #include <shared_mutex>
 #include <mutex>
+#include <thread>
 #include "IPlugin.h"
 
 namespace guitarrackcraft {
@@ -31,7 +34,7 @@ namespace guitarrackcraft {
 class PluginChain {
 public:
     PluginChain() = default;
-    ~PluginChain() = default;
+    ~PluginChain();
 
     int addPlugin(std::unique_ptr<IPlugin> plugin, int position = -1);
     bool removePlugin(int index);
@@ -73,6 +76,15 @@ private:
 
     std::vector<std::vector<float>> intermediateBuffers_;
     void ensureBuffers(uint32_t numFrames, uint32_t numChannels);
+
+    std::deque<std::unique_ptr<IPlugin>> teardownQueue_;
+    std::mutex teardownMutex_;
+    std::condition_variable teardownCond_;
+    std::thread teardownThread_;
+    bool teardownStop_ = false;
+
+    void enqueueTeardown(std::unique_ptr<IPlugin> plugin);
+    void teardownLoop();
 };
 
 } // namespace guitarrackcraft

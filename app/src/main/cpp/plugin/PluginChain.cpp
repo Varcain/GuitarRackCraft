@@ -29,6 +29,17 @@
 
 namespace guitarrackcraft {
 
+PluginChain::~PluginChain() {
+    {
+        std::lock_guard lock(teardownMutex_);
+        teardownStop_ = true;
+    }
+    teardownCond_.notify_one();
+    if (teardownThread_.joinable()) {
+        teardownThread_.join();
+    }
+}
+
 int PluginChain::addPlugin(std::unique_ptr<IPlugin> plugin, int position) {
     if (!plugin) {
         return -1;
@@ -99,9 +110,58 @@ bool PluginChain::removePlugin(int index) {
     }
 
     // Wine VST teardown can block while the helper process exits. Detach first
-    // so the audio thread can continue processing the shortened chain.
-    removedPlugin->deactivate();
+    // so the rack/UI can continue immediately, then drain teardown in the
+    // background while the plugin object is still owned by PluginChain.
+    enqueueTeardown(std::move(removedPlugin));
     return true;
+}
+
+void PluginChain::enqueueTeardown(std::unique_ptr<IPlugin> plugin) {
+    if (!plugin) {
+        return;
+    }
+
+    {
+        std::lock_guard lock(teardownMutex_);
+        if (teardownStop_) {
+            plugin->deactivate();
+            return;
+        }
+
+        teardownQueue_.push_back(std::move(plugin));
+        if (!teardownThread_.joinable()) {
+            teardownThread_ = std::thread(&PluginChain::teardownLoop, this);
+        }
+    }
+    teardownCond_.notify_one();
+}
+
+void PluginChain::teardownLoop() {
+    LOGI("teardownLoop: started tid=%ld", getTid());
+    while (true) {
+        std::unique_ptr<IPlugin> plugin;
+        {
+            std::unique_lock lock(teardownMutex_);
+            teardownCond_.wait(lock, [this] {
+                return teardownStop_ || !teardownQueue_.empty();
+            });
+
+            if (teardownQueue_.empty()) {
+                if (teardownStop_) {
+                    break;
+                }
+                continue;
+            }
+
+            plugin = std::move(teardownQueue_.front());
+            teardownQueue_.pop_front();
+        }
+
+        LOGI("teardownLoop: deactivating removed plugin tid=%ld", getTid());
+        plugin->deactivate();
+        LOGI("teardownLoop: removed plugin deactivated");
+    }
+    LOGI("teardownLoop: stopped tid=%ld", getTid());
 }
 
 bool PluginChain::reorderPlugins(int fromIndex, int toIndex) {
