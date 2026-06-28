@@ -399,12 +399,6 @@ fun VstManagerScreen(onNavigateBack: () -> Unit) {
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
-                Spacer(Modifier.height(8.dp))
-                Text(
-                    "Imported plugins appear under author \"Varcain\" in the Plugin " +
-                    "Browser after the audio engine restarts.",
-                    style = MaterialTheme.typography.bodySmall
-                )
             }
         }
         blockingOperation?.let { label ->
