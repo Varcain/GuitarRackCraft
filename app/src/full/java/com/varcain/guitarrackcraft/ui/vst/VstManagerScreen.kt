@@ -8,11 +8,14 @@ package com.varcain.guitarrackcraft.ui.vst
 import android.content.Context
 import android.net.Uri
 import android.widget.Toast
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowBack
@@ -23,9 +26,11 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.zIndex
 import com.varcain.guitarrackcraft.engine.GpuDetector
 import com.varcain.guitarrackcraft.engine.NativeEngine
 import com.varcain.guitarrackcraft.engine.RackManager
@@ -84,7 +89,7 @@ fun VstManagerScreen(onNavigateBack: () -> Unit) {
     var executables by remember { mutableStateOf(VstExecutableRegistry.read(context)) }
     var importingName by remember { mutableStateOf<String?>(null) }
 
-    var setupInProgress by remember { mutableStateOf(false) }
+    var blockingOperation by remember { mutableStateOf<String?>(null) }
 
     // Plugin-editor renderer selector. Turnip (GPU) is only offered on Adreno
     // devices; everywhere else only software lavapipe can run.
@@ -128,12 +133,15 @@ fun VstManagerScreen(onNavigateBack: () -> Unit) {
     ) { uris: List<Uri> ->
         if (uris.isEmpty()) return@rememberLauncherForActivityResult
         scope.launch {
-            setupInProgress = true
-            val staged = withContext(Dispatchers.IO) {
-                if (!VstHostSetup.ensureWineRoot(context)) return@withContext null
-                stageInstaller(context, uris)
+            blockingOperation = "Preparing installer"
+            val staged = try {
+                withContext(Dispatchers.IO) {
+                    if (!VstHostSetup.ensureWineRoot(context)) return@withContext null
+                    stageInstaller(context, uris)
+                }
+            } finally {
+                blockingOperation = null
             }
-            setupInProgress = false
             if (staged == null) {
                 Toast.makeText(context, "Couldn't stage the installer file", Toast.LENGTH_LONG).show()
                 return@launch
@@ -154,12 +162,15 @@ fun VstManagerScreen(onNavigateBack: () -> Unit) {
         pendingEnv = null
         if (uris.isEmpty() || env == null) return@rememberLauncherForActivityResult
         scope.launch {
-            setupInProgress = true
-            val staged = withContext(Dispatchers.IO) {
-                if (!VstHostSetup.ensureWineRoot(context)) return@withContext null
-                stageInstaller(context, uris)
+            blockingOperation = "Preparing installer"
+            val staged = try {
+                withContext(Dispatchers.IO) {
+                    if (!VstHostSetup.ensureWineRoot(context)) return@withContext null
+                    stageInstaller(context, uris)
+                }
+            } finally {
+                blockingOperation = null
             }
-            setupInProgress = false
             if (staged == null) {
                 Toast.makeText(context, "Couldn't stage the installer file", Toast.LENGTH_LONG).show()
                 return@launch
@@ -174,25 +185,28 @@ fun VstManagerScreen(onNavigateBack: () -> Unit) {
     ) { uri: Uri? ->
         if (uri == null) return@rememberLauncherForActivityResult
         scope.launch {
-            setupInProgress = true
-            val result = withContext(Dispatchers.IO) {
-                // First-import path: extract wine binaries if not done. Slow
-                // (~5-10s) the first time, instant on subsequent imports.
-                if (!VstHostSetup.ensureWineRoot(context)) {
-                    return@withContext ImportResult.Err("Wine runtime setup failed (see logcat)")
-                }
-                val r = VstRegistry.importFrom(context, uri)
-                if (r is ImportResult.Ok) {
-                    // Per-plugin prefix needs to exist BEFORE the audio engine
-                    // tries to spawn wine. Also prime WineHostProcess' one-time
-                    // service bootstrap so first rack add doesn't pay it.
-                    if (VstHostSetup.ensurePluginPrefix(context, r.uuid)) {
-                        VstHostSetup.bootstrapPluginPrefixServices(context, r.uuid)
+            blockingOperation = "Importing plugin"
+            val result = try {
+                withContext(Dispatchers.IO) {
+                    // First-import path: extract wine binaries if not done. Slow
+                    // (~5-10s) the first time, instant on subsequent imports.
+                    if (!VstHostSetup.ensureWineRoot(context)) {
+                        return@withContext ImportResult.Err("Wine runtime setup failed (see logcat)")
                     }
+                    val r = VstRegistry.importFrom(context, uri)
+                    if (r is ImportResult.Ok) {
+                        // Per-plugin prefix needs to exist BEFORE the audio engine
+                        // tries to spawn wine. Also prime WineHostProcess' one-time
+                        // service bootstrap so first rack add doesn't pay it.
+                        if (VstHostSetup.ensurePluginPrefix(context, r.uuid)) {
+                            VstHostSetup.bootstrapPluginPrefixServices(context, r.uuid)
+                        }
+                    }
+                    r
                 }
-                r
+            } finally {
+                blockingOperation = null
             }
-            setupInProgress = false
             when (result) {
                 is ImportResult.Ok -> {
                     entries = VstRegistry.read(context)
@@ -212,189 +226,226 @@ fun VstManagerScreen(onNavigateBack: () -> Unit) {
         }
     }
 
-    Scaffold(
-        topBar = {
-            TopAppBar(
-                title = { Text("Manage VST") },
-                navigationIcon = {
-                    IconButton(onClick = onNavigateBack) {
-                        Icon(Icons.Default.ArrowBack, contentDescription = "Back")
-                    }
-                }
-            )
-        }
-    ) { padding ->
-        Column(
-            modifier = Modifier.padding(padding).fillMaxSize().padding(16.dp)
-        ) {
-            LazyColumn(modifier = Modifier.weight(1f)) {
-                item {
-                    Text(
-                        "Plugin editor renderer",
-                        style = MaterialTheme.typography.titleMedium
-                    )
-                    Spacer(Modifier.height(8.dp))
-                    RendererDropdown(
-                        options = rendererOptions,
-                        selected = selectedRenderer,
-                        onSelected = { r ->
-                            selectedRenderer = r
-                            RendererPreferenceManager.setRenderer(context, r)
-                            scope.launch(Dispatchers.IO) { WineEnvFile.applyRenderer(context, r) }
+    BackHandler(enabled = blockingOperation != null) { }
+
+    Box(modifier = Modifier.fillMaxSize()) {
+        Scaffold(
+            topBar = {
+                TopAppBar(
+                    title = { Text("Manage VST") },
+                    navigationIcon = {
+                        IconButton(onClick = onNavigateBack) {
+                            Icon(Icons.Default.ArrowBack, contentDescription = "Back")
                         }
-                    )
-                    Spacer(Modifier.height(4.dp))
-                    Text(
-                        if (isAdreno)
-                            "Applies to plugin editors opened after this change. Remove and re-add a plugin (or restart the app) to switch a running one."
-                        else
-                            "This device has no Adreno GPU — only software rendering is available.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    Spacer(Modifier.height(20.dp))
-                }
-                item {
-                    Text(
-                        "Imported VSTs",
-                        style = MaterialTheme.typography.titleMedium
-                    )
-                    Spacer(Modifier.height(8.dp))
-                }
-                if (entries.isEmpty()) {
-                    item {
-                        Text(
-                            "No VSTs imported yet. Tap Import below to pick a .dll or .vst3 file.",
-                            style = MaterialTheme.typography.bodyMedium
-                        )
                     }
-                } else {
-                    items(entries, key = { "vst-${it.uuid}" }) { e ->
-                        VstRow(
-                            entry = e,
-                            environmentLabel = e.prefixPath?.let { p ->
-                                executables.firstOrNull { it.prefixPath == p }?.displayName
-                                    ?: "shared"
-                            },
-                            onOpenEditor = {
-                                openVstEditor(context, e.uuid)
-                            },
-                            onRemove = {
-                                scope.launch(Dispatchers.IO) {
-                                    VstRegistry.remove(context, e.uuid)
-                                    val updated = VstRegistry.read(context)
-                                    withContext(Dispatchers.Main) {
-                                        entries = updated
-                                        runCatching {
-                                            NativeEngine.getInstance().nativeRefreshPluginRegistry()
-                                        }
-                                    }
-                                }
-                            }
-                        )
-                        Divider()
-                    }
-                }
-                item {
-                    Spacer(Modifier.height(16.dp))
-                    Text(
-                        "Activation environments",
-                        style = MaterialTheme.typography.titleMedium
-                    )
-                    Spacer(Modifier.height(4.dp))
-                    Text(
-                        "Plugin managers (IK Multimedia, Native Access, etc.). Each hosts its " +
-                        "plugins in one prefix so licences stay live. ▶ opens/re-validates; " +
-                        "+ installs an external installer (.exe) straight into the environment " +
-                        "so its activation catches; closing it scans the prefix for new plugins.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    Spacer(Modifier.height(8.dp))
-                }
-                if (executables.isEmpty()) {
-                    item {
-                        Text(
-                            "No managers registered. Use \"Install from .exe…\" below; " +
-                            "any manager-style .exe found in the install will appear here.",
-                            style = MaterialTheme.typography.bodyMedium
-                        )
-                    }
-                } else {
-                    items(executables, key = { "exe-${it.uuid}" }) { e ->
-                        ExecutableRow(
-                            entry = e,
-                            pluginCount = entries.count { it.prefixPath == e.prefixPath },
-                            onInstallInto = {
-                                pendingEnv = e
-                                envExePickerLauncher.launch(arrayOf("*/*"))
-                            },
-                            onLaunch = {
-                                installerVm.launchExecutable(e)
-                            },
-                            onRemove = {
-                                scope.launch(Dispatchers.IO) {
-                                    // Returns >0 when the environment prefix still hosts
-                                    // plugins (or sibling activators) and was therefore
-                                    // NOT deleted — the row is gone but the prefix is kept.
-                                    val stillReferenced =
-                                        VstExecutableRegistry.remove(context, e.uuid)
-                                    val updated = VstExecutableRegistry.read(context)
-                                    withContext(Dispatchers.Main) {
-                                        executables = updated
-                                        if (stillReferenced > 0) {
-                                            Toast.makeText(
-                                                context,
-                                                "Removed the manager, but kept its prefix — " +
-                                                    "$stillReferenced plugin(s) still use it. " +
-                                                    "Remove those plugins first to reclaim the space.",
-                                                Toast.LENGTH_LONG
-                                            ).show()
-                                        }
-                                    }
-                                }
-                            }
-                        )
-                        Divider()
-                    }
-                }
-            }
-            Spacer(Modifier.height(16.dp))
-            Button(
-                onClick = { pickerLauncher.launch(arrayOf("*/*")) },
-                enabled = !setupInProgress,
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Text(if (setupInProgress) "Setting up wine…" else "Import VST…")
-            }
-            Spacer(Modifier.height(8.dp))
-            OutlinedButton(
-                onClick = { exePickerLauncher.launch(arrayOf("*/*")) },
-                enabled = !setupInProgress,
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Text("Install from .exe…")
-            }
-            Spacer(Modifier.height(4.dp))
-            Text(
-                "For multi-part installers (Inno Setup, NSIS with .bin payloads), " +
-                "select the .exe AND its companion .bin files together.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-            if (setupInProgress) {
-                Spacer(Modifier.height(8.dp))
-                LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
-                Text(
-                    "First import takes ~10–30s to extract wine + FEX binaries.",
-                    style = MaterialTheme.typography.bodySmall
                 )
-            } else {
+            }
+        ) { padding ->
+            Column(
+                modifier = Modifier.padding(padding).fillMaxSize().padding(16.dp)
+            ) {
+                LazyColumn(modifier = Modifier.weight(1f)) {
+                    item {
+                        Text(
+                            "Plugin editor renderer",
+                            style = MaterialTheme.typography.titleMedium
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        RendererDropdown(
+                            options = rendererOptions,
+                            selected = selectedRenderer,
+                            onSelected = { r ->
+                                selectedRenderer = r
+                                RendererPreferenceManager.setRenderer(context, r)
+                                scope.launch(Dispatchers.IO) { WineEnvFile.applyRenderer(context, r) }
+                            }
+                        )
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            if (isAdreno)
+                                "Applies to plugin editors opened after this change. Remove and re-add a plugin (or restart the app) to switch a running one."
+                            else
+                                "This device has no Adreno GPU — only software rendering is available.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Spacer(Modifier.height(20.dp))
+                    }
+                    item {
+                        Text(
+                            "Imported VSTs",
+                            style = MaterialTheme.typography.titleMedium
+                        )
+                        Spacer(Modifier.height(8.dp))
+                    }
+                    if (entries.isEmpty()) {
+                        item {
+                            Text(
+                                "No VSTs imported yet. Tap Import below to pick a .dll or .vst3 file.",
+                                style = MaterialTheme.typography.bodyMedium
+                            )
+                        }
+                    } else {
+                        items(entries, key = { "vst-${it.uuid}" }) { e ->
+                            VstRow(
+                                entry = e,
+                                environmentLabel = e.prefixPath?.let { p ->
+                                    executables.firstOrNull { it.prefixPath == p }?.displayName
+                                        ?: "shared"
+                                },
+                                onOpenEditor = {
+                                    openVstEditor(context, e.uuid)
+                                },
+                                onRemove = {
+                                    scope.launch(Dispatchers.IO) {
+                                        VstRegistry.remove(context, e.uuid)
+                                        val updated = VstRegistry.read(context)
+                                        withContext(Dispatchers.Main) {
+                                            entries = updated
+                                            runCatching {
+                                                NativeEngine.getInstance().nativeRefreshPluginRegistry()
+                                            }
+                                        }
+                                    }
+                                }
+                            )
+                            Divider()
+                        }
+                    }
+                    item {
+                        Spacer(Modifier.height(16.dp))
+                        Text(
+                            "Activation environments",
+                            style = MaterialTheme.typography.titleMedium
+                        )
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            "Plugin managers (IK Multimedia, Native Access, etc.). Each hosts its " +
+                            "plugins in one prefix so licences stay live. ▶ opens/re-validates; " +
+                            "+ installs an external installer (.exe) straight into the environment " +
+                            "so its activation catches; closing it scans the prefix for new plugins.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Spacer(Modifier.height(8.dp))
+                    }
+                    if (executables.isEmpty()) {
+                        item {
+                            Text(
+                                "No managers registered. Use \"Install from .exe…\" below; " +
+                                "any manager-style .exe found in the install will appear here.",
+                                style = MaterialTheme.typography.bodyMedium
+                            )
+                        }
+                    } else {
+                        items(executables, key = { "exe-${it.uuid}" }) { e ->
+                            ExecutableRow(
+                                entry = e,
+                                pluginCount = entries.count { it.prefixPath == e.prefixPath },
+                                onInstallInto = {
+                                    pendingEnv = e
+                                    envExePickerLauncher.launch(arrayOf("*/*"))
+                                },
+                                onLaunch = {
+                                    installerVm.launchExecutable(e)
+                                },
+                                onRemove = {
+                                    scope.launch(Dispatchers.IO) {
+                                        // Returns >0 when the environment prefix still hosts
+                                        // plugins (or sibling activators) and was therefore
+                                        // NOT deleted — the row is gone but the prefix is kept.
+                                        val stillReferenced =
+                                            VstExecutableRegistry.remove(context, e.uuid)
+                                        val updated = VstExecutableRegistry.read(context)
+                                        withContext(Dispatchers.Main) {
+                                            executables = updated
+                                            if (stillReferenced > 0) {
+                                                Toast.makeText(
+                                                    context,
+                                                    "Removed the manager, but kept its prefix — " +
+                                                        "$stillReferenced plugin(s) still use it. " +
+                                                        "Remove those plugins first to reclaim the space.",
+                                                    Toast.LENGTH_LONG
+                                                ).show()
+                                            }
+                                        }
+                                    }
+                                }
+                            )
+                            Divider()
+                        }
+                    }
+                }
+                Spacer(Modifier.height(16.dp))
+                Button(
+                    onClick = { pickerLauncher.launch(arrayOf("*/*")) },
+                    enabled = blockingOperation == null,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("Import VST…")
+                }
+                Spacer(Modifier.height(8.dp))
+                OutlinedButton(
+                    onClick = { exePickerLauncher.launch(arrayOf("*/*")) },
+                    enabled = blockingOperation == null,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("Install from .exe…")
+                }
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "For multi-part installers (Inno Setup, NSIS with .bin payloads), " +
+                    "select the .exe AND its companion .bin files together.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
                 Spacer(Modifier.height(8.dp))
                 Text(
                     "Imported plugins appear under author \"Varcain\" in the Plugin " +
                     "Browser after the audio engine restarts.",
                     style = MaterialTheme.typography.bodySmall
+                )
+            }
+        }
+        blockingOperation?.let { label ->
+            VstBlockingOperationOverlay(label = label)
+        }
+    }
+}
+
+@Composable
+private fun VstBlockingOperationOverlay(label: String) {
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .zIndex(100f)
+            .background(MaterialTheme.colorScheme.scrim.copy(alpha = 0.45f))
+            .pointerInput(Unit) {
+                awaitPointerEventScope {
+                    while (true) {
+                        val event = awaitPointerEvent()
+                        event.changes.forEach { it.consume() }
+                    }
+                }
+            },
+        contentAlignment = Alignment.Center
+    ) {
+        Surface(
+            tonalElevation = 8.dp,
+            shadowElevation = 8.dp,
+            shape = RoundedCornerShape(8.dp),
+            color = MaterialTheme.colorScheme.surface
+        ) {
+            Column(
+                modifier = Modifier.padding(horizontal = 28.dp, vertical = 22.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                CircularProgressIndicator(strokeWidth = 3.dp)
+                Text(
+                    text = "$label...",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurface
                 )
             }
         }
