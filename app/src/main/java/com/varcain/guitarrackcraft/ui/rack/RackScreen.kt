@@ -944,6 +944,7 @@ fun RackScreen(
                                 onReplace = { onReplacePlugin(nativeIndex) },
                                 isFullscreen = isThisPluginFullscreen,
                                 isAnyPluginFullscreen = isFullscreenActive,
+                                isRackVisible = isVisible,
                                 screenHeight = viewportHeight,
                                 onOpenFullscreen = { pluginIdx, _, w, h ->
                                     fullscreenPluginWidth = w
@@ -1162,6 +1163,7 @@ fun PluginCard(
     onReplace: () -> Unit = {},
     isFullscreen: Boolean = false,
     isAnyPluginFullscreen: Boolean = false,
+    isRackVisible: Boolean = true,
     screenHeight: Dp = 0.dp,
     onOpenFullscreen: (pluginIndex: Int, uiType: UiType, width: Int, height: Int) -> Unit = { _, _, _, _ -> },
     onExitFullscreen: () -> Unit = {},
@@ -1509,6 +1511,8 @@ fun PluginCard(
 
                 var vstWineFileRequestPending by remember { mutableStateOf<VstWineFilePickerRequest?>(null) }
                 var showVstWineFilePicker by remember { mutableStateOf(false) }
+                var vstWinePickerNavigatingToTone3000 by remember { mutableStateOf(false) }
+                var vstWinePickerLeftRackForTone3000 by remember { mutableStateOf(false) }
 
                 fun respondVstWineFilePicker(
                     request: VstWineFilePickerRequest,
@@ -1522,6 +1526,55 @@ fun PluginCard(
                             cancelled,
                             windowsPath
                         )
+                }
+
+                LaunchedEffect(pluginIndex) {
+                    RackManager.vstTone3000FileSelectedEvents.collect { event ->
+                        if (event.pluginIndex != pluginIndex) return@collect
+                        val request = vstWineFileRequestPending ?: return@collect
+                        if (request.pluginIndex != event.pluginIndex) return@collect
+
+                        showVstWineFilePicker = false
+                        val windowsPath = withContext(Dispatchers.IO) {
+                            runCatching {
+                                copyExistingFileForVstWinePicker(event.filePath, request)
+                            }.getOrElse { error ->
+                                Log.e("GuitarRackCraft.UI", "VST Tone3000 picker copy failed", error)
+                                ""
+                            }
+                        }
+
+                        respondVstWineFilePicker(
+                            request,
+                            cancelled = windowsPath.isEmpty(),
+                            windowsPath = windowsPath
+                        )
+                        if (windowsPath.isNotEmpty()) {
+                            RackManager.notifyModelLoaded(
+                                request.pluginIndex,
+                                java.io.File(event.filePath).nameWithoutExtension
+                            )
+                        }
+                        vstWineFileRequestPending = null
+                        vstWinePickerNavigatingToTone3000 = false
+                        vstWinePickerLeftRackForTone3000 = false
+                    }
+                }
+
+                LaunchedEffect(isRackVisible, vstWinePickerNavigatingToTone3000, vstWineFileRequestPending) {
+                    if (vstWineFileRequestPending == null) {
+                        vstWinePickerNavigatingToTone3000 = false
+                        vstWinePickerLeftRackForTone3000 = false
+                        return@LaunchedEffect
+                    }
+                    if (vstWinePickerNavigatingToTone3000 && !isRackVisible) {
+                        vstWinePickerLeftRackForTone3000 = true
+                    }
+                    if (isRackVisible && vstWinePickerNavigatingToTone3000 && vstWinePickerLeftRackForTone3000) {
+                        showVstWineFilePicker = true
+                        vstWinePickerNavigatingToTone3000 = false
+                        vstWinePickerLeftRackForTone3000 = false
+                    }
                 }
 
                 val vstWineFilePicker = rememberLauncherForActivityResult(
@@ -1582,12 +1635,24 @@ fun PluginCard(
                             showVstWineFilePicker = false
                             vstWineFilePicker.launch(mimeTypesForVstWinePicker(request))
                         },
-                        onNavigateToTone3000 = {},
-                        showTone3000 = false,
+                        onNavigateToTone3000 = {
+                            showVstWineFilePicker = false
+                            vstWinePickerNavigatingToTone3000 = true
+                            vstWinePickerLeftRackForTone3000 = false
+                            val initialPlatform = when (request.kind) {
+                                VstWinePickerKind.IR -> "ir"
+                                VstWinePickerKind.MODEL -> "nam"
+                            }
+                            val initialGear = if (request.kind == VstWinePickerKind.IR) "ir" else null
+                            onNavigateToTone3000(null, initialGear, initialPlatform, request.pluginIndex, null)
+                        },
+                        dismissBeforeTone3000 = false,
                         onDismiss = {
                             showVstWineFilePicker = false
                             respondVstWineFilePicker(request, cancelled = true)
                             vstWineFileRequestPending = null
+                            vstWinePickerNavigatingToTone3000 = false
+                            vstWinePickerLeftRackForTone3000 = false
                         }
                     )
                 }
@@ -2238,6 +2303,7 @@ private fun GenericFilePickerDialog(
     onBrowseFiles: () -> Unit,
     onNavigateToTone3000: () -> Unit,
     showTone3000: Boolean = true,
+    dismissBeforeTone3000: Boolean = true,
     onDismiss: () -> Unit
 ) {
     val context = LocalContext.current
@@ -2290,7 +2356,9 @@ private fun GenericFilePickerDialog(
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .clickable {
-                                        onDismiss()
+                                        if (dismissBeforeTone3000) {
+                                            onDismiss()
+                                        }
                                         onNavigateToTone3000()
                                     }
                                     .padding(vertical = 12.dp),

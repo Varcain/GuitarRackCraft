@@ -24,6 +24,7 @@ import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
 
 data class ModelLoadedEvent(val pluginIndex: Int, val modelName: String)
+data class VstTone3000FileSelectedEvent(val pluginIndex: Int, val filePath: String)
 
 /**
  * Facade for plugin rack management: add/remove/reorder plugins, parameters.
@@ -34,8 +35,15 @@ object RackManager {
     private val _modelLoadedEvents = MutableSharedFlow<ModelLoadedEvent>(extraBufferCapacity = 1)
     val modelLoadedEvents = _modelLoadedEvents.asSharedFlow()
 
+    private val _vstTone3000FileSelectedEvents = MutableSharedFlow<VstTone3000FileSelectedEvent>(extraBufferCapacity = 1)
+    val vstTone3000FileSelectedEvents = _vstTone3000FileSelectedEvents.asSharedFlow()
+
     fun notifyModelLoaded(pluginIndex: Int, modelName: String) {
         _modelLoadedEvents.tryEmit(ModelLoadedEvent(pluginIndex, modelName))
+    }
+
+    fun notifyVstTone3000FileSelected(pluginIndex: Int, filePath: String) {
+        _vstTone3000FileSelectedEvents.tryEmit(VstTone3000FileSelectedEvent(pluginIndex, filePath))
     }
 
     fun getAvailablePlugins(): List<PluginInfo> = native.getAvailablePlugins()

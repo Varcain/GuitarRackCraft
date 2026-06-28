@@ -167,6 +167,11 @@ class ToneDetailViewModel(application: Application) : AndroidViewModel(applicati
 
     private fun loadFileIntoPlugin(pluginIndex: Int, fileInfo: ModelFileInfo, file: File, slot: String? = null) {
         val rackPlugin = RackManager.getRackPluginInfo(pluginIndex)
+        if (rackPlugin?.format == "VST2" || rackPlugin?.format == "VST3") {
+            RackManager.notifyVstTone3000FileSelected(pluginIndex, file.absolutePath)
+            return
+        }
+
         val propertyUri = ToneFileUtils.resolvePropertyUri(fileInfo, rackPlugin?.id, slot)
         NativeEngine.getInstance().setPluginFilePath(pluginIndex, propertyUri, file.absolutePath)
         X11Bridge.deliverFileToPluginUI(pluginIndex, propertyUri, file.absolutePath)
