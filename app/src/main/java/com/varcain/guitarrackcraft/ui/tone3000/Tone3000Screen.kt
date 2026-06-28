@@ -61,7 +61,7 @@ import coil.request.ImageRequest
 @Composable
 fun Tone3000Screen(
     onNavigateBack: () -> Unit,
-    onNavigateToDetail: (Tone) -> Unit = {},
+    onNavigateToDetail: (Tone, String?) -> Unit = { _, _ -> },
     initialTag: String? = null,
     initialGear: String? = null,
     initialPlatform: String? = null,
@@ -81,6 +81,7 @@ fun Tone3000Screen(
     val selectedPlatform by viewModel.selectedPlatform.collectAsState()
     val selectedTags by viewModel.selectedTags.collectAsState()
     val selectedSizes by viewModel.selectedSizes.collectAsState()
+    val selectedArchitecture by viewModel.selectedArchitecture.collectAsState()
     val isCalibrated by viewModel.isCalibrated.collectAsState()
     val selectedSort by viewModel.selectedSort.collectAsState()
     val modelsForTone by viewModel.modelsForTone.collectAsState()
@@ -116,6 +117,7 @@ fun Tone3000Screen(
     val activeFilterCount = listOfNotNull(
         selectedGear,
         selectedPlatform,
+        selectedArchitecture,
         isCalibrated
     ).size + selectedTags.size + selectedSizes.size
 
@@ -359,8 +361,9 @@ fun Tone3000Screen(
                     items(items = tones) { tone ->
                         ToneItem(
                             tone = tone,
+                            architecture = selectedArchitecture,
                             onDownload = { viewModel.requestModelList(tone) },
-                            onClick = { onNavigateToDetail(tone) }
+                            onClick = { onNavigateToDetail(tone, selectedArchitecture?.value) }
                         )
                     }
 
@@ -419,10 +422,9 @@ fun Tone3000Screen(
                     ) {
                         listOf(
                             "amp" to "Amp Head",
-                            "full-rig" to "Full Rig / Combo",
+                            "amp-cab" to "Amp Cab / Combo",
                             "pedal" to "Pedal",
-                            "outboard" to "Outboard",
-                            "ir" to "Impulse Response"
+                            "outboard" to "Outboard"
                         ).forEach { (value, label) ->
                             FilterChip(
                                 selected = selectedGear == value,
@@ -433,7 +435,7 @@ fun Tone3000Screen(
                     }
                 }
 
-                FilterSection(title = "Platform") {
+                FilterSection(title = "Format") {
                     FlowRow(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -465,7 +467,7 @@ fun Tone3000Screen(
                     }
                 }
 
-                FilterSection(title = "Size / Architecture") {
+                FilterSection(title = "Model Size") {
                     FlowRow(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -476,6 +478,26 @@ fun Tone3000Screen(
                                 selected = selectedSizes.contains(size),
                                 onClick = { viewModel.toggleSize(size) },
                                 label = { Text(ModelSize.fromString(size)) }
+                            )
+                        }
+                    }
+                }
+
+                FilterSection(title = "Architecture") {
+                    FlowRow(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Architecture.values().forEach { architecture ->
+                            FilterChip(
+                                selected = selectedArchitecture == architecture,
+                                onClick = {
+                                    viewModel.setArchitectureFilter(
+                                        if (selectedArchitecture == architecture) null else architecture
+                                    )
+                                },
+                                label = { Text(architecture.displayName) }
                             )
                         }
                     }
@@ -597,11 +619,18 @@ private fun ModelSelectionItem(
                         containerColor = MaterialTheme.colorScheme.secondaryContainer,
                         contentColor = MaterialTheme.colorScheme.onSecondaryContainer
                     )
-                    model.platform?.let {
+                    model.formatValue()?.let {
                         ToneBadge(
                             text = Platform.fromString(it),
                             containerColor = MaterialTheme.colorScheme.tertiaryContainer,
                             contentColor = MaterialTheme.colorScheme.onTertiaryContainer
+                        )
+                    }
+                    model.architecture_version?.let {
+                        ToneBadge(
+                            text = Architecture.fromString(it),
+                            containerColor = MaterialTheme.colorScheme.primaryContainer,
+                            contentColor = MaterialTheme.colorScheme.onPrimaryContainer
                         )
                     }
                 }
@@ -661,7 +690,12 @@ private fun ModelSelectionItem(
 }
 
 @Composable
-fun ToneItem(tone: Tone, onDownload: () -> Unit, onClick: () -> Unit) {
+fun ToneItem(
+    tone: Tone,
+    architecture: Architecture?,
+    onDownload: () -> Unit,
+    onClick: () -> Unit
+) {
     Card(
         modifier = Modifier.fillMaxWidth().clickable(onClick = onClick),
         shape = RoundedCornerShape(12.dp),
@@ -694,14 +728,14 @@ fun ToneItem(tone: Tone, onDownload: () -> Unit, onClick: () -> Unit) {
                     contentScale = ContentScale.Crop
                 )
                 // Platform badge overlay
-                tone.platform?.let { platform ->
+                tone.formatValue()?.let { format ->
                     Surface(
                         color = MaterialTheme.colorScheme.inverseSurface.copy(alpha = 0.85f),
                         shape = RoundedCornerShape(bottomStart = 10.dp, topEnd = 0.dp),
                         modifier = Modifier.align(Alignment.TopEnd)
                     ) {
                         Text(
-                            text = Platform.fromString(platform),
+                            text = Platform.fromString(format),
                             modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
                             style = MaterialTheme.typography.labelSmall,
                             fontWeight = FontWeight.Bold,
@@ -747,7 +781,7 @@ fun ToneItem(tone: Tone, onDownload: () -> Unit, onClick: () -> Unit) {
                         )
                     }
                     Text(
-                        text = "${tone.models_count} models",
+                        text = "${tone.modelCountFor(architecture)} models",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )

@@ -50,7 +50,7 @@ class Tone3000ViewModel(application: Application) : AndroidViewModel(application
     val tones: StateFlow<List<Tone>> = combine(_tones, _selectedPlatform) { tones, platform ->
         if (platform == null) tones
         else tones.filter { tone ->
-            tone.platform?.lowercase() == platform.value.lowercase()
+            tone.formatValue()?.lowercase() == platform.value.lowercase()
         }
     }.stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
 
@@ -75,6 +75,9 @@ class Tone3000ViewModel(application: Application) : AndroidViewModel(application
 
     private val _selectedSizes = MutableStateFlow<Set<String>>(emptySet())
     val selectedSizes: StateFlow<Set<String>> = _selectedSizes
+
+    private val _selectedArchitecture = MutableStateFlow<Architecture?>(null)
+    val selectedArchitecture: StateFlow<Architecture?> = _selectedArchitecture
 
     private val _isCalibrated = MutableStateFlow<Boolean?>(null)
     val isCalibrated: StateFlow<Boolean?> = _isCalibrated
@@ -107,9 +110,17 @@ class Tone3000ViewModel(application: Application) : AndroidViewModel(application
     private var currentQuery = ""
 
     fun initFilters(initialTag: String?, initialGear: String?, initialPlatform: String? = null) {
-        _selectedGear.value = initialGear
+        _selectedGear.value = when (initialGear) {
+            "ir" -> null
+            "full-rig" -> "amp-cab"
+            else -> initialGear
+        }
         _selectedPlatform.value = initialPlatform?.let { platformValue ->
             Platform.values().find { it.value.lowercase() == platformValue.lowercase() }
+        } ?: if (initialGear == "ir") {
+            Platform.IR
+        } else {
+            null
         }
         _selectedTags.value = initialTag?.split(",")?.toSet() ?: emptySet()
         searchTones()
@@ -147,13 +158,13 @@ class Tone3000ViewModel(application: Application) : AndroidViewModel(application
     }
 
     fun setGearFilter(gear: String?) {
-        _selectedGear.value = gear
+        _selectedGear.value = if (gear == "full-rig") "amp-cab" else gear
         searchTones(currentQuery)
     }
 
     fun setPlatformFilter(platform: Platform?) {
         _selectedPlatform.value = platform
-        // No searchTones here since it's local filtering
+        searchTones(currentQuery)
     }
 
     fun toggleTag(tag: String) {
@@ -167,6 +178,11 @@ class Tone3000ViewModel(application: Application) : AndroidViewModel(application
         val current = _selectedSizes.value.toMutableSet()
         if (current.contains(size)) current.remove(size) else current.add(size)
         _selectedSizes.value = current
+        searchTones(currentQuery)
+    }
+
+    fun setArchitectureFilter(architecture: Architecture?) {
+        _selectedArchitecture.value = architecture
         searchTones(currentQuery)
     }
 
@@ -185,6 +201,7 @@ class Tone3000ViewModel(application: Application) : AndroidViewModel(application
         _selectedPlatform.value = null
         _selectedTags.value = emptySet()
         _selectedSizes.value = emptySet()
+        _selectedArchitecture.value = null
         _isCalibrated.value = null
         _selectedSort.value = TonesSort.BEST_MATCH
         searchTones(currentQuery)
@@ -194,8 +211,11 @@ class Tone3000ViewModel(application: Application) : AndroidViewModel(application
         viewModelScope.launch {
             _isLoading.value = true
             try {
-                val pageSize = tone.models_count.coerceIn(10, 100)
-                val models = withContext(Dispatchers.IO) { api.getModels(tone.id, pageSize) }
+                val architecture = _selectedArchitecture.value
+                val pageSize = tone.modelCountFor(architecture).coerceIn(10, 100)
+                val models = withContext(Dispatchers.IO) {
+                    api.getModels(tone.id, pageSize, architecture?.value)
+                }
                 if (models.isNullOrEmpty()) {
                     _toastMessage.emit("No models found for this tone")
                 } else {
@@ -231,7 +251,10 @@ class Tone3000ViewModel(application: Application) : AndroidViewModel(application
         viewModelScope.launch {
             _isLoading.value = true
             try {
-                val tone = withContext(Dispatchers.IO) { api.getToneFromUrl(toneUrl) }
+                val architecture = _selectedArchitecture.value
+                val tone = withContext(Dispatchers.IO) {
+                    api.getToneFromUrl(toneUrl, architecture?.value)
+                }
                 if (tone == null) {
                     _error.value = "Failed to fetch tone data"
                     _isLoading.value = false
@@ -239,8 +262,8 @@ class Tone3000ViewModel(application: Application) : AndroidViewModel(application
                 }
 
                 val models = tone.models ?: withContext(Dispatchers.IO) { 
-                    val pageSize = tone.models_count.coerceIn(10, 100)
-                    api.getModels(tone.id, pageSize) 
+                    val pageSize = tone.modelCountFor(architecture).coerceIn(10, 100)
+                    api.getModels(tone.id, pageSize, architecture?.value)
                 }
                 if (models.isNullOrEmpty()) {
                     _error.value = "No compatible models found for this tone"
@@ -259,7 +282,16 @@ class Tone3000ViewModel(application: Application) : AndroidViewModel(application
 
     private suspend fun processDownload(tone: Tone, models: List<Model>, preferredModel: Model? = null, useAutoFind: Boolean = false) {
         // Find best model (NAM preferred, then AIDA-X) if not specified
-        val model = preferredModel ?: models.find { it.name.lowercase().contains("nam") } ?: models.firstOrNull()
+        val selectedArchitecture = _selectedArchitecture.value
+        val candidateModels = if (selectedArchitecture == null) {
+            models
+        } else {
+            models.filter { it.architecture_version == selectedArchitecture.value }
+                .ifEmpty { models }
+        }
+        val model = preferredModel ?: candidateModels.find {
+            it.formatValue(tone)?.lowercase() == "nam" || it.name.lowercase().contains("nam")
+        } ?: candidateModels.firstOrNull()
 
         if (model == null) {
             _error.value = "No compatible models found for this tone"
@@ -442,7 +474,9 @@ class Tone3000ViewModel(application: Application) : AndroidViewModel(application
                         page = currentPage,
                         pageSize = 25,
                         gear = _selectedGear.value,
-                        sizes = if (_selectedSizes.value.isEmpty()) null else _selectedSizes.value.joinToString(","),
+                        sizes = if (_selectedSizes.value.isEmpty()) null else _selectedSizes.value.joinToString("-"),
+                        format = _selectedPlatform.value?.value,
+                        architecture = _selectedArchitecture.value?.value,
                         calibrated = _isCalibrated.value,
                         sort = _selectedSort.value.value
                     )
@@ -455,7 +489,7 @@ class Tone3000ViewModel(application: Application) : AndroidViewModel(application
                     // If we have a platform filter and didn't get enough results, load more
                     val platform = _selectedPlatform.value
                     if (platform != null) {
-                        var currentFilteredCount = result.data.count { it.platform?.lowercase() == platform.value.lowercase() }
+                        var currentFilteredCount = result.data.count { it.formatValue()?.lowercase() == platform.value.lowercase() }
                         while (currentFilteredCount < 10 && currentPage < totalPages) {
                             currentPage++
                             val nextPageResult = withContext(Dispatchers.IO) {
@@ -464,14 +498,16 @@ class Tone3000ViewModel(application: Application) : AndroidViewModel(application
                                     page = currentPage,
                                     pageSize = 25,
                                     gear = _selectedGear.value,
-                                    sizes = if (_selectedSizes.value.isEmpty()) null else _selectedSizes.value.joinToString(","),
+                                    sizes = if (_selectedSizes.value.isEmpty()) null else _selectedSizes.value.joinToString("-"),
+                                    format = _selectedPlatform.value?.value,
+                                    architecture = _selectedArchitecture.value?.value,
                                     calibrated = _isCalibrated.value,
                                     sort = _selectedSort.value.value
                                 )
                             }
                             if (nextPageResult != null) {
                                 _tones.value = _tones.value + nextPageResult.data
-                                currentFilteredCount += nextPageResult.data.count { it.platform?.lowercase() == platform.value.lowercase() }
+                                currentFilteredCount += nextPageResult.data.count { it.formatValue()?.lowercase() == platform.value.lowercase() }
                             } else {
                                 break
                             }
@@ -513,7 +549,9 @@ class Tone3000ViewModel(application: Application) : AndroidViewModel(application
                             page = currentPage,
                             pageSize = 25,
                             gear = _selectedGear.value,
-                            sizes = if (_selectedSizes.value.isEmpty()) null else _selectedSizes.value.joinToString(","),
+                            sizes = if (_selectedSizes.value.isEmpty()) null else _selectedSizes.value.joinToString("-"),
+                            format = _selectedPlatform.value?.value,
+                            architecture = _selectedArchitecture.value?.value,
                             calibrated = _isCalibrated.value,
                             sort = _selectedSort.value.value
                         )
@@ -527,7 +565,7 @@ class Tone3000ViewModel(application: Application) : AndroidViewModel(application
                         if (platform == null) {
                             moreNeeded = false
                         } else {
-                            val newMatches = result.data.count { it.platform?.lowercase() == platform.value.lowercase() }
+                            val newMatches = result.data.count { it.formatValue()?.lowercase() == platform.value.lowercase() }
                             if (newMatches > 0) {
                                 moreNeeded = false
                             }

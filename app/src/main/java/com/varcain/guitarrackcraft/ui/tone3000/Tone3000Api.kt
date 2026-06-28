@@ -181,6 +181,8 @@ class Tone3000Api(private val tokenManager: TokenManager) {
         pageSize: Int = 10,
         gear: String? = null,
         sizes: String? = null,
+        format: String? = null,
+        architecture: String? = null,
         calibrated: Boolean? = null,
         sort: String? = null
     ): PaginatedResponse<List<Tone>>? {
@@ -188,8 +190,10 @@ class Tone3000Api(private val tokenManager: TokenManager) {
         if (query.isNotEmpty()) urlBuilder.addQueryParameter("query", query)
         urlBuilder.addQueryParameter("page", page.toString())
         urlBuilder.addQueryParameter("page_size", pageSize.toString())
-        if (!gear.isNullOrEmpty()) urlBuilder.addQueryParameter("gear", gear)
+        if (!gear.isNullOrEmpty()) urlBuilder.addQueryParameter("gears", normalizeGearFilter(gear))
         if (!sizes.isNullOrEmpty()) urlBuilder.addQueryParameter("sizes", sizes)
+        if (!format.isNullOrEmpty()) urlBuilder.addQueryParameter("format", format)
+        if (!architecture.isNullOrEmpty()) urlBuilder.addQueryParameter("architecture", architecture)
         if (calibrated != null) urlBuilder.addQueryParameter("calibrated", calibrated.toString())
         if (!sort.isNullOrEmpty()) urlBuilder.addQueryParameter("sort", sort)
         
@@ -221,14 +225,20 @@ class Tone3000Api(private val tokenManager: TokenManager) {
     }
 
     @Throws(ApiException::class, IOException::class)
-    fun getModels(toneId: String, pageSize: Int = 10): List<Model>? {
+    fun getModels(toneId: String, pageSize: Int = 10, architecture: String? = null): List<Model>? {
         val allModels = mutableListOf<Model>()
         var currentPage = 1
         var totalPages = 1
 
         do {
-            val url = "$baseUrl/models?tone_id=$toneId&page=$currentPage&page_size=$pageSize"
-            val request = Request.Builder().url(url).build()
+            val urlBuilder = "$baseUrl/models".toHttpUrlOrNull()?.newBuilder() ?: return null
+            urlBuilder.addQueryParameter("tone_id", toneId)
+            urlBuilder.addQueryParameter("page", currentPage.toString())
+            urlBuilder.addQueryParameter("page_size", pageSize.toString())
+            if (!architecture.isNullOrEmpty()) {
+                urlBuilder.addQueryParameter("architecture", architecture)
+            }
+            val request = Request.Builder().url(urlBuilder.build()).build()
             
             try {
                 client.newCall(request).execute().use { response ->
@@ -254,15 +264,20 @@ class Tone3000Api(private val tokenManager: TokenManager) {
     }
 
     @Throws(ApiException::class, IOException::class)
-    fun getToneFromUrl(toneUrl: String): Tone? {
+    fun getToneFromUrl(toneUrl: String, architecture: String? = null): Tone? {
         val url = if (toneUrl.startsWith("http")) {
             toneUrl
         } else {
             val cleanToneUrl = if (toneUrl.startsWith("/")) toneUrl else "/$toneUrl"
             "$baseUrl$cleanToneUrl"
         }
-        Log.d(tag, "getToneFromUrl: $url")
-        val request = Request.Builder().url(url).build()
+        val finalUrl = url.toHttpUrlOrNull()?.newBuilder()?.apply {
+            if (!architecture.isNullOrEmpty()) {
+                addQueryParameter("architecture", architecture)
+            }
+        }?.build()?.toString() ?: url
+        Log.d(tag, "getToneFromUrl: $finalUrl")
+        val request = Request.Builder().url(finalUrl).build()
         
         return try {
             client.newCall(request).execute().use { response ->
@@ -285,6 +300,11 @@ class Tone3000Api(private val tokenManager: TokenManager) {
             throw e
         }
     }
+
+    private fun normalizeGearFilter(gear: String): String =
+        gear.split(",")
+            .filter { it.isNotBlank() }
+            .joinToString("-") { if (it == "full-rig") "amp-cab" else it }
 
     fun downloadFile(url: String, destFile: java.io.File): Boolean {
         val request = Request.Builder().url(url).build()

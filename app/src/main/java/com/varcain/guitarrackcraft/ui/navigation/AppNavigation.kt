@@ -65,11 +65,17 @@ sealed class Screen(val route: String) {
             return if (query.isNotEmpty()) "tone3000?$query" else "tone3000"
         }
     }
-    object ToneDetail : Screen("tone_detail/{toneId}?sourcePlugin={sourcePlugin}&sourceSlot={sourceSlot}") {
-        fun route(toneId: String, sourcePluginIndex: Int = -1, sourceSlot: String? = null): String {
+    object ToneDetail : Screen("tone_detail/{toneId}?sourcePlugin={sourcePlugin}&sourceSlot={sourceSlot}&architecture={architecture}") {
+        fun route(
+            toneId: String,
+            sourcePluginIndex: Int = -1,
+            sourceSlot: String? = null,
+            architecture: String? = null
+        ): String {
             val parts = mutableListOf<String>()
             if (sourcePluginIndex >= 0) parts.add("sourcePlugin=$sourcePluginIndex")
             if (sourceSlot != null) parts.add("sourceSlot=$sourceSlot")
+            if (architecture != null) parts.add("architecture=$architecture")
             val query = parts.joinToString("&")
             return if (query.isNotEmpty()) "tone_detail/$toneId?$query" else "tone_detail/$toneId"
         }
@@ -187,10 +193,10 @@ fun AppNavigation(
                 val sourceSlot = entry.arguments?.getString("sourceSlot")
                 Tone3000Screen(
                     onNavigateBack = { navController.popBackStack() },
-                    onNavigateToDetail = { tone ->
+                    onNavigateToDetail = { tone, architecture ->
                         // Store the selected tone in the back stack entry's saved state
                         navController.currentBackStackEntry?.savedStateHandle?.set("selected_tone", tone)
-                        navController.navigate(Screen.ToneDetail.route(tone.id, sourcePluginIndex, sourceSlot))
+                        navController.navigate(Screen.ToneDetail.route(tone.id, sourcePluginIndex, sourceSlot, architecture))
                     },
                     initialTag = tag,
                     initialGear = gear,
@@ -204,12 +210,14 @@ fun AppNavigation(
                 arguments = listOf(
                     navArgument("toneId") { type = NavType.StringType },
                     navArgument("sourcePlugin") { type = NavType.IntType; defaultValue = -1 },
-                    navArgument("sourceSlot") { type = NavType.StringType; nullable = true; defaultValue = null }
+                    navArgument("sourceSlot") { type = NavType.StringType; nullable = true; defaultValue = null },
+                    navArgument("architecture") { type = NavType.StringType; nullable = true; defaultValue = null }
                 )
             ) { entry ->
                 val toneId = entry.arguments?.getString("toneId") ?: ""
                 val sourcePluginIndex = entry.arguments?.getInt("sourcePlugin") ?: -1
                 val sourceSlot = entry.arguments?.getString("sourceSlot")
+                val architecture = entry.arguments?.getString("architecture")
                 val selectedTone = navController.previousBackStackEntry?.savedStateHandle?.get<Tone>("selected_tone")
 
                 ToneDetailScreen(
@@ -217,7 +225,8 @@ fun AppNavigation(
                     initialTone = selectedTone,
                     onNavigateBack = { navController.popBackStack() },
                     sourcePluginIndex = sourcePluginIndex,
-                    sourceSlot = sourceSlot
+                    sourceSlot = sourceSlot,
+                    architecture = architecture
                 )
             }
         }

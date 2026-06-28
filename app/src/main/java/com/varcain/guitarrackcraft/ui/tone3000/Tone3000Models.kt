@@ -44,11 +44,29 @@ data class Tone(
     val favorites_count: Int = 0,
     val url: String,
     val gear: String? = null,
-    val sizes: String? = null,
+    val sizes: List<String>? = null,
+    val format: String? = null,
+    /** Deprecated TONE3000 response field kept for old cached/API responses. */
     val platform: String? = null,
+    val a1_models_count: Int = 0,
+    val a2_models_count: Int = 0,
+    val irs_count: Int = 0,
+    val custom_models_count: Int = 0,
     val tags: List<Tag>? = null,
     val models: List<Model>? = null
-) : Serializable
+) : Serializable {
+    fun formatValue(): String? = format ?: platform
+
+    fun modelCountFor(architecture: Architecture?): Int = when (architecture) {
+        Architecture.A1 -> a1_models_count.takeIf { it > 0 } ?: models_count
+        Architecture.A2 -> a2_models_count.takeIf { it > 0 } ?: models_count
+        Architecture.CUSTOM -> custom_models_count.takeIf { it > 0 } ?: models_count
+        null -> models_count
+    }
+
+    fun sizesLabel(): String? =
+        sizes?.takeIf { it.isNotEmpty() }?.joinToString(", ") { ModelSize.fromString(it) }
+}
 
 data class EmbeddedUser(
     val id: String,
@@ -90,11 +108,16 @@ data class Model(
     val id: String,
     val name: String,
     val size: String,
+    val format: String? = null,
+    /** Deprecated TONE3000 response field kept for old cached/API responses. */
     val platform: String? = null,
+    val architecture_version: String? = null,
     val model_url: String,
     val created_at: String? = null,
     val updated_at: String? = null
-) : Serializable
+) : Serializable {
+    fun formatValue(tone: Tone? = null): String? = format ?: platform ?: tone?.formatValue()
+}
 
 enum class Platform(val value: String, val displayName: String) {
     NAM("nam", "NAM"),
@@ -113,6 +136,7 @@ enum class Platform(val value: String, val displayName: String) {
 
 enum class Gear(val value: String, val displayName: String) {
     AMP("amp", "Amp"),
+    AMP_CAB("amp-cab", "Amp Cab"),
     FULL_RIG("full-rig", "Full Rig"),
     PEDAL("pedal", "Pedal"),
     OUTBOARD("outboard", "Outboard"),
@@ -122,6 +146,24 @@ enum class Gear(val value: String, val displayName: String) {
         fun fromString(value: String?): String {
             if (value == null) return "Unknown"
             return values().find { it.value.lowercase() == value.lowercase() }?.displayName ?: value.replaceFirstChar { it.uppercase() }
+        }
+    }
+}
+
+enum class Architecture(val value: String, val displayName: String) {
+    A1("1", "A1"),
+    A2("2", "A2"),
+    CUSTOM("custom", "Custom");
+
+    companion object {
+        fun fromValue(value: String?): Architecture? {
+            if (value == null) return null
+            return values().find { it.value.equals(value, ignoreCase = true) }
+        }
+
+        fun fromString(value: String?): String {
+            if (value == null) return "Unknown"
+            return fromValue(value)?.displayName ?: value.replaceFirstChar { it.uppercase() }
         }
     }
 }

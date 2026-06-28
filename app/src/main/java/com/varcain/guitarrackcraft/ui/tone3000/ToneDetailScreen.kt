@@ -61,6 +61,7 @@ fun ToneDetailScreen(
     onNavigateBack: () -> Unit,
     sourcePluginIndex: Int = -1,
     sourceSlot: String? = null,
+    architecture: String? = null,
     viewModel: ToneDetailViewModel = viewModel()
 ) {
     val tone by viewModel.tone.collectAsState()
@@ -78,11 +79,11 @@ fun ToneDetailScreen(
         viewModel.setSourcePlugin(sourcePluginIndex, sourceSlot)
     }
 
-    LaunchedEffect(toneId, initialTone) {
+    LaunchedEffect(toneId, initialTone, architecture) {
         if (initialTone != null) {
             viewModel.setTone(initialTone)
         }
-        viewModel.loadToneDetail(toneId)
+        viewModel.loadToneDetail(toneId, architecture)
     }
 
     LaunchedEffect(Unit) {
@@ -115,7 +116,7 @@ fun ToneDetailScreen(
                         color = MaterialTheme.colorScheme.error,
                         style = MaterialTheme.typography.bodyMedium
                     )
-                    FilledTonalButton(onClick = { viewModel.loadToneDetail(toneId) }) {
+                    FilledTonalButton(onClick = { viewModel.loadToneDetail(toneId, architecture) }) {
                         Text("Retry")
                     }
                 }
@@ -267,9 +268,9 @@ fun ToneDetailScreen(
 
                             // Tags
                             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                currentTone.platform?.let { platform ->
+                                currentTone.formatValue()?.let { format ->
                                     ToneBadge(
-                                        text = Platform.fromString(platform),
+                                        text = Platform.fromString(format),
                                         containerColor = MaterialTheme.colorScheme.tertiaryContainer,
                                         contentColor = MaterialTheme.colorScheme.onTertiaryContainer
                                     )
@@ -281,9 +282,9 @@ fun ToneDetailScreen(
                                         contentColor = MaterialTheme.colorScheme.onSecondaryContainer
                                     )
                                 }
-                                currentTone.sizes?.let { size ->
+                                currentTone.sizesLabel()?.let { size ->
                                     ToneBadge(
-                                        text = ModelSize.fromString(size),
+                                        text = size,
                                         containerColor = MaterialTheme.colorScheme.surfaceVariant,
                                         contentColor = MaterialTheme.colorScheme.onSurface
                                     )
@@ -302,7 +303,7 @@ fun ToneDetailScreen(
                         ) {
                             StatItem(
                                 icon = Icons.Default.Layers,
-                                value = "${currentTone.models_count}",
+                                value = "${currentTone.modelCountFor(Architecture.fromValue(architecture))}",
                                 label = "Models"
                             )
                             StatItem(
@@ -496,11 +497,18 @@ fun ModelItem(
                         containerColor = MaterialTheme.colorScheme.secondaryContainer,
                         contentColor = MaterialTheme.colorScheme.onSecondaryContainer
                     )
-                    model.platform?.let {
+                    model.formatValue()?.let {
                         ToneBadge(
                             text = Platform.fromString(it),
                             containerColor = MaterialTheme.colorScheme.tertiaryContainer,
                             contentColor = MaterialTheme.colorScheme.onTertiaryContainer
+                        )
+                    }
+                    model.architecture_version?.let {
+                        ToneBadge(
+                            text = Architecture.fromString(it),
+                            containerColor = MaterialTheme.colorScheme.primaryContainer,
+                            contentColor = MaterialTheme.colorScheme.onPrimaryContainer
                         )
                     }
                 }

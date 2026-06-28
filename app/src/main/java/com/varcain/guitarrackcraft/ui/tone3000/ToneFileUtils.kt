@@ -40,14 +40,17 @@ data class ModelFileInfo(
 object ToneFileUtils {
 
     fun classifyModel(tone: Tone, model: Model): ModelFileInfo {
-        val isNam = model.platform?.lowercase() == "nam" ||
+        val modelFormat = model.formatValue(tone)?.lowercase()
+        val toneFormat = tone.formatValue()?.lowercase()
+
+        val isNam = modelFormat == "nam" ||
                 model.name.lowercase().contains("nam") ||
-                tone.platform?.lowercase() == "nam" ||
+                toneFormat == "nam" ||
                 tone.gear?.lowercase()?.contains("nam") == true ||
                 tone.title.lowercase().contains("nam")
 
-        val isIr = model.platform?.lowercase() == "ir" || tone.platform?.lowercase() == "ir"
-        val isAidaX = model.platform?.lowercase() == "aida-x" || tone.platform?.lowercase() == "aida-x"
+        val isIr = modelFormat == "ir" || toneFormat == "ir"
+        val isAidaX = modelFormat == "aida-x" || toneFormat == "aida-x"
 
         val storageDirName = when {
             isIr -> "ir_models"

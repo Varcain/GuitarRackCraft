@@ -74,7 +74,7 @@ class ToneDetailViewModel(application: Application) : AndroidViewModel(applicati
         _tone.value = tone
     }
 
-    fun loadToneDetail(toneId: String) {
+    fun loadToneDetail(toneId: String, architecture: String? = null) {
         viewModelScope.launch {
             _isLoading.value = true
             _modelsError.value = null
@@ -83,7 +83,7 @@ class ToneDetailViewModel(application: Application) : AndroidViewModel(applicati
             if (_tone.value == null) {
                 try {
                     val toneResult = withContext(Dispatchers.IO) { 
-                        api.getToneFromUrl("/tones/$toneId") 
+                        api.getToneFromUrl("/tones/$toneId", architecture)
                     }
                     _tone.value = toneResult
                 } catch (e: Exception) {
@@ -96,9 +96,10 @@ class ToneDetailViewModel(application: Application) : AndroidViewModel(applicati
 
             // 2. Fetch models (required for download)
             try {
-                val pageSize = _tone.value?.models_count?.coerceIn(10, 100) ?: 10
+                val selectedArchitecture = Architecture.fromValue(architecture)
+                val pageSize = _tone.value?.modelCountFor(selectedArchitecture)?.coerceIn(10, 100) ?: 10
                 val modelsResult = withContext(Dispatchers.IO) {
-                    api.getModels(toneId, pageSize)
+                    api.getModels(toneId, pageSize, architecture)
                 }
                 _models.value = modelsResult ?: emptyList()
                 if (modelsResult.isNullOrEmpty()) {
