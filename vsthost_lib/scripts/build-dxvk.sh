@@ -86,7 +86,11 @@ if [ ! -x "$GLSLANG_BIN" ]; then
     # need optimizer, but the binary builds fine either way. Suppress
     # stderr because the script chatters about already-cloned remotes.
     (cd "$GLSLANG_DIR" && python3 update_glslang_sources.py 2>/dev/null || true)
-    cmake -S "$GLSLANG_DIR" -B "$GLSLANG_BUILD" -DCMAKE_BUILD_TYPE=Release >/dev/null
+    # GCC 13+ / newer libstdc++ no longer transitively include <cstdint>, but
+    # glslang 14.3.0's SPIRV headers use uint32_t without including it. Force-
+    # include so it compiles under recent host compilers (e.g. GCC 16).
+    cmake -S "$GLSLANG_DIR" -B "$GLSLANG_BUILD" -DCMAKE_BUILD_TYPE=Release \
+          -DCMAKE_CXX_FLAGS="-include cstdint" >/dev/null
     cmake --build "$GLSLANG_BUILD" -j"$(nproc)" >/dev/null
 fi
 export PATH="$(dirname "$GLSLANG_BIN"):$PATH"
