@@ -95,10 +95,10 @@ ld    = '${NDK_LD}'
 pkg-config = '/usr/bin/pkg-config'
 
 [built-in options]
-c_args   = ['-fPIC', '-DMESA_FORCE_LINUX', '-O2', '-I${SYSROOT}/include']
-cpp_args = ['-fPIC', '-DMESA_FORCE_LINUX', '-O2', '-I${SYSROOT}/include', '-std=c++17']
-c_link_args   = ['-L${SYSROOT}/lib']
-cpp_link_args = ['-L${SYSROOT}/lib']
+c_args   = ['-fPIC', '-DMESA_FORCE_LINUX', '-O2', '-I${SYSROOT}/include', '-I${PROJECT_ROOT}/vsthost_lib/patches/mesa/build-files/android-deps-include']
+cpp_args = ['-fPIC', '-DMESA_FORCE_LINUX', '-O2', '-I${SYSROOT}/include', '-I${PROJECT_ROOT}/vsthost_lib/patches/mesa/build-files/android-deps-include', '-std=c++17']
+c_link_args   = ['-L${SYSROOT}/lib', '-llog', '-lsync']
+cpp_link_args = ['-L${SYSROOT}/lib', '-llog', '-lsync']
 
 [properties]
 pkg_config_libdir = '${SYSROOT}/lib/pkgconfig:${SYSROOT}/share/pkgconfig'
