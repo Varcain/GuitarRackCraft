@@ -1,4 +1,5 @@
 diff --git a/src/util/detect_os.h b/src/util/detect_os.h
+index 86286dfbe70..d170919b2af 100644
 --- a/src/util/detect_os.h
 +++ b/src/util/detect_os.h
 @@ -24,7 +24,7 @@
@@ -9,3 +10,4 @@ diff --git a/src/util/detect_os.h b/src/util/detect_os.h
 +#if defined(__ANDROID__) && !defined(MESA_FORCE_LINUX)
  #define DETECT_OS_ANDROID 1
  #endif
+ 
