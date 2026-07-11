@@ -35,13 +35,21 @@ MODE="${1:-debug}"
 
 # ── Common setup ──────────────────────────────────────────────────────────────
 
-# Prefer JDK 17 (AGP can fail with Java 21 on the jlink step)
-for jdk in /usr/lib/jvm/java-17-openjdk-amd64 /usr/lib/jvm/java-17-openjdk; do
-    if [ -d "$jdk" ]; then
-        export JAVA_HOME="$jdk"
-        break
-    fi
-done
+# Prefer a system JDK 17 (AGP can fail with Java 21 on the jlink step); fall
+# back to Android Studio's bundled JBR, which is often the only JDK on a dev
+# box. Respects an already-exported JAVA_HOME.
+if [ -z "${JAVA_HOME:-}" ]; then
+    for jdk in \
+        /usr/lib/jvm/java-17-openjdk-amd64 /usr/lib/jvm/java-17-openjdk \
+        /usr/lib/jvm/jdk-17 /usr/lib/jvm/java-17 \
+        "$HOME"/tools/android-studio/*/jbr "$HOME"/android-studio/jbr \
+        /opt/android-studio/jbr /usr/local/android-studio/jbr; do
+        if [ -x "$jdk/bin/java" ]; then
+            export JAVA_HOME="$jdk"
+            break
+        fi
+    done
+fi
 
 export ANDROID_HOME=~/Android/Sdk
 export ANDROID_SDK_ROOT=~/Android/Sdk
