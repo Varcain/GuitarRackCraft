@@ -462,6 +462,19 @@ struct X11NativeDisplay::Impl {
      * cap a bogus 65535x65535 override-redirect window made vector::assign
      * throw bad_alloc on a connection thread, terminating the app. An
      * oversized popup gets no buffer, so it is never composited or hit. */
+    /* The framebuffer as the W x H window drawable the drawing requests index
+     * it as - pluginWidth x pluginHeight, or the surface's width x height
+     * before the plugin size is known - or nullptr when it doesn't actually
+     * hold that many pixels. Those sizes can run ahead of the allocation
+     * (attachSurface updates width/height and deliberately keeps the
+     * framebuffer), and an unchecked stride then reads / writes past its end.
+     * Caller holds bufferMutex. */
+    uint32_t* windowFramebuffer(int& w, int& h) {
+        w = pluginWidth > 0 ? pluginWidth : width;
+        h = pluginHeight > 0 ? pluginHeight : height;
+        if (w <= 0 || h <= 0 || (size_t)w * h > framebuffer.size()) return nullptr;
+        return framebuffer.data();
+    }
     static constexpr int kMaxPopupDim = 4096;
     static bool popupDimsOk(int w, int h) {
         return w > 0 && h > 0 && w <= kMaxPopupDim && h <= kMaxPopupDim;
@@ -3688,12 +3701,10 @@ struct X11NativeDisplay::Impl {
                                 isWindow = true;
                             }
                             bool useShadow = false;
-                            if (isWindow && !framebuffer.empty()) {
+                            if (isWindow) {
                                 // Framebuffer is already in X11 wire format (BGRA) — read directly
-                                srcBuf = framebuffer.data();
+                                srcBuf = windowFramebuffer(srcW, srcH);
                                 useShadow = true;  // no swizzle needed
-                                srcW = pluginWidth > 0 ? pluginWidth : width;
-                                srcH = pluginHeight > 0 ? pluginHeight : height;
                             } else {
                                 auto* pm = pixmapStore_.get(drawable);
                                 if (pm) {
@@ -3857,10 +3868,8 @@ struct X11NativeDisplay::Impl {
                         std::lock_guard<std::mutex> lock(bufferMutex);
                         long long lockWaitUs = std::chrono::duration_cast<std::chrono::microseconds>(
                             std::chrono::steady_clock::now() - lkT0).count();
-                        if (srcIsWindow && !framebuffer.empty()) {
-                            srcPixels = framebuffer.data();
-                            sW = pluginWidth > 0 ? pluginWidth : width;
-                            sH = pluginHeight > 0 ? pluginHeight : height;
+                        if (srcIsWindow) {
+                            srcPixels = windowFramebuffer(sW, sH);
                         } else {
                             auto* pm = pixmapStore_.get(srcId);
                             if (pm) {
@@ -3878,10 +3887,8 @@ struct X11NativeDisplay::Impl {
                                 if (wid == dstId) { dstIsWindow = true; break; }
                             }
                         }
-                        if (dstIsWindow && !framebuffer.empty()) {
-                            dstPixels = framebuffer.data();
-                            dW = pluginWidth > 0 ? pluginWidth : width;
-                            dH = pluginHeight > 0 ? pluginHeight : height;
+                        if (dstIsWindow) {
+                            dstPixels = windowFramebuffer(dW, dH);
                         } else {
                             auto* pm = pixmapStore_.get(dstId);
                             if (pm) {
