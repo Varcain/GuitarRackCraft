@@ -94,6 +94,15 @@ if [ ! -f Makefile ]; then
   # --disable-win16: see comment in build-wine-pe.sh — clang 21.1-rc2 crashes
   # on dlls/krnl386.exe16/selector.c (16-bit inline asm) and we don't need
   # Win16 anyway (FEX-Emu doesn't translate it).
+  # Reproducible PE output (the shipped DLLs/EXEs): CROSSCFLAGS keeps wine's
+  # default "-g -O2" and maps the checkout path out of __FILE__/debug info;
+  # CROSSLDFLAGS makes the linker write a content-hash PE timestamp instead
+  # of the build time (/Brepro, as in Microsoft's reproducible builds — wine
+  # links through clang's MSVC-mode lld-link, which doesn't take the MinGW
+  # driver's --no-insert-timestamp). Otherwise every rebuild yields new file
+  # hashes, so antivirus
+  # reputation / false-positive whitelisting never carries over between
+  # releases. Only applied on a fresh configure (wipe the build dir).
   ../configure \
     --host="$TARGET" \
     --with-wine-tools=../build-arm64ec \
@@ -111,6 +120,8 @@ if [ ! -f Makefile ]; then
     --without-cups \
     --without-dbus \
     GNUTLS_CFLAGS="-I$repo_root/toolchain/gnutls-android-arm64/include" \
+    CROSSCFLAGS="-g -O2 -ffile-prefix-map=$repo_root=/vsthost_lib" \
+    CROSSLDFLAGS="-Wl,-Brepro" \
     GNUTLS_LIBS="-L$repo_root/toolchain/gnutls-android-arm64/lib -lgnutls" \
     --with-gnutls \
     --without-krb5 \

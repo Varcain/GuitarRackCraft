@@ -34,7 +34,13 @@ build_one() {
 
   echo "=== FEX build: ${triple} ==="
   mkdir -p "external/fex-upstream/${build_dir}"
+  # Reproducible output (see build-wine-android.sh). Passed via the
+  # environment so CMake appends them to the toolchain file's *_INIT flags
+  # instead of replacing them; only read on a fresh configure.
   (cd "external/fex-upstream/${build_dir}" && \
+    CFLAGS="-ffile-prefix-map=$repo_root=/vsthost_lib" \
+    CXXFLAGS="-ffile-prefix-map=$repo_root=/vsthost_lib" \
+    LDFLAGS="-Wl,--no-insert-timestamp" \
     cmake -GNinja \
       -DCMAKE_BUILD_TYPE=Release \
       -DCMAKE_TOOLCHAIN_FILE=../Data/CMake/toolchain_mingw.cmake \

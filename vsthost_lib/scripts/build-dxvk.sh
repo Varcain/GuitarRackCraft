@@ -123,11 +123,17 @@ if [ ! -f "$BUILD_DIR/build.ninja" ]; then
     # DXVK auto-detects Vulkan-Headers via meson's wrap system; point it at
     # our submoduled Vulkan-Headers via CPATH so the build doesn't try to
     # fetch from upstream.
+    # The -D*_args make the output reproducible (see build-wine-android.sh);
+    # they're added on top of DXVK's own project compile/link arguments.
     CPATH="$VK_HEADERS" \
         meson setup "$BUILD_DIR" "$DXVK_DIR" \
         --cross-file "$CROSS_FILE" \
         --buildtype=release \
-        --prefix="$INSTALL_DIR"
+        --prefix="$INSTALL_DIR" \
+        -Dc_args="-ffile-prefix-map=$repo_root=/vsthost_lib" \
+        -Dcpp_args="-ffile-prefix-map=$repo_root=/vsthost_lib" \
+        -Dc_link_args="-Wl,--no-insert-timestamp" \
+        -Dcpp_link_args="-Wl,--no-insert-timestamp"
 fi
 
 echo "=== ninja install ==="

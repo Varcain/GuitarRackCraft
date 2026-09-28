@@ -26,14 +26,21 @@ build_one() {
     fi
 
     local out="$ASSETS/$out_name"
+    # Reproducible output (see build-wine-android.sh): -ffile-prefix-map drops
+    # the checkout path, --no-insert-timestamp writes a fixed PE timestamp.
+    # Strip at link time (-s) since a separate GNU strip pass stamps the
+    # current time back in; --enable-long-section-names keeps ".eh_frame"
+    # intact (ld otherwise truncates section names in stripped images, which
+    # broke vst3_host.exe under wine/FEX).
     "$cc" -O2 -Wall -Wextra -Wno-unused-parameter \
+        -s -ffile-prefix-map="$REPO"=/vsthost_lib \
+        -Wl,--no-insert-timestamp -Wl,--enable-long-section-names \
         -I"$REPO/external/vst2" \
         -I"$REPO/external" \
         -o "$out" \
         "$REPO/external/vst_host/vst_host.c" \
         -Wl,--stack,16777216 \
         -lkernel32 -static
-    "${cc%-gcc}-strip" "$out" 2>/dev/null || true
     file "$out"
     echo "Built $out ($(du -h "$out" | cut -f1))"
 }

@@ -55,7 +55,15 @@ SDK_SRCS=(
 )
 
 echo "Building $OUT ..."
+# Reproducible output (see build-wine-android.sh): -ffile-prefix-map drops
+# the checkout path, --no-insert-timestamp writes a fixed PE timestamp.
+# Strip at link time (-s) since a separate GNU strip pass stamps the
+# current time back in; --enable-long-section-names keeps ".eh_frame"
+# intact (ld otherwise truncates section names in stripped images, which
+# broke vst3_host.exe under wine/FEX).
 "$CXX" -std=c++17 -O2 -Wall -Wextra -Wno-unused-parameter -Wno-multichar \
+    -s -ffile-prefix-map="$REPO"=/vsthost_lib \
+    -Wl,--no-insert-timestamp -Wl,--enable-long-section-names \
     -DUNICODE -D_UNICODE \
     -DSMTG_OS_WINDOWS=1 -DSMTG_OS_LINUX=0 -DSMTG_OS_MACOS=0 \
     -DRELEASE=1 \
@@ -78,6 +86,5 @@ echo "Building $OUT ..."
     # this point now anyway. Do NOT re-bump globally; if a plugin genuinely
     # needs a deeper stack, size that thread explicitly instead.
 
-"${CXX%-g++}-strip" "$OUT" 2>/dev/null || true
 file "$OUT"
 echo "Built $OUT ($(du -h "$OUT" | cut -f1))"

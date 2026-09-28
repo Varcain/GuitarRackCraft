@@ -33,6 +33,7 @@ Output:
 """
 
 import argparse
+import gzip
 import hashlib
 import json
 import os
@@ -454,9 +455,20 @@ def main() -> int:
     wine_src_nls = repo / "external/wine-upstream/nls"
     out_nls_tar = repo / "src/main/assets/wine-fex-nls.tar.gz"
     if wine_src_nls.exists():
-        with tarfile.open(out_nls_tar, "w:gz") as tf:
-            tf.add(wine_src_nls, arcname="nls", filter=lambda ti:
-                ti if ti.name.endswith(".nls") or ti.isdir() else None)
+        # Deterministic archive (sorted entries, no owners/mtimes, gzip mtime
+        # 0) so the APK content doesn't change between identical builds.
+        def normalized(ti: tarfile.TarInfo) -> tarfile.TarInfo:
+            ti.uid = ti.gid = 0
+            ti.uname = ti.gname = ""
+            ti.mtime = 0
+            ti.mode = 0o755 if ti.isdir() else 0o644
+            return ti
+        with gzip.GzipFile(out_nls_tar, "wb", mtime=0) as gz, \
+                tarfile.open(fileobj=gz, mode="w", format=tarfile.USTAR_FORMAT) as tf:
+            tf.add(wine_src_nls, arcname="nls", recursive=False, filter=normalized)
+            for f in sorted(wine_src_nls.iterdir()):
+                if f.is_file() and f.name.endswith(".nls"):
+                    tf.add(f, arcname=f"nls/{f.name}", filter=normalized)
         print(f"NLS tarball → {out_nls_tar} ({out_nls_tar.stat().st_size/1024:.0f} KB)")
     else:
         print(f"WARN: wine NLS source dir not found at {wine_src_nls}", file=sys.stderr)
