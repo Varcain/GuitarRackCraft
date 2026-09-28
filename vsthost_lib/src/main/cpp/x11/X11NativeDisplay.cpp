@@ -2435,7 +2435,15 @@ struct X11NativeDisplay::Impl {
                 }
                 if (pollRet < 0 || (pfd.revents & (POLLERR | POLLHUP))) break;
 
-                uint8_t buf[256];
+                /* Per-connection-thread request buffer. Grows to fit the largest
+                 * request body seen (a core request is at most 65535 words) and
+                 * is never shrunk, so every handler can parse its complete body
+                 * from buf. It used to be a fixed 256-byte stack array: larger
+                 * bodies were discarded (leaving stale bytes that ChangeProperty
+                 * / PolyFillRectangle then parsed, reading past the array) and
+                 * bodies over 64 KB were truncated, desyncing the stream. */
+                static thread_local std::vector<uint8_t> reqStorage(256);
+                uint8_t* buf = reqStorage.data();
                 /* Read request header (4 bytes: opcode, pad, length) */
                 if (!recvAll(clientFd, buf, 4)) {
                     LOGE("X11 client disconnected tid=%ld: recv request header failed (peer closed or error)",
@@ -2942,23 +2950,21 @@ struct X11NativeDisplay::Impl {
                     continue;
                 }
 
-                /* Read extra body bytes for requests that need it.
-                   Some requests (like ChangeWindowAttributes, DestroyWindow) read their body inside the case handler,
-                   so we skip the general read for those. */
-                if (length > 0 && opcode != 2 && opcode != 4 && opcode != 38) {  /* Skip ChangeWindowAttributes (2), DestroyWindow (4), QueryPointer (38) - read body in case handlers */
-                    size_t extra = (length - 1) * 4;
-                    /* Cap to avoid huge allocations from bad/corrupt client */
-                    if (extra > 65536) extra = 65536;
-                    if (reqLogCount <= 15 && extra > 0 && extra <= 256) {
+                /* Read the complete request body into buf (PutImage streams its
+                 * own body above). length is in 4-byte words incl. the header. */
+                if (length > 1) {
+                    size_t extra = ((size_t)length - 1) * 4;
+                    if (reqStorage.size() < 4 + extra) {
+                        reqStorage.resize(4 + extra);  // keeps the 4 header bytes
+                        buf = reqStorage.data();
+                    }
+                    if (reqLogCount <= 15 && extra <= 256) {
                         LOGI("X11 recv extra %zu bytes for %s", extra, x11OpcodeName(opcode));
                     }
-                    if (extra > sizeof(buf) - 4) {
-                        std::vector<uint8_t> discard(extra);
-                        recvAll(clientFd, discard.data(), extra);
-                    } else {
-                        recvAll(clientFd, buf + 4, extra);
-                    }
+                    if (!recvAll(clientFd, buf + 4, extra)) break;
                 }
+                /* Bytes of buf that belong to this request (header + body). */
+                const size_t reqBytes = (size_t)length * 4;
 
                 switch (opcode) {
                     case CreateWindow: {
@@ -2989,8 +2995,7 @@ struct X11NativeDisplay::Impl {
                                 uint32_t lower = vmask32 & 0x1FFu;
                                 int idx = __builtin_popcount(lower);
                                 int off = 32 + idx * 4;
-                                if (off + 1 <= (int)sizeof(buf) &&
-                                    (size_t)(off + 1) <= (size_t)length * 4) {
+                                if ((size_t)(off + 1) <= reqBytes) {
                                     overrideRedirect = (buf[off] != 0);
                                 }
                             }
@@ -3240,7 +3245,6 @@ struct X11NativeDisplay::Impl {
                         uint32_t gcid = read32(buf, 8);
                         int nrects = ((int)length - 3) / 2;
                         if (nrects <= 0) break;
-                        if (nrects > 256) nrects = 256; /* safety cap */
 
                         /* Look up the GC's foreground color (defaults to black). Stored
                          * as 24-bit RGB on the X11 wire; framebuffer wants ARGB with
@@ -4283,14 +4287,6 @@ struct X11NativeDisplay::Impl {
                     }
                     case 38: { /* QueryPointer - needed for plugin to track mouse position */
                         if (reqLogCount <= 20) LOGI("X11 handle QueryPointer");
-                        /* Read the body: window(4). length=2 so body = (2-1)*4 = 4 bytes */
-                        {
-                            int qpBody = (length > 1) ? (int)(length - 1) * 4 : 0;
-                            if (qpBody > 0) {
-                                std::vector<uint8_t> qpBuf(qpBody);
-                                if (!recvAll(clientFd, qpBuf.data(), qpBody)) break;
-                            }
-                        }
                         /* vstpoc 2026-05-25: QueryPointer cache REVERTED.
                          * Triggered libxcb assertion
                          * "xcb_xlib_threads_sequence_lost" — the cached
@@ -4377,20 +4373,6 @@ struct X11NativeDisplay::Impl {
                         int cwBodyBytes = (length > 1) ? (int)(length - 1) * 4 : 0;
                         if (cwBodyBytes < 8) {
                             LOGE("X11 ChangeWindowAttributes: body too small %d (length=%u)", cwBodyBytes, (unsigned)length);
-                            if (cwBodyBytes > 0) {
-                                std::vector<uint8_t> skip(cwBodyBytes);
-                                recvAll(clientFd, skip.data(), cwBodyBytes);
-                            }
-                            break;
-                        }
-                        if (cwBodyBytes > 256) {
-                            LOGE("X11 ChangeWindowAttributes: body too large %d (length=%u), skipping", cwBodyBytes, (unsigned)length);
-                            std::vector<uint8_t> skip(cwBodyBytes);
-                            recvAll(clientFd, skip.data(), cwBodyBytes);
-                            break;
-                        }
-                        if (!recvAll(clientFd, buf + 4, cwBodyBytes)) {
-                            LOGE("X11 ChangeWindowAttributes: failed to read body (%d bytes)", cwBodyBytes);
                             break;
                         }
                         uint32_t window = read32(buf, 4);
@@ -4442,7 +4424,7 @@ struct X11NativeDisplay::Impl {
                     }
                     /* --- Void requests (no reply expected by client) --- */
                     case 4:  /* DestroyWindow */
-                        if (!recvAll(clientFd, buf + 4, 4)) break;
+                        if (length < 2) break;
                         {
                             uint32_t window = read32(buf, 4);
                             {
@@ -4633,8 +4615,8 @@ struct X11NativeDisplay::Impl {
                             }
                         }
                         int newW = -1, newH = -1;
-                        if ((vmask & 0x0004) && valOff + 4 <= (int)sizeof(buf)) { newW = (int)read32(buf, valOff); valOff += 4; }
-                        if ((vmask & 0x0008) && valOff + 4 <= (int)sizeof(buf)) { newH = (int)read32(buf, valOff); valOff += 4; }
+                        if ((vmask & 0x0004) && (size_t)valOff + 4 <= reqBytes) { newW = (int)read32(buf, valOff); valOff += 4; }
+                        if ((vmask & 0x0008) && (size_t)valOff + 4 <= reqBytes) { newH = (int)read32(buf, valOff); valOff += 4; }
 
                         bool isChildWin = false;
                         int finalW = -1, finalH = -1;
