@@ -373,7 +373,7 @@ jobs:
           cd vsthost_lib && bash scripts/build-all.sh mesa
 
   build-vst:
-    needs: [keys, wine, fex, dxvk, mesa, x11, llvm-android]
+    needs: [keys, llvm, wine, fex, dxvk, mesa, x11, llvm-android]
     runs-on: ubuntu-latest
     timeout-minutes: 180
     steps:
@@ -447,6 +447,15 @@ jobs:
           path: build/x11_ui
           key: ${{ needs.keys.outputs.x11 }}
           fail-on-cache-miss: true
+      - name: Restore llvm-mingw install
+        # pack-wine-fex.py's wine prune check reads PE imports with this
+        # toolchain's llvm-readobj (needs LLVM >= 19 for the ARM64X EC view).
+        uses: actions/cache/restore@v4
+        with:
+          path: vsthost_lib/external/llvm-mingw/install
+          key: ${{ needs.keys.outputs.llvm }}
+          fail-on-cache-miss: true
+
       - name: Restore android LLVM install (build-all turnip builds lavapipe step 8c5 when present)
         uses: actions/cache/restore@v4
         with:
