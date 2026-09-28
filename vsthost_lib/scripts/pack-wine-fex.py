@@ -143,17 +143,22 @@ def iter_build_outputs(build_root: Path, fex_arm64ec: Path, fex_wow64: Path) -> 
     if gnutls_lib.exists():
         yield gnutls_lib, "_X11_RAW_/libgnutls.so"
 
-    # libadrenotools + its 4 namespace-bypass hook libs (built by
+    # libadrenotools + the namespace-bypass hook libs it needs (built by
     # scripts/build-adrenotools.sh into toolchain/adrenotools-libs). These are
     # the Winlator-style hook that loads Turnip as an Android-HAL GPU driver
     # (vulkan.ad07xx.so → /dev/kgsl). win32u/vulkan.c + the mesa vkshim dlopen
     # libadrenotools.so by name and adrenotools loads the hook libs by soname
-    # from the APK nativeLibraryDir, so all 5 ship under their real names.
+    # from the APK nativeLibraryDir, so they ship under their real names.
     # Without them the adrenotools path can't load → GL editors render black.
+    # libfile_redirect_hook.so / libgsl_alloc_hook.so are deliberately NOT
+    # shipped: hook_impl only loads them for ADRENOTOOLS_DRIVER_FILE_REDIRECT /
+    # _GPU_MAPPING_IMPORT, and every adrenotools_open_libvulkan() caller (wine
+    # patch 0030, mesashim/vulkan_turnip_shim.c, ahbspike) passes featureFlags
+    # 1 (CUSTOM) or 0. Dead libc/driver-symbol interposers only add AV-scanner
+    # noise. (They stay in the stale-lib cleanup below so re-packs remove them.)
     adreno_lib_dir = repo_root / "toolchain/adrenotools-libs"
     for so_name in [
         "libadrenotools.so", "libhook_impl.so", "libmain_hook.so",
-        "libfile_redirect_hook.so", "libgsl_alloc_hook.so",
     ]:
         src = adreno_lib_dir / so_name
         if src.exists():
