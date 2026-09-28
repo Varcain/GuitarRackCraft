@@ -40,19 +40,28 @@ class Tone3000Api(private val tokenManager: TokenManager) {
 
     private val client = OkHttpClient.Builder()
         .addInterceptor { chain ->
-            val requestBuilder = chain.request().newBuilder()
+            val request = chain.request()
+            val requestBuilder = request.newBuilder()
             requestBuilder.header("User-Agent", userAgent)
             requestBuilder.header("X-App-Id", appId)
-            
-            tokenManager.accessToken?.let { token ->
-                if (token.isNotEmpty()) {
-                    requestBuilder.header("Authorization", "Bearer $token")
+
+            // The bearer token only ever goes to TONE3000 itself, never to
+            // whatever host a (possibly deep-linked) URL points at.
+            if (isTone3000(request.url)) {
+                tokenManager.accessToken?.let { token ->
+                    if (token.isNotEmpty()) {
+                        requestBuilder.header("Authorization", "Bearer $token")
+                    }
                 }
+            } else {
+                requestBuilder.removeHeader("Authorization")
             }
             chain.proceed(requestBuilder.build())
         }
         .authenticator(object : Authenticator {
             override fun authenticate(route: Route?, response: Response): Request? {
+                // Never refresh + re-send credentials in answer to another host's 401.
+                if (!isTone3000(response.request.url)) return null
                 if (response.count401() > 2) {
                     Log.w(tag, "Too many 401s, giving up")
                     return null
@@ -271,11 +280,16 @@ class Tone3000Api(private val tokenManager: TokenManager) {
             val cleanToneUrl = if (toneUrl.startsWith("/")) toneUrl else "/$toneUrl"
             "$baseUrl$cleanToneUrl"
         }
-        val finalUrl = url.toHttpUrlOrNull()?.newBuilder()?.apply {
+        // toneUrl can arrive from the exported guitarrackcraft://tone3000select
+        // deep link, so only ever fetch TONE3000's own API with it.
+        val apiUrl = url.toHttpUrlOrNull()
+            ?.takeIf { isTone3000(it) && it.encodedPath.startsWith("/api/v1/") }
+            ?: throw IllegalArgumentException("Not a TONE3000 API URL: $toneUrl")
+        val finalUrl = apiUrl.newBuilder().apply {
             if (!architecture.isNullOrEmpty()) {
                 addQueryParameter("architecture", architecture)
             }
-        }?.build()?.toString() ?: url
+        }.build()
         Log.d(tag, "getToneFromUrl: $finalUrl")
         val request = Request.Builder().url(finalUrl).build()
         
@@ -307,7 +321,15 @@ class Tone3000Api(private val tokenManager: TokenManager) {
             .joinToString("-") { if (it == "full-rig") "amp-cab" else it }
 
     fun downloadFile(url: String, destFile: java.io.File): Boolean {
-        val request = Request.Builder().url(url).build()
+        val httpUrl = url.toHttpUrlOrNull()
+        if (httpUrl == null || !httpUrl.isHttps) {
+            Log.e(tag, "downloadFile: refusing non-https URL: $url")
+            return false
+        }
+        if (!isTone3000(httpUrl)) {
+            Log.w(tag, "downloadFile: ${httpUrl.host} is not TONE3000, fetching without the access token")
+        }
+        val request = Request.Builder().url(httpUrl).build()
         return try {
             client.newCall(request).execute().use { response ->
                 if (!response.isSuccessful) {
@@ -325,5 +347,12 @@ class Tone3000Api(private val tokenManager: TokenManager) {
             Log.e(tag, "downloadFile exception", e)
             false
         }
+    }
+
+    companion object {
+        private val TRUSTED_HOSTS = setOf("www.tone3000.com", "tone3000.com")
+
+        /** https on TONE3000's own hosts: the only URLs the access token may be sent to. */
+        fun isTone3000(url: HttpUrl): Boolean = url.isHttps && url.host in TRUSTED_HOSTS
     }
 }
