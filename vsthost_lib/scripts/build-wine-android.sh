@@ -103,6 +103,12 @@ if [ ! -f Makefile ]; then
   # hashes, so antivirus
   # reputation / false-positive whitelisting never carries over between
   # releases. Only applied on a fresh configure (wipe the build dir).
+  # ac_cv_lib_soname_GL= presets the libGL probe to "not found", keeping GLX
+  # out of winex11: the X11 sysroot now also carries a native Mesa libGL.so,
+  # which configure would link against, but Android has no desktop libGL at
+  # runtime and GL plugin editors must use win32u's EGL path
+  # (VSTPOC_EGL_LIBRARY) — with GLX compiled into winex11, AmpliTube's editor
+  # renders black. Unlike --without-opengl this leaves EGL (SONAME_LIBEGL) on.
   ../configure \
     --host="$TARGET" \
     --with-wine-tools=../build-arm64ec \
@@ -122,6 +128,7 @@ if [ ! -f Makefile ]; then
     GNUTLS_CFLAGS="-I$repo_root/toolchain/gnutls-android-arm64/include" \
     CROSSCFLAGS="-g -O2 -ffile-prefix-map=$repo_root=/vsthost_lib" \
     CROSSLDFLAGS="-Wl,-Brepro" \
+    ac_cv_lib_soname_GL= \
     GNUTLS_LIBS="-L$repo_root/toolchain/gnutls-android-arm64/lib -lgnutls" \
     --with-gnutls \
     --without-krb5 \
