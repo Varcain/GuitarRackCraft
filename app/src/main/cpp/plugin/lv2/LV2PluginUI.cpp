@@ -328,9 +328,18 @@ bool LV2PluginUI::instantiate(
        instantiate() and protected by sDisplayEnvMutex to prevent races when
        multiple plugins instantiate concurrently on different threads.
        Always use TCP (127.0.0.1:N) because our custom libxcb doesn't support
-       abstract Unix sockets and /tmp/.X11-unix/ doesn't exist on Android. */
-    std::string displayEnv = "127.0.0.1:" + std::to_string(displayNumber) + ".0";
-    LOGI("instantiate: DISPLAY=%s (will set before plugin instantiate)", displayEnv.c_str());
+       abstract Unix sockets and /tmp/.X11-unix/ doesn't exist on Android.
+       N is taken from the port this display's server actually bound (port =
+       6000 + N), as the wine path does: when 6000+displayNumber is already
+       held - by an orphan listener, or by a VST editor display with the same
+       number (vsthost keeps its own display registry) - the server steps up
+       to 6100+displayNumber, 6200+..., and connecting to 6000+displayNumber
+       would reach the wrong server. */
+    const int boundPort = withDisplayGetActualPort(displayNumber);
+    const int displayPortNumber = (boundPort > 0) ? boundPort - 6000 : displayNumber;
+    std::string displayEnv = "127.0.0.1:" + std::to_string(displayPortNumber) + ".0";
+    LOGI("instantiate: DISPLAY=%s (display %d, server port %d; will set before plugin instantiate)",
+         displayEnv.c_str(), displayNumber, boundPort);
 
     /* Set XCB threading options to be more tolerant (process-wide, idempotent). */
     setenv("LIBXCB_ALLOW_SLOPPY_LOCK", "1", 1);
