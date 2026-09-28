@@ -6115,9 +6115,13 @@ bool X11NativeDisplay::startServer(int placeholderW, int placeholderH, bool wine
     impl_->serverThread   = std::thread(&Impl::serverLoop,   impl_.get());
     impl_->pluginUIThread = std::thread(&Impl::pluginUILoop, impl_.get());
     // Phase 2: AHB side-channel listener (abstract AF_UNIX socket). Additive —
-    // does nothing until a producer connects; harmless if none ever does.
-    impl_->ahbChannelRunning_ = true;
-    impl_->ahbChannelThread = std::thread(&Impl::ahbChannelLoop, impl_.get());
+    // does nothing until a producer connects. Only wine displays have a
+    // producer (the wine subprocess), so other displays (LV2 UIs) don't
+    // open the socket at all. Teardown copes with it never having started.
+    if (wineHost) {
+        impl_->ahbChannelRunning_ = true;
+        impl_->ahbChannelThread = std::thread(&Impl::ahbChannelLoop, impl_.get());
+    }
 
     for (int i = 0; i < 100 && !impl_->listening_; i++) usleep(10000);
     LOGI("X11 display %d server started (placeholder fb %dx%d, listening=%d)",
