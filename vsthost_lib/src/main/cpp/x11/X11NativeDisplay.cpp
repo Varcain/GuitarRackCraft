@@ -1090,6 +1090,21 @@ struct X11NativeDisplay::Impl {
         return true;
     }
 
+    /* True if replies/events for `fd` are queued because its socket buffer
+     * was full. */
+    bool hasPendingOutput(int fd) {
+        std::vector<uint8_t>* q = outQueueFor(fd);
+        std::lock_guard<std::mutex> lock(writeMutexFor(fd));
+        return !q->empty();
+    }
+
+    /* Flush as much of `fd`'s queued output as the socket takes now. */
+    bool flushPendingOutput(int fd) {
+        std::vector<uint8_t>* q = outQueueFor(fd);
+        std::lock_guard<std::mutex> lock(writeMutexFor(fd));
+        return drainQueue(fd, q);
+    }
+
     /* Non-blocking, never-drop send. Flush backlog first (preserves order), then
      * try `data`; whatever the socket can't take is appended and flushed later.
      * False only if the client is hopelessly stuck (queue past cap) or socket died. */
@@ -2321,7 +2336,8 @@ struct X11NativeDisplay::Impl {
                 clientFd = newFd;  // thread_local member; per-thread fd
                 /* fds are reused across connections — clear any stale queued
                  * output from a previous connection that held this fd number. */
-                { std::lock_guard<std::mutex> lk(writeMapMutex); outQueue_[newFd].clear(); }
+                { std::vector<uint8_t>* q = outQueueFor(newFd);
+                  std::lock_guard<std::mutex> lk(writeMutexFor(newFd)); q->clear(); }
 
             /* Enlarge socket buffers for large GetImage replies (~6MB) */
             {
@@ -2439,15 +2455,22 @@ struct X11NativeDisplay::Impl {
                  * the plugin is sending a burst of requests. */
                 drainTouchQueue();
 
-                /* Step 3: Poll socket for X11 requests with short timeout. */
+                /* Step 3: Poll socket for X11 requests with short timeout.
+                 * While output for this connection is queued (its socket buffer
+                 * was full), also wait for POLLOUT and flush it: a client blocked
+                 * waiting for the rest of a reply sends no further requests, so
+                 * the next send - the only other flush point - may never come. */
                 auto pollStart = std::chrono::steady_clock::now();
-                struct pollfd pfd = { clientFd, POLLIN, 0 };
+                const bool pendingOut = hasPendingOutput(clientFd);
+                struct pollfd pfd = { clientFd, (short)(POLLIN | (pendingOut ? POLLOUT : 0)), 0 };
                 int pollRet = poll(&pfd, 1, 2 /* ms */);
                 if (pollRet == 0) {
                     /* No pending requests — continue to next iteration to drain more touch events */
                     continue;
                 }
                 if (pollRet < 0 || (pfd.revents & (POLLERR | POLLHUP))) break;
+                if ((pfd.revents & POLLOUT) && !flushPendingOutput(clientFd)) break;
+                if (!(pfd.revents & POLLIN)) continue;  /* only POLLOUT this round */
 
                 /* Per-connection-thread request buffer. Grows to fit the largest
                  * request body seen (a core request is at most 65535 words) and
