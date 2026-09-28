@@ -170,6 +170,16 @@ struct X11NativeDisplay::Impl {
     std::atomic<bool> renderThreadRunning{false};  // Separate flag for render thread to allow pause/resume
     std::thread serverThread;
     std::thread renderThread;
+    /* Serializes request handling across the per-client connection threads,
+     * like a single-threaded X server: a request is read from its socket
+     * without it, then handled - together with the touch / key queue drains
+     * that run on connection threads - with it held. The handlers were
+     * written for one client at a time and read/modify the window tree,
+     * plugin slots, popups, properties, GCs, ... without further locking.
+     * Lock order: requestMutex, then bufferMutex, then windowMapMutex. Only
+     * connection threads take it, and never while holding another lock; the
+     * render and UI threads use the finer-grained locks only. */
+    std::mutex requestMutex;
     std::mutex bufferMutex;
     std::atomic<bool> dirty{false};
     std::mutex dirtyMutex;                    // Protects dirty condition variable
@@ -2452,6 +2462,9 @@ struct X11NativeDisplay::Impl {
                 /* Step 1: Check for graceful teardown */
                 if (closingGracefully.load()) {
                     if (!destroyNotifySent.load() && !childWindows.empty()) {
+                        /* childWindows is shared with the other connections;
+                         * held only for this walk, not across the wait below. */
+                        std::lock_guard<std::mutex> teardownReqLock(requestMutex);
                         LOGI("X11 graceful teardown: sending DestroyNotify for %zu windows", childWindows.size());
                         for (uint32_t wid : childWindows) {
                             uint8_t evt[32];
@@ -2488,7 +2501,10 @@ struct X11NativeDisplay::Impl {
                 /* Step 2: Drain touch events BEFORE polling/processing.
                  * This ensures touch input is delivered promptly even when
                  * the plugin is sending a burst of requests. */
-                drainTouchQueue();
+                {
+                    std::lock_guard<std::mutex> reqLock(requestMutex);
+                    drainTouchQueue();
+                }
 
                 /* Step 3: Poll socket for X11 requests with short timeout.
                  * While output for this connection is queued (its socket buffer
@@ -2618,6 +2634,7 @@ struct X11NativeDisplay::Impl {
                         if (recvAll(clientFd, pixels.data(), pixelDataLen)) {
                             putImageRecvAccum += std::chrono::duration_cast<std::chrono::microseconds>(
                                 std::chrono::steady_clock::now() - recvStart).count();
+                            std::lock_guard<std::mutex> reqLock(requestMutex);
                             std::lock_guard<std::mutex> lock(bufferMutex);
 
                             /* Determine target: framebuffer (window) or pixmap */
@@ -3033,7 +3050,10 @@ struct X11NativeDisplay::Impl {
                             totalPutUs = 0; putCount = 0; putImageRecvAccum = 0; lastPutLog = now;
                         }
                     }
-                    drainTouchQueue();  // Drain touch events before continuing
+                    {
+                        std::lock_guard<std::mutex> reqLock(requestMutex);
+                        drainTouchQueue();  // Drain touch events before continuing
+                    }
                     continue;
                 }
 
@@ -3064,6 +3084,10 @@ struct X11NativeDisplay::Impl {
                 }
                 /* Bytes of buf that belong to this request (header + body). */
                 const size_t reqBytes = (size_t)length * 4;
+
+                /* The request is fully read; handle it (and the touch drain
+                 * after the switch) with requestMutex held. */
+                std::unique_lock<std::mutex> reqLock(requestMutex);
 
                 switch (opcode) {
                     case CreateWindow: {
@@ -6280,14 +6304,20 @@ void X11NativeDisplay::injectTouch(int action, int x, int y) {
     // X11NativeDisplay::renderLoop which sets y0=0), so the inverse map
     // here also uses y0=0.
     if (impl_->pluginWidth > 0 && impl_->width > 0 && impl_->height > 0) {
+        /* pluginSlotWindows is modified by the connection threads under
+         * bufferMutex; this runs on the UI thread. */
+        int slotCount;
+        {
+            std::lock_guard<std::mutex> fbLock(impl_->bufferMutex);
+            slotCount = (int)impl_->pluginSlotWindows.size();
+        }
         if (n <= 3) {
             LOGI("DBG injectTouch[%d]: impl_->width=%d height=%d pluginW=%d pluginH=%d fbSizeFrozen=%d cropW=%d cropH=%d slotCount=%d",
                  displayNumber_, impl_->width, impl_->height,
                  impl_->pluginWidth, impl_->pluginHeight,
                  (int)impl_->fbSizeFrozen, impl_->cropW, impl_->cropH,
-                 (int)impl_->pluginSlotWindows.size());
+                 slotCount);
         }
-        int slotCount = (int)impl_->pluginSlotWindows.size();
         int fbW = impl_->pluginWidth;
         int fbH = impl_->pluginHeight * (slotCount > 0 ? slotCount : 1);
         int cropOffX = 0, cropOffY = 0;
