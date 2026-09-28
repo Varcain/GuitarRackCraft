@@ -222,7 +222,7 @@ class VstInstallerViewModel(app: Application) : AndroidViewModel(app) {
     /** Common spawn + wait + drain + discover + pick flow. Called by both
      *  installFromExe (after PREPARING) and launchExecutable (no PREPARING). */
     private suspend fun runWineSession(ctx: Context, exePath: String, prefixPath: String) {
-        val setup = WineSetup.ensure(ctx)
+        val setup = withContext(Dispatchers.IO) { WineSetup.ensure(ctx) }
         // CRITICAL: bring up the X server on display 99 BEFORE forking
         // wine. Wine's winex11.drv calls XOpenDisplay at startup; if the
         // TCP port isn't listening yet it disables X11 rendering for
