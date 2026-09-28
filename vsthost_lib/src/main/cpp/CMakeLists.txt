@@ -14,6 +14,12 @@ if(NOT EXISTS "${OBOE_DIR}/CMakeLists.txt")
 endif()
 add_subdirectory("${OBOE_DIR}" "${CMAKE_BINARY_DIR}/oboe-build" EXCLUDE_FROM_ALL)
 
+# In-process X11 server (renders to ANativeWindow via EGL/GLES2). The source
+# tree is :app's - one server for LV2 UIs and wine editors; see its
+# CMakeLists.txt.
+set(GRC_X11_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../../../app/src/main/cpp/x11")
+add_subdirectory("${GRC_X11_DIR}" "${CMAKE_BINARY_DIR}/x11-build")
+
 add_library(vsthost SHARED
     # JNI surface (PE inspection + wineboot one-shot)
     jni_runtime.cpp
@@ -22,17 +28,7 @@ add_library(vsthost SHARED
     launcher/WineHostProcess.cpp
     ipc/SharedRing.cpp
     ipc/PickerChannel.cpp
-    # In-process X11 server (renders to ANativeWindow via EGL/GLES2)
-    x11/X11NativeDisplay.cpp
-    x11/X11Worker.cpp
-    x11/X11AtomStore.cpp
-    x11/X11WindowManager.cpp
-    x11/X11PixmapStore.cpp
-    x11/X11ConnectionHandler.cpp
-    x11/X11Framebuffer.cpp
-    x11/X11PropertyStore.cpp
-    x11/AhbTexture.cpp
-    plugin/PluginUIGuard.cpp
+    plugin/PluginUIGuard.cpp  # called by the X11 server
     util/PeExports.cpp
     # Phase 0 GPU-upgrade spike (cross-driver AHB+fence, throwaway diagnostic)
     ahbspike/AhbSpike.cpp
@@ -48,6 +44,7 @@ target_include_directories(vsthost PRIVATE
 )
 
 target_link_libraries(vsthost
+    x11_native_display
     oboe
     android
     log

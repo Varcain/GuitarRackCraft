@@ -159,24 +159,9 @@ add_library(xshm_stub STATIC
     xshm_stub.c
 )
 
-# X11 native display (EGL + minimal X11 server, ANativeWindow)
-add_library(x11_native_display STATIC
-    x11/X11NativeDisplay.cpp
-    x11/X11Worker.cpp
-    x11/X11AtomStore.cpp
-    x11/X11WindowManager.cpp
-    x11/X11PixmapStore.cpp
-    x11/X11ConnectionHandler.cpp
-    x11/X11Framebuffer.cpp
-    x11/X11PropertyStore.cpp
-    x11/AhbTexture.cpp
-)
-target_link_libraries(x11_native_display
-    log
-    android
-    EGL
-    GLESv2
-)
+# X11 native display (EGL + minimal X11 server, ANativeWindow); shared with
+# :vsthost_lib, see x11/CMakeLists.txt
+add_subdirectory(x11)
 
 add_library(guitarrackcraft SHARED
     jni/NativeBridge.cpp
