@@ -40,6 +40,7 @@ import com.varcain.guitarrackcraft.engine.WineEnvFile
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.varcain.vsthost.NativeBridge
 import com.varcain.vsthost.PeFlag
+import com.varcain.vsthost.util.deleteTreeNoFollow
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -735,7 +736,7 @@ object VstRegistry {
     fun remove(context: Context, uuid: String) {
         val all = read(context).filter { it.uuid != uuid }
         write(context, all)
-        File(pluginsDir(context), uuid).deleteRecursively()
+        File(pluginsDir(context), uuid).deleteTreeNoFollow()
     }
 
     private fun esc(s: String): String =
@@ -850,7 +851,7 @@ object VstExecutableRegistry {
         if (referencingPlugins > 0 && !force) return referencingPlugins  // plugins still live there
 
         // Safe to reclaim: no sibling activator and (no plugins OR forced cascade).
-        File(target.prefixPath).deleteRecursively()
+        File(target.prefixPath).deleteTreeNoFollow()
         return 0
     }
 

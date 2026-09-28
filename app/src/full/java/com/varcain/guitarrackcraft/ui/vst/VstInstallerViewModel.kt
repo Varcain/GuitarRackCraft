@@ -13,6 +13,7 @@ import androidx.lifecycle.viewModelScope
 import com.varcain.guitarrackcraft.engine.NativeEngine
 import com.varcain.vsthost.NativeBridge
 import com.varcain.vsthost.PeFlag
+import com.varcain.vsthost.util.deleteTreeNoFollow
 import com.varcain.vsthost.wine.WineSetup
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -358,7 +359,7 @@ class VstInstallerViewModel(app: Application) : AndroidViewModel(app) {
                 // VSTs each cloned). LAUNCH mode: NEVER delete — it's the live
                 // environment that still belongs to its manager + plugins.
                 if (current.mode == Mode.INSTALL) {
-                    sourcePrefix.deleteRecursively()
+                    sourcePrefix.deleteTreeNoFollow()
                 }
             }
             runCatching { NativeEngine.getInstance().nativeRefreshPluginRegistry() }
@@ -379,7 +380,7 @@ class VstInstallerViewModel(app: Application) : AndroidViewModel(app) {
     ): File? {
         val envId = UUID.randomUUID().toString()
         val envDir = File(ctx.filesDir, "wineprefix_e$envId")
-        if (envDir.exists()) envDir.deleteRecursively()
+        if (envDir.exists()) envDir.deleteTreeNoFollow()
         VstHostSetup.copyPrefix(sourcePrefix, envDir)
         VstHostSetup.applyPluginPrefixSeeds(ctx, envDir)
         var registered = 0
@@ -398,7 +399,7 @@ class VstInstallerViewModel(app: Application) : AndroidViewModel(app) {
             )
             registered++
         }
-        if (registered == 0) { envDir.deleteRecursively(); return null }
+        if (registered == 0) { envDir.deleteTreeNoFollow(); return null }
         VstHostSetup.bootstrapPrefixServices(ctx, envDir)
         Log.i(TAG, "confirmPicks: environment $envId with $registered activator(s) at $envDir")
         return envDir
@@ -440,14 +441,14 @@ class VstInstallerViewModel(app: Application) : AndroidViewModel(app) {
     ) {
         val uuid = UUID.randomUUID().toString()
         val prefixDir = File(ctx.filesDir, "wineprefix_v$uuid")
-        if (prefixDir.exists()) prefixDir.deleteRecursively()
+        if (prefixDir.exists()) prefixDir.deleteTreeNoFollow()
         VstHostSetup.copyPrefix(sourcePrefix, prefixDir)
         VstHostSetup.applyPluginPrefixSeeds(ctx, prefixDir)
         val pluginInPrefix = File(prefixDir, p.relToPrefix)
         if (!pluginInPrefix.exists()) {
             Log.w(TAG, "registerVstClone: plugin missing after clone " +
                        "(uuid=$uuid, rel=${p.relToPrefix})")
-            prefixDir.deleteRecursively()
+            prefixDir.deleteTreeNoFollow()
             return
         }
         VstHostSetup.bootstrapPrefixServices(ctx, prefixDir)
@@ -502,7 +503,7 @@ class VstInstallerViewModel(app: Application) : AndroidViewModel(app) {
                     }
                 }
                 viewModelScope.launch(Dispatchers.IO) {
-                    File(s.templatePrefixPath).deleteRecursively()
+                    File(s.templatePrefixPath).deleteTreeNoFollow()
                 }
                 reset()
             }
@@ -515,7 +516,7 @@ class VstInstallerViewModel(app: Application) : AndroidViewModel(app) {
         val s = _session.value
         if (s != null && s.mode == Mode.INSTALL) {
             viewModelScope.launch(Dispatchers.IO) {
-                File(s.templatePrefixPath).deleteRecursively()
+                File(s.templatePrefixPath).deleteTreeNoFollow()
             }
         }
         reset()
@@ -544,7 +545,7 @@ class VstInstallerViewModel(app: Application) : AndroidViewModel(app) {
             return false
         }
         val dst = File(templatePath)
-        if (dst.exists()) dst.deleteRecursively()
+        if (dst.exists()) dst.deleteTreeNoFollow()
         return runCatching {
             VstHostSetup.copyPrefix(basePrefix, dst)
             // MSI installs open the package in transacted-storage mode, which

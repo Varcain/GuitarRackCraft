@@ -4,6 +4,7 @@ import android.content.Context
 import android.system.ErrnoException
 import android.system.Os
 import android.util.Log
+import com.varcain.vsthost.util.deleteTreeNoFollow
 import org.json.JSONObject
 import java.io.File
 import java.io.FileOutputStream
@@ -99,7 +100,7 @@ object WineSetup {
 
         if (needFullRebuild) {
             Log.i(TAG, "wine install full rebuild (have=$current, want=v$SETUP_VERSION)")
-            wineRoot.deleteRecursively()
+            wineRoot.deleteTreeNoFollow()
             wineRoot.mkdirs()
         }
 
