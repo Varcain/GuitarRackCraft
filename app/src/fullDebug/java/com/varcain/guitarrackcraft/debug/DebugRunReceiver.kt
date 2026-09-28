@@ -11,7 +11,9 @@ import com.varcain.vsthost.wine.WineSetup
 /**
  * Debug-only hook to fork `wine <exe>` against a wineprefix straight from adb,
  * with NO UI interaction — for fast iteration on plugin/service bring-up (e.g.
- * the PACE/iLok PaceLicenseDServices LDSvc.exe crash).
+ * the PACE/iLok PaceLicenseDServices LDSvc.exe crash). Lives in the fullDebug
+ * source set (release builds don't ship it), and the receiver requires the
+ * DUMP permission, which the adb shell holds but third-party apps can't get.
  *
  * The wine fork MUST come from the app process (SELinux untrusted_app domain —
  * `adb shell run-as` can't execmem), so this runs in-process via the same

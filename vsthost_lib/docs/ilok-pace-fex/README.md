@@ -62,8 +62,8 @@ still open). We did (the PARKED prototype here) — first of its kind.
   satisfies it; needed for the LM but only relevant once PACE runtime works.
 
 ## Debug harness (KEPT in mainline — reusable for ANY plugin)
-`app/src/full/.../debug/DebugRunReceiver.kt` (full-flavor manifest, gated on
-`BuildConfig.DEBUG`) forks `wine <exe>` against a prefix from the app process (SELinux
+`app/src/fullDebug/.../debug/DebugRunReceiver.kt` (fullDebug builds only; the
+receiver requires `android.permission.DUMP`, which the adb shell holds) forks `wine <exe>` against a prefix from the app process (SELinux
 needs the app-domain fork, not `adb run-as`). No UI needed:
 ```
 adb shell am broadcast -n com.varcain.guitarrackcraft/com.varcain.guitarrackcraft.debug.DebugRunReceiver \

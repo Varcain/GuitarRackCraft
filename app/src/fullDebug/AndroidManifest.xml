@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <application>
+
+        <!-- Debug-only: fork `wine <exe>` against a prefix from adb (no UI).
+             Lives in the fullDebug source set so release builds don't ship it.
+             Exported for `adb shell am broadcast`, but guarded by the DUMP
+             permission, which the adb shell holds and third-party apps
+             can't obtain. See DebugRunReceiver. -->
+        <receiver
+            android:name="com.varcain.guitarrackcraft.debug.DebugRunReceiver"
+            android:exported="true"
+            android:permission="android.permission.DUMP">
+            <intent-filter>
+                <action android:name="com.varcain.guitarrackcraft.DEBUG_RUN" />
+            </intent-filter>
+        </receiver>
+
+    </application>
+</manifest>
