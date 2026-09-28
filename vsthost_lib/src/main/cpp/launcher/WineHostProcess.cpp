@@ -43,6 +43,44 @@ bool vstpocIsPluginPrefix(const std::string& winePrefix) {
     return base.rfind("wineprefix_v", 0) == 0;
 }
 
+// WineSetup.kt writes <wineRoot>/.vstpoc-ready, containing nativeLibraryDir,
+// once THIS APK install's runtime files are in place. The first launch after
+// an app update (re)extracts the wine PE files from assets, and plugin
+// activation (rack restore, adding a VST) can reach us before that finishes —
+// so never fork wine until the marker names the current nativeLibraryDir (a
+// marker left by the previous install holds its old path). Normally it's
+// already there and this is one small file read. Callers are off the UI
+// thread (activation already blocks for the guest to come up).
+bool waitForWineRuntime(const WineHostProcess::Config& cfg) {
+    // wineBinary = <wineRoot>/bin/wine
+    std::string wineRoot = cfg.wineBinary;
+    for (int i = 0; i < 2; ++i) {
+        const size_t slash = wineRoot.find_last_of('/');
+        if (slash == std::string::npos) return true;  // unexpected layout: don't block
+        wineRoot.resize(slash);
+    }
+    const std::string marker = wineRoot + "/.vstpoc-ready";
+    auto ready = [&] {
+        std::ifstream f(marker);
+        std::string content;
+        return f && std::getline(f, content) &&
+               (cfg.nativeLibDir.empty() || content == cfg.nativeLibDir);
+    };
+    if (ready()) return true;
+    constexpr int kPollMs = 200, kTimeoutMs = 180 * 1000;
+    LOGI("WineHostProcess: waiting for the wine runtime install (%s)", marker.c_str());
+    for (int waited = 0; waited < kTimeoutMs; waited += kPollMs) {
+        ::usleep(kPollMs * 1000);
+        if (ready()) {
+            LOGI("WineHostProcess: wine runtime ready after %d ms", waited + kPollMs);
+            return true;
+        }
+    }
+    LOGE("WineHostProcess: wine runtime not ready after %d s — not starting wine",
+         kTimeoutMs / 1000);
+    return false;
+}
+
 // PerformanceHint API (libandroid.so, API 33+). Resolved at runtime via
 // dlsym since minSdk=27 — we can't link against the symbols directly.
 // All three are no-ops on older Android (the create call returns null).
@@ -639,6 +677,7 @@ void WineHostProcess::setupWineEnvChild(const Config& cfg) {
  * False is non-fatal — plugin launch proceeds and may still work for
  * plugins that don't use COM out-of-process. */
 bool WineHostProcess::bootServicesIfNeeded() {
+    if (!waitForWineRuntime(cfg_)) return false;
     const std::string sentinel = cfg_.winePrefix + "/.vstpoc_services_booted_v1";
     if (::access(sentinel.c_str(), F_OK) == 0) {
         return true;  /* fast path on second+ plugin launch */
@@ -818,6 +857,7 @@ bool WineHostProcess::start() {
         LOGE("WineHostProcess: wineBinary or primaryExe missing");
         return false;
     }
+    if (!waitForWineRuntime(cfg_)) return false;
     if (::access(cfg_.wineBinary.c_str(), X_OK) != 0) {
         LOGE("WineHostProcess: %s not executable (%s)",
              cfg_.wineBinary.c_str(), std::strerror(errno));

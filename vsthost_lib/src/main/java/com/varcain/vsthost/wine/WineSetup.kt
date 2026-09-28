@@ -5,6 +5,9 @@ import android.system.ErrnoException
 import android.system.Os
 import android.util.Log
 import com.varcain.vsthost.util.deleteTreeNoFollow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import java.io.File
 import java.io.FileOutputStream
 import java.io.InputStream
@@ -82,6 +85,24 @@ object WineSetup {
         val nativeLibraryDir: File,
     )
 
+    /** Written once this APK install's runtime files (ELF links, PE assets,
+     *  NLS/Turnip/Mesa) are in place; holds nativeLibraryDir, so a marker left
+     *  by a previous install is never trusted. WineHostProcess (native) waits
+     *  for it before forking wine — keep the name in sync with
+     *  WineHostProcess.cpp. */
+    private const val READY_MARKER = ".vstpoc-ready"
+
+    /** Runtime install state, for UI. [Extracting] only happens on the first
+     *  launch after an install/update that changed the PE pack. */
+    sealed interface RuntimeProgress {
+        object Idle : RuntimeProgress
+        data class Extracting(val done: Int, val total: Int) : RuntimeProgress
+        object Ready : RuntimeProgress
+    }
+
+    private val _progress = MutableStateFlow<RuntimeProgress>(RuntimeProgress.Idle)
+    val progress: StateFlow<RuntimeProgress> = _progress.asStateFlow()
+
     private val ensureLock = Any()
 
     /** Serialized: the app start-up path and the VST UI can both call this, and
@@ -111,13 +132,27 @@ object WineSetup {
         }
 
         val t0 = System.currentTimeMillis()
-        val manifest = WineRuntimeManifest.load(ctx)
-        applyElfSymlinks(wineRoot, nativeLibDir, manifest)
-        WineAssetInstaller.install(ctx, wineRoot, manifest)
-        if (needFullRebuild) {
-            extractNlsTarball(ctx, wineRoot)
-            extractTurnipLibs(ctx, wineRoot)
-            extractMesaZinkLibs(ctx, wineRoot)
+        val readyMarker = File(wineRoot, READY_MARKER)
+        readyMarker.delete()
+        try {
+            val manifest = WineRuntimeManifest.load(ctx)
+            applyElfSymlinks(wineRoot, nativeLibDir, manifest)
+            WineAssetInstaller.install(ctx, wineRoot, manifest) { done, total ->
+                _progress.value = RuntimeProgress.Extracting(done, total)
+            }
+            if (needFullRebuild) {
+                extractNlsTarball(ctx, wineRoot)
+                extractTurnipLibs(ctx, wineRoot)
+                extractMesaZinkLibs(ctx, wineRoot)
+            }
+            // Runtime files are complete: let native wine launches proceed. The
+            // seeders below only touch prefixes, so a failing one can't block wine.
+            val tmp = File(wineRoot, "$READY_MARKER.tmp")
+            tmp.writeText(nativeLibDir.absolutePath)
+            Os.rename(tmp.absolutePath, readyMarker.absolutePath)
+            _progress.value = RuntimeProgress.Ready
+        } finally {
+            if (_progress.value is RuntimeProgress.Extracting) _progress.value = RuntimeProgress.Idle
         }
         // DO NOT extract wine.inf. Its DefaultInstall → RegisterDlls phase
         // spins forever under FEX (shell32's DllRegisterServer loops in COM

@@ -42,8 +42,15 @@ internal object WineAssetInstaller {
      * Otherwise re-extract the entries whose recorded sha256 changed or whose
      * file is missing / not a 0444 regular file of the right size, verifying
      * sha256 while streaming. Finally drop files the manifest no longer lists.
+     * [onProgress] is called with (extracted, toExtract) before and after each
+     * extracted file; not at all on the fast path.
      */
-    fun install(ctx: Context, wineRoot: File, manifest: WineRuntimeManifest) {
+    fun install(
+        ctx: Context,
+        wineRoot: File,
+        manifest: WineRuntimeManifest,
+        onProgress: (done: Int, total: Int) -> Unit = { _, _ -> },
+    ) {
         if (manifest.assets.isEmpty()) return
         val t0 = System.currentTimeMillis()
         val stateFile = File(wineRoot, STATE_FILE)
@@ -64,7 +71,11 @@ internal object WineAssetInstaller {
             val staging = File(wineRoot, STAGING_DIR)
             staging.deleteTreeNoFollow()
             staging.mkdirs()
-            todo.forEachIndexed { i, e -> extract(ctx, e, File(staging, "$i.tmp"), File(wineRoot, e.relPath)) }
+            onProgress(0, todo.size)
+            todo.forEachIndexed { i, e ->
+                extract(ctx, e, File(staging, "$i.tmp"), File(wineRoot, e.relPath))
+                onProgress(i + 1, todo.size)
+            }
             staging.deleteTreeNoFollow()
         }
         val removed = removeOrphans(wineRoot, manifest)

@@ -27,7 +27,7 @@ public:
         std::string cacheDir;           // <filesDir>/../cache (for vst_host_*.log)
 
         // Wine install paths.
-        std::string wineBinary;         // <filesDir>/wine/bin/wine  (symlink → libwine_fNNN.so)
+        std::string wineBinary;         // <filesDir>/wine/bin/wine  (symlink → nativeLibraryDir/libwine_loader.so)
         std::string wineserverBinary;   // <filesDir>/wine/bin/wineserver
         std::string wineDllPath;        // <filesDir>/wine/lib/wine/aarch64-windows
         std::string winePrefix;         // <filesDir>/wineprefix (or a template/clone)

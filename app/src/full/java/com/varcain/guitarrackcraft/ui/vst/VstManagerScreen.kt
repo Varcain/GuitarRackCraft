@@ -41,6 +41,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.varcain.vsthost.NativeBridge
 import com.varcain.vsthost.PeFlag
 import com.varcain.vsthost.util.deleteTreeNoFollow
+import com.varcain.vsthost.wine.WineSetup
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -402,8 +403,16 @@ fun VstManagerScreen(onNavigateBack: () -> Unit) {
                 )
             }
         }
+        // First launch after an app update may still be unpacking the Windows
+        // runtime (ensureWineRoot waits for it) — say so instead of a bare label.
+        val runtimeProgress by WineSetup.progress.collectAsState()
         blockingOperation?.let { label ->
-            VstBlockingOperationOverlay(label = label)
+            val p = runtimeProgress
+            VstBlockingOperationOverlay(
+                label = if (p is WineSetup.RuntimeProgress.Extracting) {
+                    "Unpacking Windows runtime… ${p.done} / ${p.total}"
+                } else label
+            )
         }
     }
 }
