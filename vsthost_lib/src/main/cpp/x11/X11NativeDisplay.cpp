@@ -2061,6 +2061,95 @@ struct X11NativeDisplay::Impl {
         return clientFd;
     }
 
+    /* Frees what a disconnected client leaves behind, like a real X server
+     * in the default close-down mode (DestroyAll; wine never changes it):
+     * the windows it created and their subwindows, its pixmaps and GCs, and
+     * the bookkeeping keyed by those ids or by its fd. Without this every
+     * dead window stays on a long-lived display - a dead editor keeps the
+     * plugin slot, so the next editor's top-level window is ignored as an
+     * extra root child, and touches still hit-test into it. Sends no
+     * DestroyNotify, same as the DestroyWindow handler. Called on the
+     * client's own thread before its fd is closed, so a new connection
+     * reusing the fd number can't inherit any of it. */
+    void releaseClientResources(int fd, const std::unordered_set<uint32_t>& pixmaps,
+                                const std::unordered_set<uint32_t>& gcs) {
+        std::lock_guard<std::mutex> reqLock(requestMutex);
+        std::unordered_set<uint32_t> dead;
+        {
+            std::lock_guard<std::mutex> lk(windowCreatorMutex);
+            for (const auto& kv : windowCreator)
+                if (kv.second == fd) dead.insert(kv.first);
+        }
+        size_t slotsLost = 0, popupsFreed = 0;
+        {
+            std::lock_guard<std::mutex> fbLock(bufferMutex);
+            {
+                std::lock_guard<std::mutex> mapLock(windowMapMutex);
+                /* Subwindows die with their parent, whoever created them. */
+                for (bool grew = !dead.empty(); grew;) {
+                    grew = false;
+                    for (uint32_t w : childWindows) {
+                        if (!dead.count(w) && dead.count(windowManager_.getPosition(w).parent)) {
+                            dead.insert(w);
+                            grew = true;
+                        }
+                    }
+                }
+                for (uint32_t w : dead) windowManager_.destroyWindow(w);
+            }
+            const size_t slotsBefore = pluginSlotWindows.size();
+            pluginSlotWindows.erase(
+                std::remove_if(pluginSlotWindows.begin(), pluginSlotWindows.end(),
+                               [&dead](uint32_t w) { return dead.count(w) != 0; }),
+                pluginSlotWindows.end());
+            slotsLost = slotsBefore - pluginSlotWindows.size();
+            for (uint32_t w : dead) popupsFreed += popupOverlays.erase(w);
+            for (uint32_t p : pixmaps) pixmapStore_.destroy(p);
+            if (slotsLost || popupsFreed) {
+                dirty = true;
+                dirtyCv.notify_one();
+            }
+        }
+        {
+            std::lock_guard<std::mutex> lk(windowCreatorMutex);
+            for (uint32_t w : dead) windowCreator.erase(w);
+        }
+        {
+            std::lock_guard<std::mutex> lk(wmStateMutex);
+            for (uint32_t w : dead) wmStateValues.erase(w);
+        }
+        {
+            std::lock_guard<std::mutex> lk(propStoreMutex);
+            for (auto it = propStore_.begin(); it != propStore_.end();) {
+                if (dead.count((uint32_t)(it->first >> 32))) it = propStore_.erase(it);
+                else ++it;
+            }
+        }
+        {
+            std::lock_guard<std::mutex> lk(gcMutex);
+            for (uint32_t g : gcs) gcForeground.erase(g);
+        }
+        {
+            std::lock_guard<std::mutex> lk(fdSeqMutex);
+            fdLastSeq.erase(fd);
+        }
+        {
+            std::vector<uint8_t>* q = outQueueFor(fd);
+            std::lock_guard<std::mutex> lk(writeMutexFor(fd));
+            std::vector<uint8_t>().swap(*q);
+        }
+        if (dead.count(grabWindow)) grabWindow = 0;
+        uint32_t grab = xPointerGrabWindow_.load(std::memory_order_acquire);
+        if (grab && dead.count(grab) &&
+            xPointerGrabWindow_.compare_exchange_strong(grab, 0, std::memory_order_acq_rel)) {
+            xPointerGrabOwnerEvents_.store(false, std::memory_order_release);
+        }
+        uint32_t focused = focusedWindowId.load();
+        if (focused && dead.count(focused)) focusedWindowId.compare_exchange_strong(focused, 0);
+        LOGI("X11 client fd=%d gone: freed %zu windows (%zu plugin slots, %zu popups), %zu pixmaps, %zu GCs",
+             fd, dead.size(), slotsLost, popupsFreed, pixmaps.size(), gcs.size());
+    }
+
     void sendEvent(uint8_t type, uint32_t windowId, int x, int y, int button, uint16_t lastSeq, int stateOverride = -1) {
         uint8_t buf[32];
         memset(buf, 0, 32);
@@ -2451,6 +2540,9 @@ struct X11NativeDisplay::Impl {
 
             /* Reply sequence must match client expectation: 1 for first request, 2 for second, etc. (length field is not the sequence) */
             uint16_t seq = 0;
+            /* Pixmaps / GCs this connection created and hasn't freed, released
+             * when it disconnects (windows are found via windowCreator). */
+            std::unordered_set<uint32_t> ownedPixmaps, ownedGcs;
             while (running && clientFd >= 0) {
                 /* Single-threaded X server architecture:
                  * This thread owns ALL X11 operations:
@@ -3868,6 +3960,7 @@ struct X11NativeDisplay::Impl {
                             std::lock_guard<std::mutex> fbLock(bufferMutex);
                             pixmapStore_.create(pid, pw, ph);
                         }
+                        ownedPixmaps.insert(pid);
                         break;
                     }
                     /* --- FreePixmap --- */
@@ -3878,6 +3971,7 @@ struct X11NativeDisplay::Impl {
                             std::lock_guard<std::mutex> fbLock(bufferMutex);
                             pixmapStore_.destroy(pid);
                         }
+                        ownedPixmaps.erase(pid);
                         break;
                     }
                     /* --- CopyArea: copy pixels between drawables --- */
@@ -5501,6 +5595,7 @@ struct X11NativeDisplay::Impl {
                          * Bit 2 = GCForeground (CARD32, padded to 4 bytes). */
                         if (length >= 4) {
                             uint32_t cid = read32(buf, 4);
+                            ownedGcs.insert(cid);
                             uint32_t mask = read32(buf, 12);
                             int off = 16;
                             for (int bit = 0; bit < 23; ++bit) {
@@ -5541,6 +5636,7 @@ struct X11NativeDisplay::Impl {
                     {
                         if (length >= 2) {
                             uint32_t gc = read32(buf, 4);
+                            ownedGcs.erase(gc);
                             std::lock_guard<std::mutex> lk(gcMutex);
                             gcForeground.erase(gc);
                         }
@@ -5753,6 +5849,7 @@ struct X11NativeDisplay::Impl {
                  * touch events keep getting routed to a dead fd. */
                 int expectedOwner = fdToClose;
                 editorOwnerFd.compare_exchange_strong(expectedOwner, -1);
+                releaseClientResources(fdToClose, ownedPixmaps, ownedGcs);
                 close(fdToClose);
                 clientFd = -1;
                 std::lock_guard<std::mutex> lk(activeClientsMutex);
