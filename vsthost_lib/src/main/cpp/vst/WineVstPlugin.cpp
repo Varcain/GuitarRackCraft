@@ -1,6 +1,6 @@
 #include "WineVstPlugin.h"
 #include "../util/log.h"
-#include "../x11/X11NativeDisplay.h"
+#include "x11/X11NativeDisplay.h"
 #include <algorithm>
 #include <chrono>
 #include <cmath>

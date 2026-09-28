@@ -1,7 +1,7 @@
 // AhbChannelTest.cpp — see AhbChannelTest.h. Synthetic Phase 2 producer.
 
 #include "AhbChannelTest.h"
-#include "../x11/AhbChannelProtocol.h"
+#include "x11/AhbChannelProtocol.h"
 
 #include <android/hardware_buffer.h>
 #include <android/log.h>

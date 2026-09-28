@@ -8,7 +8,7 @@
 set -euo pipefail
 
 XTEST=/home/varcain/projects/private/GuitarRackCraft/vsthost_lib/tools/xtest
-X11SRC=/home/varcain/projects/private/GuitarRackCraft/vsthost_lib/src/main/cpp/x11
+X11SRC=/home/varcain/projects/private/GuitarRackCraft/app/src/main/cpp/x11
 
 g++ -std=c++17 -O0 -g -pthread \
     -I"$XTEST/stubinc" \
