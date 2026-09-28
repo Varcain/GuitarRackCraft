@@ -57,9 +57,6 @@ X11AtomStore::X11AtomStore() {
         nameToId_[kPredefinedAtoms[i]] = id;
         idToName_[id] = kPredefinedAtoms[i];
     }
-    // Java server also has CLIPBOARD as predefined #3; X.org standard
-    // doesn't, but wine asks for it early. Add as the first non-predefined
-    // atom so subsequent custom atoms come after.
     nextId_ = sizeof(kPredefinedAtoms) / sizeof(kPredefinedAtoms[0]) + 1;
 }
 

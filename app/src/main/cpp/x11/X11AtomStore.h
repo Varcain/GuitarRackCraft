@@ -35,7 +35,7 @@ public:
     // GetAtomName: reverse lookup. Returns empty string if not found.
     std::string getName(uint32_t atomId) const;
 
-    // Reset for new connection.
+    // Forget interned atoms; only the predefined ones remain.
     void clear();
 
 private:

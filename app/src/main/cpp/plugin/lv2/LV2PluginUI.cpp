@@ -223,8 +223,9 @@ static const char* LV2_ATOM__eventTransfer = "http://lv2plug.in/ns/ext/atom#even
 
 /* Serialise setenv("DISPLAY") + plugin instantiate() across threads.
    XOpenDisplay(NULL) reads the global DISPLAY env var; without this mutex,
-   concurrent instantiations race on setenv and multiple plugins connect to
-   the wrong X11 server (which only handles one client), causing a deadlock. */
+   concurrent instantiations race on setenv and a plugin can connect to
+   another plugin's X11 server (with the original single-client server that
+   deadlocked; now the UI would draw on the wrong display). */
 static std::mutex sDisplayEnvMutex;
 
 namespace guitarrackcraft {
@@ -533,7 +534,8 @@ bool LV2PluginUI::instantiate(
 
     /* Options — provide sample rate and scale factor so DPF UIs can query them.
        Scale factor is critical: without it, DPF opens a SECOND XOpenDisplay()
-       to detect DPI, which hangs because our X11 server only handles one client. */
+       to detect DPI. The original single-client X11 server hung on that; the
+       current one accepts it, and 1.0 keeps the UI at its design size. */
     float sampleRate = 48000.0f;
     float uiScaleFactor = 1.0f;
     LV2_URID uridFloat = uiLv2UridMap.map(uiLv2UridMap.handle, LV2_ATOM__Float);

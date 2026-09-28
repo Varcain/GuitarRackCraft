@@ -405,8 +405,8 @@ struct X11NativeDisplay::Impl {
     // Ordered list of top-level plugin editor windows (root-children, ≥64x64),
     // in CreateWindow order. The Nth entry is rendered at framebuffer
     // y-offset = N * pluginHeight, producing a vertical stack of editors
-    // (effects-rack layout). Protected by `windowMapMutex` (same mutex that
-    // protects windowManager_'s child window list).
+    // (effects-rack layout). Protected by `bufferMutex`, like the framebuffer
+    // it lays out.
     std::vector<uint32_t> pluginSlotWindows;
     /* Display serves a wine process (set by startServer(..., wineHost=true)
      * before any connection thread starts; constant afterwards). Gates the
@@ -2592,15 +2592,12 @@ struct X11NativeDisplay::Impl {
              * when it disconnects (windows are found via windowCreator). */
             std::unordered_set<uint32_t> ownedPixmaps, ownedGcs;
             while (running && clientFd >= 0) {
-                /* Single-threaded X server architecture:
-                 * This thread owns ALL X11 operations:
-                 * 1. Socket read/write
-                 * 2. Protocol parsing
-                 * 3. Framebuffer updates
-                 * 4. plugin->idle() calls (which use Xlib/XCB)
-                 * 
-                 * No other thread touches X11. Other threads only enqueue messages.
-                 * This prevents xcb_xlib_threads_sequence_lost crashes.
+                /* One of these loops runs per client connection, each on its
+                 * own thread. A request is read from the socket without locks
+                 * and then handled under requestMutex, as are the touch / key
+                 * queue drains, so requests and input deliveries never run
+                 * concurrently - the model of a single-threaded X server.
+                 * Other threads (UI / JNI) only enqueue input for the drains.
                  */
 
                 /* Step 1: Drain touch events BEFORE polling/processing.
