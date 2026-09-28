@@ -73,7 +73,11 @@ private:
 
     std::mutex mu_;
     std::vector<RegistryEntry> entries_;     // guarded by mu_
-    int nextDisplayNumber_ = 1;              // monotonic, hands out to WineVstPlugin instances
+    // Monotonic, handed out to WineVstPlugin instances. Starts above the other
+    // X11 display numbers so the servers don't compete for ports (6000+N):
+    // LV2 UIs use 10..59 (:app's X11DisplayManager, its own registry) and the
+    // installer uses 99 (VstInstallerViewModel, this library's registry).
+    int nextDisplayNumber_ = 100;
 };
 
 /**
