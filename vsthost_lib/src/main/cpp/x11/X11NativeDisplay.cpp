@@ -3583,10 +3583,12 @@ struct X11NativeDisplay::Impl {
                             major = kShapeMajorOpcode;
                         } else if (nameLen == 5 && strncmp(extName, "XTEST", 5) == 0) {
                             major = kXTestMajorOpcode;
-                        } else if (nameLen == 8 && strncmp(extName, "Generic Event Extension", 8) == 0) {
-                            /* Wine queries the long-form name. */
-                            major = kGEMajorOpcode;
                         }
+                        /* "Generic Event Extension" stays not-present: the old
+                         * check (nameLen == 8 against the 23-char name) never
+                         * matched, so every validated wine/plugin setup ran
+                         * without it; advertising it now would change wine's
+                         * code paths. Its stub is gone with it. */
                         if (reqLogCount <= 50)
                             LOGI("X11 QueryExtension '%.*s' -> %s (major=%u)",
                                  (int)nameLen, extName,
@@ -3623,41 +3625,48 @@ struct X11NativeDisplay::Impl {
                         break;
                     }
                     case kShapeMajorOpcode: {
-                        /* SHAPE — stub. Wine probes shape extension; most
-                         * minor-opcodes either return nothing or a 32-byte
-                         * reply with sensible defaults. Drain the body and
-                         * reply with zeros for the QueryVersion-like ones. */
-                        uint8_t reply[32];
-                        memset(reply, 0, 32);
-                        reply[0] = 1;
-                        write16(reply, 2, seq);
-                        /* Bytes 8-11: major/minor version (1.1) for QueryVersion */
-                        write16(reply, 8, 1);
-                        write16(reply, 10, 1);
-                        sendReply(reply, 32, seq);
-                        if (reqLogCount <= 50) LOGI("X11 SHAPE minor=%u stub", (unsigned)buf[1]);
+                        /* SHAPE stub (wine probes it and sets window shapes).
+                         * Shapes aren't applied. Only the requests that HAVE a
+                         * reply get one - a reply to a void request (Rectangles,
+                         * Mask, Combine, Offset, SelectInput) is unsolicited and
+                         * desyncs / leaks in xcb/Xlib:
+                         *   0 QueryVersion:  1.1 (major @8, minor @10)
+                         *   5 QueryExtents:  nothing shaped, empty extents
+                         *   7 InputSelected: not selected
+                         *   8 GetRectangles: no rectangles */
+                        const uint8_t minor = buf[1];
+                        if (minor == 0 || minor == 5 || minor == 7 || minor == 8) {
+                            uint8_t reply[32];
+                            memset(reply, 0, 32);
+                            reply[0] = 1;
+                            write16(reply, 2, seq);
+                            if (minor == 0) {
+                                write16(reply, 8, 1);
+                                write16(reply, 10, 1);
+                            }
+                            sendReply(reply, 32, seq);
+                        }
+                        if (reqLogCount <= 50) LOGI("X11 SHAPE minor=%u stub", (unsigned)minor);
                         break;
                     }
                     case kXTestMajorOpcode: {
-                        uint8_t reply[32];
-                        memset(reply, 0, 32);
-                        reply[0] = 1;
-                        write16(reply, 2, seq);
-                        write16(reply, 8, 2);
-                        write16(reply, 10, 2);
-                        sendReply(reply, 32, seq);
-                        if (reqLogCount <= 50) LOGI("X11 XTEST minor=%u stub", (unsigned)buf[1]);
-                        break;
-                    }
-                    case kGEMajorOpcode: {
-                        uint8_t reply[32];
-                        memset(reply, 0, 32);
-                        reply[0] = 1;
-                        write16(reply, 2, seq);
-                        write16(reply, 8, 1);
-                        write16(reply, 10, 0);
-                        sendReply(reply, 32, seq);
-                        if (reqLogCount <= 50) LOGI("X11 GE minor=%u stub", (unsigned)buf[1]);
+                        /* XTEST stub. Replies only where the request has one
+                         * (FakeInput and GrabControl are void):
+                         *   0 GetVersion:    2.2 (major in byte 1, minor @8)
+                         *   1 CompareCursor: same = false */
+                        const uint8_t minor = buf[1];
+                        if (minor == 0 || minor == 1) {
+                            uint8_t reply[32];
+                            memset(reply, 0, 32);
+                            reply[0] = 1;
+                            write16(reply, 2, seq);
+                            if (minor == 0) {
+                                reply[1] = 2;
+                                write16(reply, 8, 2);
+                            }
+                            sendReply(reply, 32, seq);
+                        }
+                        if (reqLogCount <= 50) LOGI("X11 XTEST minor=%u stub", (unsigned)minor);
                         break;
                     }
                     /* --- GetImage: return framebuffer/pixmap pixel data --- */

@@ -76,7 +76,6 @@ namespace X11Op {
     static constexpr uint8_t kBigReqMajorOpcode = 130;
     static constexpr uint8_t kShapeMajorOpcode = 131;
     static constexpr uint8_t kXTestMajorOpcode = 132;
-    static constexpr uint8_t kGEMajorOpcode = 133;  // X Generic Event
 } // namespace X11Op
 
 // X11 event types
