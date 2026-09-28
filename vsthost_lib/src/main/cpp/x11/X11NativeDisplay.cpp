@@ -1932,10 +1932,17 @@ struct X11NativeDisplay::Impl {
     // position so taps on a flipped popup route to its wid even though
     // windowManager_ still has wine's unflipped coords. Falls through to
     // windowManager_.hitTest() for non-popup windows.
-    // lockMap controls whether windowMapMutex is acquired (needed from UI thread).
-    HitResult hitTestChildWindow(int x, int y, bool lockMap = false) {
-        std::unique_lock<std::mutex> mapLock(windowMapMutex, std::defer_lock);
-        if (lockMap) mapLock.lock();
+    //
+    // Lock order (same as PutImage / CopyArea / PolyFill): bufferMutex, which
+    // guards popupOverlays, BEFORE windowMapMutex, which guards
+    // windowManager_. Taking windowMapMutex first here deadlocked against a
+    // drawing client as soon as the UI thread hit-tested (isWidgetAtPoint).
+    // Both are always taken: other clients' threads mutate the window tree,
+    // so connection-thread callers need windowMapMutex too. Callers must not
+    // hold either mutex.
+    HitResult hitTestChildWindow(int x, int y) {
+        std::lock_guard<std::mutex> fbLock(bufferMutex);
+        std::lock_guard<std::mutex> mapLock(windowMapMutex);
         /* Popup overlay sweep — iterate in REVERSE stacking order
          * (topmost first) so nested popups are preferred over their parents.
          * Use isRenderablePopup() so hit-testing matches what the compositor
@@ -1943,7 +1950,6 @@ struct X11NativeDisplay::Impl {
          * the thin shadow strips (a click on an invisible strip is wrong) nor
          * wine's unpainted internal helper windows. */
         {
-            std::lock_guard<std::mutex> fbLock(bufferMutex);
             const auto& cws = windowManager_.childWindows();
             for (auto it = cws.rbegin(); it != cws.rend(); ++it) {
                 auto pit = popupOverlays.find(*it);
@@ -6296,8 +6302,8 @@ bool X11NativeDisplay::isWidgetAtPoint(int surfaceX, int surfaceY) {
         x = (int)((surfaceX - x0) / scale);
         y = (int)((surfaceY - y0) / scale);
     }
-    // Hit-test with mutex (called from UI thread, maps modified by server thread)
-    auto hit = impl_->hitTestChildWindow(x, y, /*lockMap=*/true);
+    // Hit-test (locks internally; called from the UI thread)
+    auto hit = impl_->hitTestChildWindow(x, y);
     uint32_t topWin;
     size_t numChildren;
     {
