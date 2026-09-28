@@ -456,6 +456,16 @@ struct X11NativeDisplay::Impl {
      * on it is meaningless and would otherwise route to wine's internal
      * never-displayed helper windows (e.g. the 166x45 IME helper at 0,0). */
     static constexpr int kMinPopupDim = 32;
+    /* Largest popup the compositor buffers, per side (the same limit PutImage
+     * applies). Popup sizes come straight from the client - 16-bit in
+     * CreateWindow, 32-bit value-list words in ConfigureWindow - and without a
+     * cap a bogus 65535x65535 override-redirect window made vector::assign
+     * throw bad_alloc on a connection thread, terminating the app. An
+     * oversized popup gets no buffer, so it is never composited or hit. */
+    static constexpr int kMaxPopupDim = 4096;
+    static bool popupDimsOk(int w, int h) {
+        return w > 0 && h > 0 && w <= kMaxPopupDim && h <= kMaxPopupDim;
+    }
     static bool isRenderablePopup(const PopupOverlay& p) {
         return p.mapped && p.hasContent &&
                p.w >= kMinPopupDim && p.h >= kMinPopupDim;
@@ -3106,8 +3116,10 @@ struct X11NativeDisplay::Impl {
                             p.w = winWidth;
                             p.h = winHeight;
                             p.mapped = false;
-                            if (winWidth > 0 && winHeight > 0) {
+                            if (popupDimsOk(winWidth, winHeight)) {
                                 p.pixels.assign((size_t)winWidth * winHeight, 0xFF000000u);
+                            } else {
+                                p.pixels.clear();
                             }
                         }
                         // Set the framebuffer to match the LARGEST top-level window
@@ -4497,8 +4509,10 @@ struct X11NativeDisplay::Impl {
                                         p.w = sz.first;
                                         p.h = sz.second;
                                         p.mapped = !windowManager_.isUnmapped(window);
-                                        if (p.w > 0 && p.h > 0) {
+                                        if (popupDimsOk(p.w, p.h)) {
                                             p.pixels.assign((size_t)p.w * p.h, 0xFF000000u);
+                                        } else {
+                                            p.pixels.clear();
                                         }
                                     } else {
                                         popupOverlays.erase(window);
@@ -4769,7 +4783,9 @@ struct X11NativeDisplay::Impl {
                                 }
                                 int desiredX = p.reqX;
                                 int desiredY = p.reqY;
-                                if (finalW > 0 && finalH > 0 &&
+                                /* An oversized resize is ignored: the popup keeps
+                                 * its current, consistent size and buffer. */
+                                if (popupDimsOk(finalW, finalH) &&
                                     (finalW != p.w || finalH != p.h)) {
                                     p.w = finalW;
                                     p.h = finalH;
