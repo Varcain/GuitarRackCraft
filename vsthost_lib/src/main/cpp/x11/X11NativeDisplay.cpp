@@ -1996,6 +1996,48 @@ struct X11NativeDisplay::Impl {
         }
     }
 
+    /* Surface (Android view) pixel -> plugin coordinates: the inverse of
+     * renderLoop's letterbox. The framebuffer - pluginWidth x (pluginHeight
+     * * slots), or the auto-crop rect in installer mode - is scaled to fit,
+     * centred horizontally and top-aligned (y0 = 0). The result is local to
+     * the slot the point falls in; *slotOut gets that slot, or -1 when no
+     * slot is registered. x/y stay as they are before the plugin has a size.
+     * Runs on the UI thread; takes bufferMutex briefly. */
+    void surfaceToPlugin(int& x, int& y, int* slotOut, int* slotCountOut = nullptr) {
+        if (slotOut) *slotOut = -1;
+        if (slotCountOut) *slotCountOut = 0;
+        if (pluginWidth <= 0 || width <= 0 || height <= 0) return;
+        int slotCount;
+        {
+            std::lock_guard<std::mutex> fbLock(bufferMutex);
+            slotCount = (int)pluginSlotWindows.size();
+        }
+        if (slotCountOut) *slotCountOut = slotCount;
+        int fbW = pluginWidth;
+        int fbH = pluginHeight * (slotCount > 0 ? slotCount : 1);
+        int cropOffX = 0, cropOffY = 0;
+        if (fbSizeFrozen && cropW > 0 && cropH > 0) {
+            cropOffX = cropX;
+            cropOffY = cropY;
+            fbW = cropW;
+            fbH = cropH;
+        }
+        float scaleX = (float)width  / fbW;
+        float scaleY = (float)height / fbH;
+        float scale  = scaleX < scaleY ? scaleX : scaleY;
+        int x0 = (width - (int)(fbW * scale)) / 2;
+        int y0 = 0;  // top-aligned render
+        x = (int)((x - x0) / scale) + cropOffX;
+        y = (int)((y - y0) / scale) + cropOffY;
+        if (slotCount > 0 && pluginHeight > 0) {
+            int slot = y / pluginHeight;
+            if (slot < 0) slot = 0;
+            if (slot >= slotCount) slot = slotCount - 1;
+            y -= slot * pluginHeight;
+            if (slotOut) *slotOut = slot;
+        }
+    }
+
     // Hit-test: try popup overlays first at their DISPLAYED (post-flip)
     // position so taps on a flipped popup route to its wid even though
     // windowManager_ still has wine's unflipped coords. Falls through to
@@ -6408,65 +6450,28 @@ void X11NativeDisplay::injectTouch(int action, int x, int y) {
                            : (action == 1) ? "UP"
                            : (action == 3) ? "RIGHTTAP"
                            : "MOVE";
-    // Map from Android surface coordinates to the stacked framebuffer's
-    // coordinate space. Framebuffer is pluginWidth × (pluginHeight * N)
-    // where N = pluginSlotWindows.size(). Render is top-aligned (matches
-    // X11NativeDisplay::renderLoop which sets y0=0), so the inverse map
-    // here also uses y0=0.
-    if (impl_->pluginWidth > 0 && impl_->width > 0 && impl_->height > 0) {
-        /* pluginSlotWindows is modified by the connection threads under
-         * bufferMutex; this runs on the UI thread. */
-        int slotCount;
-        {
-            std::lock_guard<std::mutex> fbLock(impl_->bufferMutex);
-            slotCount = (int)impl_->pluginSlotWindows.size();
+    // Map from Android surface coordinates to the touched slot's plugin
+    // coordinates (inverse of the renderer's letterbox; see surfaceToPlugin).
+    int slot = -1, slotCount = 0;
+    impl_->surfaceToPlugin(x, y, &slot, &slotCount);
+    if (n <= 3) {
+        LOGI("DBG injectTouch[%d]: impl_->width=%d height=%d pluginW=%d pluginH=%d fbSizeFrozen=%d cropW=%d cropH=%d slotCount=%d",
+             displayNumber_, impl_->width, impl_->height,
+             impl_->pluginWidth, impl_->pluginHeight,
+             (int)impl_->fbSizeFrozen, impl_->cropW, impl_->cropH,
+             slotCount);
+    }
+    if (slot >= 0) {
+        if (n <= 50 || n % 30 == 0) {
+            LOGI("injectTouch slot=%d (of %d) yLocal=%d", slot, slotCount, y);
         }
-        if (n <= 3) {
-            LOGI("DBG injectTouch[%d]: impl_->width=%d height=%d pluginW=%d pluginH=%d fbSizeFrozen=%d cropW=%d cropH=%d slotCount=%d",
-                 displayNumber_, impl_->width, impl_->height,
-                 impl_->pluginWidth, impl_->pluginHeight,
-                 (int)impl_->fbSizeFrozen, impl_->cropW, impl_->cropH,
-                 slotCount);
-        }
-        int fbW = impl_->pluginWidth;
-        int fbH = impl_->pluginHeight * (slotCount > 0 ? slotCount : 1);
-        int cropOffX = 0, cropOffY = 0;
-        /* Installer auto-crop mirrors renderLoop: surface→framebuffer must
-         * use the SAME letterbox geometry as the renderer. When crop is
-         * active, inverse-scale through (cropW, cropH) and add (cropX, cropY)
-         * so the user's tap on the visible wizard lands at the correct
-         * framebuffer coordinate. */
-        if (impl_->fbSizeFrozen && impl_->cropW > 0 && impl_->cropH > 0) {
-            cropOffX = impl_->cropX;
-            cropOffY = impl_->cropY;
-            fbW = impl_->cropW;
-            fbH = impl_->cropH;
-        }
-        float scaleX = (float)impl_->width  / fbW;
-        float scaleY = (float)impl_->height / fbH;
-        float scale  = scaleX < scaleY ? scaleX : scaleY;
-        int x0 = (impl_->width  - (int)(fbW * scale)) / 2;
-        int y0 = 0;  // top-aligned render
-        x = (int)((x - x0) / scale) + cropOffX;
-        y = (int)((y - y0) / scale) + cropOffY;
-        // y is in framebuffer coords. Resolve slot.
-        if (slotCount > 0 && impl_->pluginHeight > 0) {
-            int slot = y / impl_->pluginHeight;
-            if (slot < 0) slot = 0;
-            if (slot >= slotCount) slot = slotCount - 1;
-            int yLocal = y - slot * impl_->pluginHeight;
-            if (n <= 50 || n % 30 == 0) {
-                LOGI("injectTouch slot=%d (of %d) yLocal=%d", slot, slotCount, yLocal);
-            }
-            y = yLocal;
-            /* Stash the slot index for drainTouchQueue. The simplest
-             * carrier is to bake it into a per-queue-entry field; but to
-             * minimize churn now, we just remember the most-recent slot
-             * via an atomic; drainTouchQueue picks it up. With one
-             * physical touch source, races are negligible (events arrive
-             * in order). */
-            impl_->lastTouchSlot.store(slot, std::memory_order_release);
-        }
+        /* Stash the slot index for drainTouchQueue. The simplest
+         * carrier is to bake it into a per-queue-entry field; but to
+         * minimize churn now, we just remember the most-recent slot
+         * via an atomic; drainTouchQueue picks it up. With one
+         * physical touch source, races are negligible (events arrive
+         * in order). */
+        impl_->lastTouchSlot.store(slot, std::memory_order_release);
     }
     if (n <= 50 || n % 30 == 0) {
         LOGI("injectTouch: display=%d action=%s (%d) plugin=(%d,%d) [call #%d]", displayNumber_, actionName, action, x, y, n);
@@ -6554,17 +6559,10 @@ void X11NativeDisplay::injectKey(int action, int keycode, int state) {
 unsigned long X11NativeDisplay::getRootWindowId() const { return kRootWindowId; }
 
 bool X11NativeDisplay::isWidgetAtPoint(int surfaceX, int surfaceY) {
-    // Map from Android surface coordinates to plugin coordinate space (same as injectTouch)
+    // Same mapping as injectTouch, so the answer matches where the touch
+    // would actually land.
     int x = surfaceX, y = surfaceY;
-    if (impl_->pluginWidth > 0 && impl_->width > 0 && impl_->height > 0) {
-        float scaleX = (float)impl_->width / impl_->pluginWidth;
-        float scaleY = (float)impl_->height / impl_->pluginHeight;
-        float scale = scaleX < scaleY ? scaleX : scaleY;
-        int x0 = (impl_->width  - (int)(impl_->pluginWidth  * scale)) / 2;
-        int y0 = (impl_->height - (int)(impl_->pluginHeight * scale)) / 2;
-        x = (int)((surfaceX - x0) / scale);
-        y = (int)((surfaceY - y0) / scale);
-    }
+    impl_->surfaceToPlugin(x, y, nullptr);
     // Hit-test (locks internally; called from the UI thread)
     auto hit = impl_->hitTestChildWindow(x, y);
     uint32_t topWin;
