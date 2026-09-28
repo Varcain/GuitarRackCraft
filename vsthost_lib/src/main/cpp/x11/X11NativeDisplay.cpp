@@ -6363,6 +6363,12 @@ void X11NativeDisplay::injectKey(int action, int keycode, int state) {
     }
 }
 
+/* The protocol's root window id (the setup reply's root, and the root the
+ * window manager parents top-level windows to). Callers use it as the parent
+ * for plugin UI windows, so it must match; it used to be a separate constant
+ * 1, which is the default visual id since the ids were realigned to 3/4/1. */
+unsigned long X11NativeDisplay::getRootWindowId() const { return kRootWindowId; }
+
 bool X11NativeDisplay::isWidgetAtPoint(int surfaceX, int surfaceY) {
     // Map from Android surface coordinates to plugin coordinate space (same as injectTouch)
     int x = surfaceX, y = surfaceY;

@@ -68,7 +68,7 @@ public:
     void setSurfaceSize(int width, int height);
 
     /** Root window ID for XCreateWindow parent (e.g. plugin UI). */
-    unsigned long getRootWindowId() const { return rootWindowId_; }
+    unsigned long getRootWindowId() const;
 
     /** Inject pointer event: action (0=down, 1=up, 2=move, 3=right-click tap),
      *  x, y in view coordinates. action=3 is an atomic ButtonPress(3) +
@@ -170,7 +170,6 @@ private:
     struct Impl;
     std::unique_ptr<Impl> impl_;
     int displayNumber_;
-    unsigned long rootWindowId_ = 1;  // Fixed root id for minimal server
     std::mutex mutex_;
 };
 
