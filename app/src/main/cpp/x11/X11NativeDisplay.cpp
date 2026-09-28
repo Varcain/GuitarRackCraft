@@ -102,6 +102,15 @@ static void swapRB_neon(const uint32_t* __restrict src, uint32_t* __restrict dst
 #define X11_TRACE_REPLIES 0
 #endif
 
+/* X11_TRACE_STATS=1: every 2 s, per client connection, log request
+ * throughput (PutImage count / time / socket-receive time; the other
+ * requests' count / average / slowest), and dump the first touches' mapping
+ * inputs. Off by default: the summaries log continuously while a plugin
+ * draws. Logs of individual slow operations (> ~5 ms) stay on regardless. */
+#ifndef X11_TRACE_STATS
+#define X11_TRACE_STATS 0
+#endif
+
 namespace guitarrackcraft {
 
 static constexpr int kX11BasePort = 6000;
@@ -3147,8 +3156,10 @@ struct X11NativeDisplay::Impl {
                         putCount++;
                         auto now = std::chrono::steady_clock::now();
                         if (std::chrono::duration<double>(now - lastPutLog).count() >= 2.0) {
+#if X11_TRACE_STATS
                             LOGI("X11Stats: PutImage %d calls in 2s, total=%lldms avg=%lldus recv=%lldms",
                                  putCount, totalPutUs / 1000, putCount > 0 ? totalPutUs / putCount : 0, putImageRecvAccum / 1000);
+#endif
                             totalPutUs = 0; putCount = 0; putImageRecvAccum = 0; lastPutLog = now;
                         }
                     }
@@ -5838,9 +5849,11 @@ struct X11NativeDisplay::Impl {
                         LOGI("X11Stats: SLOW req opcode=%u %s took %lldus", (unsigned)opcode, x11OpcodeName(opcode), (long long)thisReqUs);
                     }
                     if (std::chrono::duration<double>(reqEnd - lastSwitchLog).count() >= 2.0) {
+#if X11_TRACE_STATS
                         LOGI("X11Stats: OtherReqs %d calls in 2s, total=%lldms avg=%lldus slowest=%lldus op=%u(%s)",
                              switchCount, totalSwitchUs / 1000, switchCount > 0 ? totalSwitchUs / switchCount : 0,
                              slowestUs, (unsigned)slowestOp, x11OpcodeName(slowestOp));
+#endif
                         totalSwitchUs = 0; switchCount = 0; slowestUs = 0; slowestOp = 0; lastSwitchLog = reqEnd;
                     }
                 }
@@ -6413,7 +6426,7 @@ void X11NativeDisplay::injectTouch(int action, int x, int y) {
     // coordinates (inverse of the renderer's letterbox; see surfaceToPlugin).
     int slot = -1, slotCount = 0;
     impl_->surfaceToPlugin(x, y, &slot, &slotCount);
-    if (n <= 3) {
+    if (X11_TRACE_STATS && n <= 3) {
         LOGI("DBG injectTouch[%d]: impl_->width=%d height=%d pluginW=%d pluginH=%d fbSizeFrozen=%d cropW=%d cropH=%d slotCount=%d",
              displayNumber_, impl_->width, impl_->height,
              impl_->pluginWidth, impl_->pluginHeight,
