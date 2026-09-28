@@ -3277,8 +3277,14 @@ struct X11NativeDisplay::Impl {
                          * Without this, popup pixels fall through to the
                          * pixmap-lookup fallback (which fails — these wids
                          * aren't pixmaps), and we paint nothing where the
-                         * popup should be → black rectangle. */
-                        if (overrideRedirect) {
+                         * popup should be → black rectangle.
+                         * Wine displays only: the overlay is placed at the
+                         * window's x/y as if root-relative, true for wine's
+                         * popups. xputty (LV2) creates every child widget
+                         * override-redirect, at x/y relative to its parent
+                         * frame - as overlays they'd be composited in the
+                         * wrong place; drawn normally they land right. */
+                        if (overrideRedirect && wineHost_) {
                             std::lock_guard<std::mutex> fbLock(bufferMutex);
                             auto& p = popupOverlays[wid];
                             p.x = winX;
@@ -4682,7 +4688,7 @@ struct X11NativeDisplay::Impl {
                                      * mode, drop it from overlays so it
                                      * renders normally. */
                                     std::lock_guard<std::mutex> fbLock(bufferMutex);
-                                    if (ovr) {
+                                    if (ovr && wineHost_) {  // see CreateWindow
                                         auto sz = windowManager_.getSize(window);
                                         auto pos = windowManager_.getPosition(window);
                                         auto& p = popupOverlays[window];
