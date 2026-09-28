@@ -1,43 +1,42 @@
 #!/usr/bin/env python3
 """
-Packs the fex-pivot build outputs (native arm64 wine + ARM64X PE DLLs +
+Packs the fex-pivot build outputs (native arm64 wine + ARM64X/i386 PE DLLs +
 libarm64ecfex.dll / libwow64fex.dll) into the APK's jniLibs + assets.
 
-Why the rename to libwine_NNNN.so:
-  Android 10+ blocks mprotect(PROT_EXEC) on files in /data/data/<app>/files/.
-  Only files in nativeLibraryDir (which Android extracts from the APK's
-  lib/<abi>/) get an exec-allowed SELinux label for the app's UID. So
-  every wine ELF and every PE DLL that wine will mmap with PROT_EXEC
-  must end up in jniLibs and be named lib*.so. A manifest records the
-  chroot-style path each lib*.so represents, and WineSetup.kt builds
-  symlinks from the chroot path → its lib*.so on first run.
+ELF vs PE placement:
+  The ELF side (wine loader, wineserver, aarch64-unix/*.so) is exec'd or
+  dlopen'd, so it ships in jniLibs as lib*.so (the only names the package
+  manager extracts to nativeLibraryDir): libwine_loader.so, libwine_server.so,
+  libwine_unix_<name>.so. WineSetup.kt symlinks each to its wine path.
+
+  PE files (every DLL/EXE/driver wine maps itself) ship under their REAL names
+  in assets/wine/lib/wine/<arch>-windows/ and WineAssetInstaller extracts them
+  into the wine root as read-only files. They only need execute + execmod on
+  app_data_file, which the full flavor's targetSdk 28 SELinux domain grants.
+  (They used to be disguised as lib/arm64-v8a/libwine_NNNN.so too — ~1.5k
+  Windows binaries under .so names, which is what antivirus engines flagged.)
 
 Input (from build scripts already run):
   external/wine-upstream/build-android-arm64/loader/wine
-  external/wine-upstream/build-android-arm64/loader/wine-preloader
   external/wine-upstream/build-android-arm64/server/wineserver
   external/wine-upstream/build-android-arm64/dlls/<name>/<name>.so
-  external/wine-upstream/build-android-arm64/dlls/<name>/aarch64-windows/<name>.dll
+  external/wine-upstream/build-android-arm64/dlls/<name>/{aarch64,i386}-windows/<name>.dll
+  external/wine-upstream/build-android-arm64/programs/<name>/{aarch64,i386}-windows/<name>.exe
   external/fex-upstream/build-arm64ec/Bin/libarm64ecfex.dll
   external/fex-upstream/build-wow64/Bin/libwow64fex.dll
 
 Output:
-  src/main/jniLibs/arm64-v8a/libwine_NNNN.so
-  src/main/assets/wine-fex-manifest.json
-  (no wine-fex-data.tar.gz — nothing in our build needs to be on the
-   non-exec side. nls/ and fonts/ get a separate small tarball if we
-   end up needing them.)
-
-The output libwine_*.so names from this script never collide with the
-master branch's libwine_*.so names because we install into a separate
-filename namespace (4-digit hex starting from f000) and ship our own
-manifest. App code switches manifests by branch via WineSetup vs
-WineSetupFex.
+  src/main/jniLibs/arm64-v8a/libwine_*.so      (ELF only)
+  src/main/assets/wine/lib/wine/*-windows/*     (PE, real names)
+  src/main/assets/wine-fex-manifest.json        (schema 2: per-entry kind,
+                                                 size, sha256 + pack_digest)
 """
 
 import argparse
+import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -277,6 +276,31 @@ def strip_into(src: Path, dst: Path, strip_tool: str) -> None:
         pass
 
 
+def elf_lib_name(device_path: str) -> str:
+    """jniLibs name for a wine ELF: descriptive, and a lib*.so name the
+    package manager will extract to nativeLibraryDir."""
+    if device_path == f"{WINE_ROOT_DEVICE}/bin/wine":
+        lib = "libwine_loader.so"
+    elif device_path == f"{WINE_ROOT_DEVICE}/bin/wineserver":
+        lib = "libwine_server.so"
+    elif "/aarch64-unix/" in device_path:
+        stem = Path(device_path).name.removesuffix(".so")
+        lib = "libwine_unix_" + re.sub(r"[^A-Za-z0-9_]", "_", stem) + ".so"
+    else:
+        raise ValueError(f"no jniLibs name rule for ELF {device_path}")
+    if not re.fullmatch(r"lib[A-Za-z0-9_]+\.so", lib):
+        raise ValueError(f"bad jniLibs name {lib} for {device_path}")
+    return lib
+
+
+def sha256_of(path: Path) -> str:
+    h = hashlib.sha256()
+    with path.open("rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
 def main() -> int:
     # Default NDK strip path: $ANDROID_NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip
     # If $ANDROID_NDK isn't set, fall back to NDK r26.1 under $HOME/Android/Sdk/ — same
@@ -295,7 +319,8 @@ def main() -> int:
     fex_arm64ec = repo / "external/fex-upstream/build-arm64ec/Bin/libarm64ecfex.dll"
     fex_wow64 = repo / "external/fex-upstream/build-wow64/Bin/libwow64fex.dll"
     out_jni = repo / "src/main/jniLibs/arm64-v8a"
-    out_manifest = repo / "src/main/assets/wine-fex-manifest.json"
+    out_assets = repo / "src/main/assets"
+    out_manifest = out_assets / "wine-fex-manifest.json"
 
     for p in [wine_build / "loader/wine", fex_arm64ec, fex_wow64]:
         if not p.exists():
@@ -304,12 +329,14 @@ def main() -> int:
 
     out_jni.mkdir(parents=True, exist_ok=True)
 
-    # Wipe any leftover fxxx files from a prior pack to keep the lib namespace clean.
-    for stale in out_jni.glob("libwine_f???.so"):
+    # Wipe the previous pack's wine outputs (incl. the old hex-numbered
+    # libwine_fNNN.so names) so a re-pack never leaves stale files behind.
+    for stale in out_jni.glob("libwine_*.so"):
         stale.unlink()
+    shutil.rmtree(out_assets / "wine", ignore_errors=True)
 
     entries: list[dict] = []
-    next_idx = 0xf000  # f-prefix marks "fex-pivot" packaging vs master branch's lower numbers
+    elf_names: set[str] = set()
 
     # Also wipe any prior X11/gnutls/freetype/png libs we shipped directly
     # under their original names so a re-pack stays clean.
@@ -352,23 +379,40 @@ def main() -> int:
             total_bytes += dst.stat().st_size
             continue
 
-        lib_name = f"libwine_{next_idx:04x}.so"
-        next_idx += 1
-        dst = out_jni / lib_name
+        if is_pe(src):
+            # PE: real name under assets/wine/<path below the wine root>.
+            asset = "wine/" + device_path.removeprefix(f"{WINE_ROOT_DEVICE}/")
+            dst = out_assets / asset
+            entry = {"kind": "asset", "path": device_path, "asset": asset}
+        else:
+            lib_name = elf_lib_name(device_path)
+            if lib_name in elf_names:
+                raise ValueError(f"jniLibs name collision: {lib_name} ({device_path})")
+            elf_names.add(lib_name)
+            dst = out_jni / lib_name
+            entry = {"kind": "elf", "path": device_path, "lib": lib_name}
         strip_into(src, dst, args.strip)
-        size = dst.stat().st_size
-        total_bytes += size
-        entries.append({"lib": lib_name, "path": device_path, "size": size})
+        entry["size"] = dst.stat().st_size
+        entry["sha256"] = sha256_of(dst)
+        total_bytes += entry["size"]
+        entries.append(entry)
 
+    # Digest over every entry, so the app re-installs exactly when the pack changes.
+    pack_digest = hashlib.sha256("\n".join(sorted(
+        f"{e['kind']} {e['path']} {e['size']} {e['sha256']} {e.get('lib') or e.get('asset')}"
+        for e in entries)).encode()).hexdigest()
     with out_manifest.open("w") as f:
         json.dump({
-            "schema": 1,
+            "schema": 2,
             "wine_root_device": WINE_ROOT_DEVICE,
+            "pack_digest": pack_digest,
             "entries": entries,
         }, f, indent=2)
 
-    print(f"packed {len(entries)} libs ({total_bytes/1024/1024:.1f} MB total) → {out_jni}")
-    print(f"manifest → {out_manifest}")
+    n_elf = sum(e["kind"] == "elf" for e in entries)
+    print(f"packed {n_elf} ELF libs → {out_jni}, {len(entries) - n_elf} PE files → "
+          f"{out_assets / 'wine'} ({total_bytes/1024/1024:.1f} MB total)")
+    print(f"manifest → {out_manifest} (pack_digest {pack_digest[:16]}…)")
 
     # --- wine NLS tarball -----------------------------------------------------
     # WineSetup.kt extracts this into <wineRoot>/share/wine at runtime.

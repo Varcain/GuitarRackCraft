@@ -92,16 +92,16 @@ android {
 
     packaging {
         jniLibs {
-            // Extract libvsthost.so + libhello_x86_64.so + libwine_*.so to
-            // nativeLibraryDir so they can be execve'd / mmap-execed (the
-            // only path Android lets untrusted apps run from).
+            // Extract libvsthost.so + libwine_*.so to nativeLibraryDir so
+            // the wine loader/wineserver can be execve'd (the only place
+            // targetSdk>=29-style W^X lets untrusted apps exec from).
             useLegacyPackaging = true
-            // The libwine_*.so set is Wine's binaries renamed to lib*.so so
-            // AGP packages them. Most are x86_64 ELF or PE (not aarch64), so
-            // aarch64-linux-android-strip would fail. Keep them as-is.
+            // libwine_*.so are wine's ELF binaries (loader, wineserver,
+            // aarch64-unix libs) renamed to lib*.so so AGP packages them;
+            // pack-wine-fex.py already strips them. The PE side ships in
+            // assets (see pack-wine-fex.py / WineAssetInstaller).
             keepDebugSymbols += listOf(
                 "*/arm64-v8a/libwine_*.so",
-                "*/arm64-v8a/libhello_x86_64.so",
             )
         }
     }
