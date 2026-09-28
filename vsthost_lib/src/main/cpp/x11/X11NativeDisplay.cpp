@@ -2488,41 +2488,56 @@ struct X11NativeDisplay::Impl {
                     break;
                 }
                 uint8_t opcode = buf[0];
-                uint16_t length = read16(buf, 2);
+                /* Request length in 4-byte words, header included. */
+                uint32_t length = read16(buf, 2);
 
-                /* BigRequests: length=0 means the real 32-bit length follows in the next 4 bytes.
-                 * This only happens if the client negotiated the BIG-REQUESTS extension (our
-                 * QueryExtension returns "not present", so well-behaved clients won't use it).
-                 * Handle defensively to avoid protocol desync. */
+                /* BIG-REQUESTS (advertised - winex11.drv requires it): a 16-bit
+                 * length of 0 means a 32-bit length follows, counting the header
+                 * and that extra word. Strip the extra word so the request is
+                 * laid out, read and parsed exactly like a normal one; `length`
+                 * then counts header + body words as usual. We advertise
+                 * 0x7fffffff words (see the BIG-REQUESTS Enable reply) but only
+                 * accept what the server can sensibly buffer: 64 MiB of body,
+                 * i.e. a 4096x4096x32bpp PutImage, the largest image it takes.
+                 * Anything bigger is skipped with a BadLength error. */
+                constexpr uint32_t kMaxBigRequestWords = (64u << 20) / 4 + 8;
                 if (length == 0) {
                     uint8_t extLenBuf[4];
                     if (!recvAll(clientFd, extLenBuf, 4)) break;
-                    uint32_t bigLength = read32(extLenBuf, 0);
-                    LOGE("X11 BigRequests: opcode=%u bigLength=%u — skipping (extension not supported)", (unsigned)opcode, bigLength);
-                    if (bigLength > 2) {
-                        size_t skipBytes = ((size_t)bigLength - 2) * 4; // -2 for header+extlen already consumed
+                    const uint32_t bigLength = read32(extLenBuf, 0);
+                    if (bigLength >= 2 && bigLength <= kMaxBigRequestWords) {
+                        length = bigLength - 1;
+                    } else {
+                        LOGE("X11 BIG-REQUESTS: opcode=%u length=%u words is invalid or too large - skipping it",
+                             (unsigned)opcode, bigLength);
+                        /* Skip the body (header + length word already read) so
+                         * the stream stays in sync, then fail it. */
+                        size_t skipBytes = bigLength > 2 ? ((size_t)bigLength - 2) * 4 : 0;
+                        bool skipped = true;
                         while (skipBytes > 0) {
                             uint8_t tmp[4096];
                             size_t chunk = std::min(skipBytes, sizeof(tmp));
-                            if (!recvAll(clientFd, tmp, chunk)) break;
+                            if (!recvAll(clientFd, tmp, chunk)) { skipped = false; break; }
                             skipBytes -= chunk;
                         }
+                        if (!skipped) break;
+                        seq++;
+                        lastSeq_.store(seq, std::memory_order_relaxed);
+                        /* Per-fd seq mirror + lastReplySeq_ update: events for
+                         * this connection must carry a serial >= the request
+                         * being processed, otherwise wine's handle_state_change
+                         * rejects them as "old" and drops queued WM_STATE /
+                         * focus events. Update on EVERY request (not just
+                         * reply-bearing ones — lastReplySeq_ alone lags during
+                         * long Configure/ChangeProperty streams). */
+                        lastReplySeq_ = seq;
+                        {
+                            std::lock_guard<std::mutex> lk(fdSeqMutex);
+                            fdLastSeq[clientFd] = seq;
+                        }
+                        sendError(16 /* BadLength */, seq, 0);
+                        continue;
                     }
-                    seq++;
-                    lastSeq_.store(seq, std::memory_order_relaxed);
-                    /* Per-fd seq mirror + lastReplySeq_ update: events for
-                     * this connection must carry a serial >= the request
-                     * being processed, otherwise wine's handle_state_change
-                     * rejects them as "old" and drops queued WM_STATE /
-                     * focus events. Update on EVERY request (not just
-                     * reply-bearing ones — lastReplySeq_ alone lags during
-                     * long Configure/ChangeProperty streams). */
-                    lastReplySeq_ = seq;
-                    {
-                        std::lock_guard<std::mutex> lk(fdSeqMutex);
-                        fdLastSeq[clientFd] = seq;
-                    }
-                    continue;
                 }
 
                 seq++;
@@ -2988,12 +3003,24 @@ struct X11NativeDisplay::Impl {
                 }
 
                 /* Read the complete request body into buf (PutImage streams its
-                 * own body above). length is in 4-byte words incl. the header. */
+                 * own body above). length is in 4-byte words incl. the header.
+                 * Bodies up to the core-protocol maximum grow the reusable
+                 * per-thread buffer; larger BIG-REQUESTS bodies get a buffer of
+                 * their own for this request only, so one big ChangeProperty
+                 * doesn't pin tens of MB per connection thread. */
+                constexpr size_t kCoreRequestMaxBytes = 65535u * 4;
+                std::vector<uint8_t> bigReqStorage;
                 if (length > 1) {
                     size_t extra = ((size_t)length - 1) * 4;
                     if (reqStorage.size() < 4 + extra) {
-                        reqStorage.resize(4 + extra);  // keeps the 4 header bytes
-                        buf = reqStorage.data();
+                        if (4 + extra <= kCoreRequestMaxBytes) {
+                            reqStorage.resize(4 + extra);  // keeps the 4 header bytes
+                            buf = reqStorage.data();
+                        } else {
+                            bigReqStorage.assign(buf, buf + 4);
+                            bigReqStorage.resize(4 + extra);
+                            buf = bigReqStorage.data();
+                        }
                     }
                     if (reqLogCount <= 15 && extra <= 256) {
                         LOGI("X11 recv extra %zu bytes for %s", extra, x11OpcodeName(opcode));
