@@ -42,7 +42,7 @@ diff --git a/dlls/win32u/opengl.c b/dlls/win32u/opengl.c
 +/* vstpoc GL zero-copy present: GPU-blit the editor's rendered FBO into an
 + * AHardwareBuffer (the AHB-bounce in framebuffer_surface_swap) and ship it over
 + * the private side-channel, replacing the per-frame glReadPixels+GDI readback.
-+ * Vendored verbatim from vsthost_lib/src/main/cpp/x11/AhbChannelProtocol.h —
++ * Vendored verbatim from app/src/main/cpp/x11/AhbChannelProtocol.h —
 + * KEEP IN SYNC (the X server + the winex11.drv Vulkan producer are the other
 + * ends). POSIX sockets only, no NDK headers. See feedback_gl_zerocopy_dmabuf_not_ahb. */
 +#include "AhbChannelProtocol.h"

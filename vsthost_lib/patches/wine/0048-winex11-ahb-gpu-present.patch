@@ -16,7 +16,7 @@ which imports it as an EGLImage and composites it directly. No CPU copy.
   server is still sampling; the previous held image returns to the pool.
 - AImageReader usage gains GPU_SAMPLED_IMAGE (0x303) so Adreno-EGL can sample
   it; maxImages 4->6 for hold headroom. AhbChannelProtocol.h is vendored from
-  vsthost_lib/src/main/cpp/x11/ (POSIX sockets only, byte-identical wire).
+  app/src/main/cpp/x11/ (POSIX sockets only, byte-identical wire).
 
 Default-off (env-gated); existing plugins keep the readback path. Slots after
 patch 0032 (the AImageReader present). Device-validated: BIAS FX 2 editor
@@ -41,7 +41,7 @@ renders pixel-correct via zero-copy on OnePlus 12 / Adreno 750.
  #include "winbase.h"
  
 +/* vstpoc Phase 3: AHB GPU-present side-channel. Vendored verbatim from
-+ * vsthost_lib/src/main/cpp/x11/AhbChannelProtocol.h — KEEP IN SYNC byte-for-byte
++ * app/src/main/cpp/x11/AhbChannelProtocol.h — KEEP IN SYNC byte-for-byte
 + * (the X server is the other end). POSIX sockets only, no NDK headers. */
 +#include "AhbChannelProtocol.h"
 +
