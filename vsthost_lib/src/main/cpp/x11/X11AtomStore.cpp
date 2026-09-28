@@ -64,6 +64,7 @@ X11AtomStore::X11AtomStore() {
 }
 
 uint32_t X11AtomStore::intern(const std::string& name, bool onlyIfExists) {
+    std::lock_guard<std::mutex> lock(mutex_);
     auto it = nameToId_.find(name);
     if (it != nameToId_.end()) {
         return it->second;
@@ -78,6 +79,7 @@ uint32_t X11AtomStore::intern(const std::string& name, bool onlyIfExists) {
 }
 
 std::string X11AtomStore::getName(uint32_t atomId) const {
+    std::lock_guard<std::mutex> lock(mutex_);
     auto it = idToName_.find(atomId);
     if (it != idToName_.end()) {
         return it->second;
@@ -86,6 +88,7 @@ std::string X11AtomStore::getName(uint32_t atomId) const {
 }
 
 void X11AtomStore::clear() {
+    std::lock_guard<std::mutex> lock(mutex_);
     nameToId_.clear();
     idToName_.clear();
     nextId_ = 1;

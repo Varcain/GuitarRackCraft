@@ -3385,7 +3385,13 @@ struct X11NativeDisplay::Impl {
                         /* GetGeometry request: opcode(1), unused(1), length(2), drawable(4) */
                         uint32_t drawable = read32(buf, 4);
                         /* Validate drawable exists */
-                        if (drawable != kRootWindowId && !windowManager_.exists(drawable) && !pixmapStore_.exists(drawable)) {
+                        bool drawableExists = drawable == kRootWindowId;
+                        if (!drawableExists) {
+                            std::lock_guard<std::mutex> fbLock(bufferMutex);
+                            std::lock_guard<std::mutex> mapLock(windowMapMutex);
+                            drawableExists = windowManager_.exists(drawable) || pixmapStore_.exists(drawable);
+                        }
+                        if (!drawableExists) {
                             sendError(9 /*BadDrawable*/, seq, drawable);
                             break;
                         }
@@ -3729,14 +3735,22 @@ struct X11NativeDisplay::Impl {
                          * writes/s with both pixmap handlers, and a blocking log
                          * write is a multi-ms hitch. See scrollbar present-path profile. */
                         if (reqLogCount <= 60) LOGI("X11 handle CreatePixmap pid=0x%x %dx%d", pid, pw, ph);
-                        pixmapStore_.create(pid, pw, ph);
+                        {
+                            // pixmapStore_ is read under bufferMutex by other
+                            // clients' drawing requests.
+                            std::lock_guard<std::mutex> fbLock(bufferMutex);
+                            pixmapStore_.create(pid, pw, ph);
+                        }
                         break;
                     }
                     /* --- FreePixmap --- */
                     case 54: { /* FreePixmap */
                         uint32_t pid = read32(buf, 4);
                         if (reqLogCount <= 60) LOGI("X11 handle FreePixmap pid=0x%x", pid);
-                        pixmapStore_.destroy(pid);
+                        {
+                            std::lock_guard<std::mutex> fbLock(bufferMutex);
+                            pixmapStore_.destroy(pid);
+                        }
                         break;
                     }
                     /* --- CopyArea: copy pixels between drawables --- */
