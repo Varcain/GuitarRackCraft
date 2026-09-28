@@ -5,7 +5,6 @@ import android.system.ErrnoException
 import android.system.Os
 import android.util.Log
 import com.varcain.vsthost.util.deleteTreeNoFollow
-import org.json.JSONObject
 import java.io.File
 import java.io.FileOutputStream
 import java.io.InputStream
@@ -17,10 +16,10 @@ import java.util.zip.GZIPInputStream
  *  Layout on device (no proot, no chroot, no box64):
  *
  *    <files_dir>/wine/                  wine install root (chroot-style paths)
- *      bin/{wine,wineserver,wine-preloader}            ELF symlinks → libwine_NNNN.so
- *      lib/wine/aarch64-unix/<name>.so                 ELF symlinks → libwine_NNNN.so
- *      lib/wine/aarch64-windows/<name>.dll             PE symlinks  → libwine_NNNN.so
- *      lib/wine/aarch64-windows/libarm64ecfex.dll      FEX symlinks → libwine_NNNN.so
+ *      bin/{wine,wineserver}                           ELF symlinks → nativeLibraryDir/lib*.so
+ *      lib/wine/aarch64-unix/<name>.so                 ELF symlinks → nativeLibraryDir/lib*.so
+ *      lib/wine/{aarch64,i386}-windows/<name>.dll      PE files (see below)
+ *      lib/wine/aarch64-windows/libarm64ecfex.dll      FEX PE files
  *      lib/wine/aarch64-windows/libwow64fex.dll
  *
  *    <files_dir>/wineprefix/            user prefix (wineboot populates on first run)
@@ -29,13 +28,14 @@ import java.util.zip.GZIPInputStream
  *      dosdevices/z: -> /
  *      drive_c/windows/winsxs/manifests/...            Common-Controls 6 SxS
  *
- *  Why the symlink → libwine_NNNN.so dance: Android 10+ blocks PROT_EXEC
- *  mmaps on files under /data/data/<app>/files/. Only files in
- *  nativeLibraryDir (extracted from the APK's lib/<abi>/) get the
- *  app_executable_file SELinux label that allows exec. Wine binaries must
- *  live there but wine wants them at fixed paths like <wine_root>/bin/wine.
- *  Symlinks resolve to the actual file (in nativeLibraryDir) at execve
- *  time, so the SELinux check passes on the exec-allowed inode.
+ *  The ELF side (loader, wineserver, unix libs) ships as lib*.so in
+ *  nativeLibraryDir and is symlinked to the fixed paths wine expects. The PE
+ *  side depends on the manifest schema (see [WineRuntimeManifest]): legacy
+ *  schema 1 disguised every PE file as a libwine_NNNN.so and symlinked it
+ *  the same way; schema 2 ships them under their real names in APK assets
+ *  and [WineAssetInstaller] extracts them as read-only regular files — the
+ *  full flavor's targetSdk 28 SELinux domain allows execute + execmod on
+ *  app_data_file, so wine can map and relocate them from filesDir.
  *
  *  Master branch's WineSetup.kt was much heavier — it had to handle a proot
  *  chroot, box64's PT_INTERP paradox, and a Winlator rootfs tarball. None
@@ -82,7 +82,13 @@ object WineSetup {
         val nativeLibraryDir: File,
     )
 
-    fun ensure(ctx: Context): Setup {
+    private val ensureLock = Any()
+
+    /** Serialized: the app start-up path and the VST UI can both call this, and
+     *  a runtime (re)install must not interleave with another. */
+    fun ensure(ctx: Context): Setup = synchronized(ensureLock) { ensureLocked(ctx) }
+
+    private fun ensureLocked(ctx: Context): Setup {
         val wineRoot = File(ctx.filesDir, "wine")
         val winePrefix = File(ctx.filesDir, "wineprefix")
         val nativeLibDir = File(ctx.applicationInfo.nativeLibraryDir)
@@ -105,7 +111,9 @@ object WineSetup {
         }
 
         val t0 = System.currentTimeMillis()
-        applyManifestSymlinks(ctx, wineRoot, nativeLibDir)
+        val manifest = WineRuntimeManifest.load(ctx)
+        applyElfSymlinks(wineRoot, nativeLibDir, manifest)
+        WineAssetInstaller.install(ctx, wineRoot, manifest)
         if (needFullRebuild) {
             extractNlsTarball(ctx, wineRoot)
             extractTurnipLibs(ctx, wineRoot)
@@ -369,27 +377,15 @@ object WineSetup {
         }
     }
 
-    /** Read `wine-fex-manifest.json` and symlink every entry's `path` to its
-     *  `libwine_NNNN.so` in nativeLibraryDir. */
-    private fun applyManifestSymlinks(ctx: Context, wineRoot: File, nativeLibDir: File) {
-        val json = ctx.assets.open("wine-fex-manifest.json").bufferedReader().use { it.readText() }
-        val manifest = JSONObject(json)
-        val entries = manifest.getJSONArray("entries")
-        val wineRootDevice = manifest.getString("wine_root_device")  // "/wine"
-
+    /** Symlink every manifest ELF entry's wine path to its lib*.so in
+     *  nativeLibraryDir. Runs every launch: the APK install path (and so the
+     *  link targets) changes on every install/update. */
+    private fun applyElfSymlinks(wineRoot: File, nativeLibDir: File, manifest: WineRuntimeManifest) {
         var ok = 0
         var fail = 0
-        for (i in 0 until entries.length()) {
-            val e = entries.getJSONObject(i)
-            val lib = e.getString("lib")
-            val devicePath = e.getString("path")  // e.g. /wine/bin/wine
-            require(devicePath.startsWith("$wineRootDevice/")) {
-                "manifest path $devicePath outside expected root $wineRootDevice"
-            }
-            // Strip the leading /wine/ — paths under wineRoot are relative.
-            val relative = devicePath.removePrefix("$wineRootDevice/")
-            val target = File(nativeLibDir, lib)
-            val link = File(wineRoot, relative)
+        for (e in manifest.elf) {
+            val target = File(nativeLibDir, e.lib)
+            val link = File(wineRoot, e.relPath)
             link.parentFile?.mkdirs()
             unlinkIfExists(link)
             try {
@@ -400,7 +396,7 @@ object WineSetup {
                 fail++
             }
         }
-        Log.i(TAG, "manifest symlinks: $ok ok, $fail fail")
+        Log.i(TAG, "manifest v${manifest.schema} symlinks: $ok ok, $fail fail")
     }
 
     /** Create the WINEPREFIX directory layout. wine's wineboot populates the
