@@ -738,5 +738,17 @@ inline bool recvExact(int fd, void* buf, size_t len, int timeoutMs = 2000) {
     return true;
 }
 
+// Helper to receive a connection-setup reply: the 8-byte header, then the
+// additional data it announces (length field, in 4-byte units). Returns the
+// whole reply, or an empty vector on failure.
+inline std::vector<uint8_t> recvSetupReply(int fd, const X11ByteOrder& bo) {
+    std::vector<uint8_t> reply(8);
+    if (!recvExact(fd, reply.data(), 8)) return {};
+    const size_t extra = (size_t)bo.read16(reply.data(), 6) * 4;
+    reply.resize(8 + extra);
+    if (extra && !recvExact(fd, reply.data() + 8, extra)) return {};
+    return reply;
+}
+
 } // namespace test
 } // namespace guitarrackcraft

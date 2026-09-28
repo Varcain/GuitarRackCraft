@@ -169,6 +169,7 @@ add_library(x11_native_display STATIC
     x11/X11ConnectionHandler.cpp
     x11/X11Framebuffer.cpp
     x11/X11PropertyStore.cpp
+    x11/AhbTexture.cpp
 )
 target_link_libraries(x11_native_display
     log

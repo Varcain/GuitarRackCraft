@@ -30,6 +30,7 @@
 #include <queue>
 #include <string>
 #include <thread>
+#include <vector>
 
 namespace guitarrackcraft {
 
@@ -67,10 +68,19 @@ public:
     void setSurfaceSize(int width, int height);
 
     /** Root window ID for XCreateWindow parent (e.g. plugin UI). */
-    unsigned long getRootWindowId() const { return rootWindowId_; }
+    unsigned long getRootWindowId() const;
 
-    /** Inject pointer event: action (0=down, 1=up, 2=move), x, y in view coordinates. */
+    /** Inject pointer event: action (0=down, 1=up, 2=move, 3=right-click tap),
+     *  x, y in view coordinates. action=3 is an atomic ButtonPress(3) +
+     *  ButtonRelease(3) at (x,y) used for two-finger-tap → right-click. */
     void injectTouch(int action, int x, int y);
+
+    /** Inject a key press/release into the focused editor's window.
+     *  action 0=press, 1=release; keycode is the X11 hardware keycode in
+     *  our kJavaKeymapPayload table; state is the X11 modifier mask
+     *  (Shift=0x01, Control=0x04). Queued for the connection thread to
+     *  send so we don't race xcb. */
+    void injectKey(int action, int keycode, int state);
 
     /** Hit-test: returns true if (surfaceX, surfaceY) hits an X11 widget (knob, slider, etc.)
      *  rather than the plugin background. Thread-safe (called from Android UI thread). */
@@ -98,17 +108,73 @@ public:
     /** Get the plugin's natural window size (from first CreateWindow call). Returns false if not yet known. */
     bool getPluginSize(int& w, int& h);
 
+    /** Bounding box of pixels actually written by the active plugin into the
+     *  framebuffer. Differs from getPluginSize when the plugin's declared
+     *  CreateWindow size doesn't match what its renderer paints (AmpCraft
+     *  declares 1290x612 but DXVK presents 896x612). Returns (0,0) until the
+     *  first PutImage lands. Compose polls this to size the SurfaceView to
+     *  the rendered area, not the declared area. */
+    void getRenderedExtent(int& w, int& h);
+
+    /** Override the plugin's natural size + resize the framebuffer. Used
+     *  when the auto-detect from CreateWindow misses (JUCE editors that
+     *  attach as children of small parents). */
+    void setPluginSize(int w, int h);
+
+    /** Read-only snapshot of the plugin's rendered framebuffer. Copies the
+     *  current pixels (32-bit, X11 wire order — treat as ARGB8888) into out
+     *  and sets w/h to the framebuffer dimensions. Thread-safe (locks the
+     *  bufferMutex). Returns false if the framebuffer is empty. Used by the
+     *  desktop test harness to mirror the plugin UI into an SDL window
+     *  without going through the EGL/GLES render path. */
+    bool snapshotFramebuffer(std::vector<uint32_t>& out, int& w, int& h);
+
+    /** Lock/unlock the framebuffer size against auto slot-promotion.
+     *  When frozen, CreateWindow/PutImage that would otherwise shrink
+     *  the framebuffer to the new slot's bounds just record the slot
+     *  for touch routing and leave the framebuffer alone. Used by the
+     *  installer flow so a small wizard window doesn't shrink the
+     *  framebuffer below the desktop coordinate space it then paints
+     *  into (the wizard moves itself to e.g. (507, 445) inside a 1024x768
+     *  desktop). */
+    void setFramebufferFrozen(bool frozen);
+
+    /** Start the X11 protocol server without an attached Surface. wine
+     *  clients can connect immediately; on-screen rendering only happens
+     *  once attachSurface() is also called. wineHost marks a display that
+     *  serves a wine process (VST editor / installer): only there does a
+     *  large child of the plugin slot replace it (wine's virtual-desktop
+     *  window -> the real editor). On other displays - an LV2 UI, whose
+     *  server attachSurface() starts - the first top-level window stays
+     *  the plugin, and its child widgets never replace it. */
+    bool startServer(int placeholderW, int placeholderH, bool wineHost = false);
+
+    /** TCP port the X11 server actually bound on. Normally
+     *  kX11BasePort + displayNumber (6001 for display 1) but if that port
+     *  was held by an orphan, serverLoop steps up to 6101, 6201, ….
+     *  Returns -1 before startServer or if all attempts failed. Callers
+     *  set DISPLAY=127.0.0.1:(port-6000) so wine connects to the new
+     *  listener instead of the orphan's accept backlog. */
+    int getActualPort() const;
+
     /** Set UI scale factor (< 1.0 = smaller plugin rendering = faster). Must be called before plugin connects. */
     void setUIScale(float scale);
 
     /** Get the current UI scale factor. */
     float getUIScale() const;
 
+    /** Phase 1 GPU-present validation hook. on=true: allocate an
+     *  AHardwareBuffer at the editor size, CPU-fill a gradient, and register
+     *  it as the editor's GPU source — the compositor samples it via EGLImage
+     *  instead of uploading the CPU framebuffer (zero-copy path). on=false:
+     *  clear it, reverting to the CPU framebuffer. Returns false if the AHB
+     *  allocation/lock fails. Synthetic; needs no plugin/wine. */
+    bool debugSetEditorAhbGradient(bool on);
+
 private:
     struct Impl;
     std::unique_ptr<Impl> impl_;
     int displayNumber_;
-    unsigned long rootWindowId_ = 1;  // Fixed root id for minimal server
     std::mutex mutex_;
 };
 
@@ -121,13 +187,33 @@ void destroyX11Display(int displayNumber);
 /** Call display methods while holding the display map lock (avoids TOCTOU use-after-free). */
 void withDisplayRequestFrame(int displayNumber);
 void withDisplayInjectTouch(int displayNumber, int action, int x, int y);
+void withDisplayInjectKey(int displayNumber, int action, int keycode, int state);
 void withDisplaySetSurfaceSize(int displayNumber, int width, int height);
+void withDisplaySetPluginSize(int displayNumber, int w, int h);
+/** Freeze the framebuffer size on this display against auto slot-promotion.
+ *  Installer flow sets this to true while the wine wizard runs. */
+void withDisplaySetFramebufferFrozen(int displayNumber, bool frozen);
+void withDisplayStartServer(int displayNumber, int placeholderW, int placeholderH, bool wineHost);
+/** Get the actual TCP port the display's X11 server bound on. -1 if not
+ *  started. WineVstPlugin reads this to compute the right DISPLAY env. */
+int withDisplayGetActualPort(int displayNumber);
 /** Returns true and fills w/h if plugin natural size is known; false if not yet set. */
 bool withDisplayGetPluginSize(int displayNumber, int& w, int& h);
+/** Returns true and fills w/h with the actually-rendered extent (0 each if no
+ *  PutImage has landed yet). See X11NativeDisplay::getRenderedExtent. */
+bool withDisplayGetRenderedExtent(int displayNumber, int& w, int& h);
+/** Snapshot the display's framebuffer while holding the display map lock
+ *  (avoids TOCTOU use-after-free). See X11NativeDisplay::snapshotFramebuffer. */
+bool withDisplaySnapshotFramebuffer(int displayNumber, std::vector<uint32_t>& out,
+                                    int& w, int& h);
 /** Returns the UI scale factor for the given display (1.0 = no scaling). */
 float withDisplayGetUIScale(int displayNumber);
 /** Hit-test: returns true if (x, y) hits an X11 widget rather than plugin background. */
 bool withDisplayIsWidgetAtPoint(int displayNumber, int x, int y);
+/** Phase 1 synthetic GPU-present hook: register (on=true) or clear (on=false)
+ *  a CPU-filled gradient AHardwareBuffer as the editor's GPU source on this
+ *  display. See X11NativeDisplay::debugSetEditorAhbGradient. */
+bool withDisplayDebugSetEditorAhbGradient(int displayNumber, bool on);
 /** Post a task to the display's plugin UI thread while holding the display map lock (avoids TOCTOU). */
 void withDisplayPostTask(int displayNumber, std::function<void()> task);
 /** Set the idle callback while holding the display map lock (avoids TOCTOU). */

@@ -91,6 +91,16 @@ HitResult X11WindowManager::hitTest(int x, int y) const {
     uint32_t topWin = childWindows_.empty() ? rootWindowId_ : childWindows_[0];
     HitResult best = {topWin, x, y};
 
+    /* Prefer the SMALLEST window that contains the click — that's the
+     * most specific descendant in practice (e.g. a 302×308 modal popup
+     * is preferred over its 750×549 parent editor when both contain the
+     * click). Pure-z-order traversal (which X11 uses on a real server)
+     * isn't possible here because raise/lower operations aren't tracked
+     * in childWindows_, so we approximate via "smallest area wins" which
+     * happens to match plugin window topology (popups are smaller than
+     * their parent editors). Mapped + tracked-position requirement is
+     * preserved. */
+    long long bestArea = -1;  // -1 = no match yet
     for (int i = (int)childWindows_.size() - 1; i >= 1; i--) {
         uint32_t wid = childWindows_[i];
         if (unmappedWindows_.count(wid)) continue;
@@ -101,10 +111,14 @@ HitResult X11WindowManager::hitTest(int x, int y) const {
         auto absPos = getAbsolutePos(wid);
         int wx = absPos.first, wy = absPos.second;
         int ww = sizeIt->second.first, wh = sizeIt->second.second;
+        if (ww <= 0 || wh <= 0) continue;
 
         if (x >= wx && x < wx + ww && y >= wy && y < wy + wh) {
-            best = {wid, x - wx, y - wy};
-            break;
+            long long area = (long long)ww * (long long)wh;
+            if (bestArea < 0 || area < bestArea) {
+                best = {wid, x - wx, y - wy};
+                bestArea = area;
+            }
         }
     }
     return best;

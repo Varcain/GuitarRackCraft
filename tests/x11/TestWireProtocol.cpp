@@ -21,9 +21,8 @@ protected:
         bo.write16(req, 4, 0);
         ASSERT_EQ(send(fd, req, 12, MSG_NOSIGNAL), 12);
 
-        // Read 120-byte connection reply
-        uint8_t reply[120];
-        ASSERT_TRUE(recvExact(fd, reply, 120));
+        auto reply = recvSetupReply(fd, bo);
+        ASSERT_FALSE(reply.empty());
         ASSERT_EQ(reply[0], kX11ConnectionAccepted);
     }
 

@@ -27,11 +27,20 @@ namespace guitarrackcraft {
 static constexpr uint8_t kX11ConnectionAccepted = 1;
 static constexpr uint16_t kX11Major = 11;
 static constexpr uint16_t kX11Minor = 0;
-static constexpr uint32_t kRootWindowId = 1;
-static constexpr uint32_t kDefaultColormapId = 1;
-static constexpr uint32_t kWhitePixel = 0xffffff;
-static constexpr uint32_t kBlackPixel = 0x000000;
-static constexpr uint32_t kDefaultVisualId = 0x21;  // non-zero visual ID for our single TrueColor visual
+// X11 server-resource IDs. All resource IDs (windows, colormaps, pixmaps,
+// GCs, visuals, fonts) share one namespace; they must be unique AND
+// below resource_id_base (0x00100000) so they don't collide with
+// client-allocated IDs.
+// Match the Java X server (au.com.darkside.xserver) byte-for-byte. Java
+// allocates root=3, colormap=4, visual=1 — distinct resource IDs from a
+// single namespace. Previously we used 1/1/0x21, but the colliding
+// root+colormap pair plus a non-1 visual made some wine probes diverge
+// from the validated Java path. Now matched exactly.
+static constexpr uint32_t kRootWindowId      = 3;
+static constexpr uint32_t kDefaultColormapId = 4;
+static constexpr uint32_t kDefaultVisualId   = 1;
+static constexpr uint32_t kWhitePixel = 0xffffffff;
+static constexpr uint32_t kBlackPixel = 0xff000000;
 
 // X11 request opcodes
 namespace X11Op {
@@ -59,11 +68,20 @@ namespace X11Op {
     static constexpr uint8_t GetImage = 73;
     static constexpr uint8_t QueryExtension = 98;
     static constexpr uint8_t ListExtensions = 99;
+    // Extension major opcodes — assigned out of the 128..255 range. Wine's
+    // winex11.drv probes BIG-REQUESTS first thing; if absent, it falls
+    // into a probe loop that never reaches CreateWindow against our
+    // server. Keep these in sync with the QueryExtension handler.
     static constexpr uint8_t kGLXMajorOpcode = 128;
+    static constexpr uint8_t kBigReqMajorOpcode = 130;
+    static constexpr uint8_t kShapeMajorOpcode = 131;
+    static constexpr uint8_t kXTestMajorOpcode = 132;
 } // namespace X11Op
 
 // X11 event types
 namespace X11Event {
+    static constexpr uint8_t KeyPress = 2;
+    static constexpr uint8_t KeyRelease = 3;
     static constexpr uint8_t ButtonPress = 4;
     static constexpr uint8_t ButtonRelease = 5;
     static constexpr uint8_t MotionNotify = 6;

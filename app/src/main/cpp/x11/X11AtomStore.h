@@ -20,6 +20,7 @@
 #pragma once
 
 #include <cstdint>
+#include <mutex>
 #include <string>
 #include <unordered_map>
 
@@ -27,6 +28,7 @@ namespace guitarrackcraft {
 
 class X11AtomStore {
 public:
+    X11AtomStore();
     // InternAtom: look up or create. Returns 0 (None) if onlyIfExists and not found.
     uint32_t intern(const std::string& name, bool onlyIfExists);
 
@@ -37,6 +39,9 @@ public:
     void clear();
 
 private:
+    // Every X11 client connection runs on its own thread and interns /
+    // looks up atoms concurrently, so all access is serialized.
+    mutable std::mutex mutex_;
     std::unordered_map<std::string, uint32_t> nameToId_;
     std::unordered_map<uint32_t, std::string> idToName_;
     uint32_t nextId_ = 1;

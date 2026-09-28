@@ -48,7 +48,7 @@ TEST_F(XCBClientTest, ConnectSucceeds) {
     EXPECT_NE(screen->root, 0u);
     EXPECT_EQ(screen->width_in_pixels, 800);
     EXPECT_EQ(screen->height_in_pixels, 600);
-    EXPECT_EQ(screen->root_depth, 24);
+    EXPECT_EQ(screen->root_depth, 32);  // depth-32 TrueColor, as in the setup reply
 }
 
 TEST_F(XCBClientTest, InternAtom) {

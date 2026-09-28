@@ -18,8 +18,7 @@ protected:
         req[0] = 0x6c;
         bo.write16(req, 2, 11);
         ASSERT_EQ(send(fd, req, 12, MSG_NOSIGNAL), 12);
-        uint8_t reply[120];
-        ASSERT_TRUE(recvExact(fd, reply, 120));
+        ASSERT_FALSE(recvSetupReply(fd, bo).empty());
     }
 
     void TearDown() override {

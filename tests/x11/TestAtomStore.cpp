@@ -3,6 +3,10 @@
 
 using guitarrackcraft::X11AtomStore;
 
+// Atoms 1..68 are the protocol's predefined atoms (<X11/Xatom.h>); the store
+// registers them up front, so interned atoms start after them.
+static constexpr uint32_t kFirstClientAtom = 69;
+
 TEST(AtomStore, InternNewAtom) {
     X11AtomStore store;
     uint32_t id = store.intern("WM_NAME", false);
@@ -47,13 +51,24 @@ TEST(AtomStore, GetAtomNameUnknown) {
     EXPECT_EQ(store.getName(999), "");
 }
 
+TEST(AtomStore, PredefinedAtoms) {
+    X11AtomStore store;
+    EXPECT_EQ(store.intern("PRIMARY", true), 1u);
+    EXPECT_EQ(store.intern("WM_NAME", true), 39u);
+    EXPECT_EQ(store.intern("WM_CLASS", true), 67u);
+    EXPECT_EQ(store.intern("WM_TRANSIENT_FOR", true), 68u);
+    EXPECT_EQ(store.getName(39), "WM_NAME");
+}
+
 TEST(AtomStore, ClearResetsState) {
     X11AtomStore store;
-    uint32_t id = store.intern("WM_NAME", false);
+    uint32_t id = store.intern("MY_ATOM", false);
     EXPECT_NE(id, 0u);
     store.clear();
-    EXPECT_EQ(store.intern("WM_NAME", true), 0u);
+    EXPECT_EQ(store.intern("MY_ATOM", true), 0u);
     EXPECT_EQ(store.getName(id), "");
+    // Predefined atoms survive a clear.
+    EXPECT_EQ(store.intern("WM_NAME", true), 39u);
 }
 
 TEST(AtomStore, SequentialIds) {
@@ -61,9 +76,9 @@ TEST(AtomStore, SequentialIds) {
     uint32_t id1 = store.intern("ATOM_A", false);
     uint32_t id2 = store.intern("ATOM_B", false);
     uint32_t id3 = store.intern("ATOM_C", false);
-    EXPECT_EQ(id1, 1u);
-    EXPECT_EQ(id2, 2u);
-    EXPECT_EQ(id3, 3u);
+    EXPECT_EQ(id1, kFirstClientAtom);
+    EXPECT_EQ(id2, kFirstClientAtom + 1);
+    EXPECT_EQ(id3, kFirstClientAtom + 2);
 }
 
 TEST(AtomStore, EmptyNameRejected) {
@@ -94,7 +109,7 @@ TEST(AtomStore, ClearThenReuse) {
     store.intern("A", false);
     store.intern("B", false);
     store.clear();
-    // After clear, IDs restart from 1
+    // After clear, IDs restart right after the predefined atoms
     uint32_t id = store.intern("C", false);
-    EXPECT_EQ(id, 1u);
+    EXPECT_EQ(id, kFirstClientAtom);
 }

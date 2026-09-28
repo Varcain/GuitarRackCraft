@@ -34,75 +34,104 @@ HandshakeResult X11ConnectionHandler::parseConnectionRequest(const uint8_t* req)
     return result;
 }
 
+// Build a connection-setup reply that matches the Java X server
+// (au.com.darkside.xserver) byte-for-byte, with only the screen
+// width/height parameterized. Verified via on-device wire capture
+// where wine progresses past CreateWindow against Java's reply but
+// loops on probes against our older custom reply.
+//
+// Total: 132 bytes (8-byte header + 124 bytes of additional data, i.e.
+// length field = 31 four-byte words).
 std::vector<uint8_t> X11ConnectionHandler::buildConnectionReply(
-    const X11ByteOrder& bo, int displayWidth, int displayHeight) {
+    const X11ByteOrder& bo, int displayWidth, int displayHeight,
+    uint32_t resourceIdBase) {
 
-    std::vector<uint8_t> body(120, 0);
-    size_t off = 0;
+    std::vector<uint8_t> body(132, 0);
+    auto put32 = [&](size_t off, uint32_t v) { bo.write32(body.data() + off, 0, v); };
+    auto put16 = [&](size_t off, uint16_t v) { bo.write16(body.data() + off, 0, v); };
 
-    // 0) Reply header (8 bytes)
-    body[off++] = kX11ConnectionAccepted;
-    body[off++] = 0;
-    bo.write16(body.data() + off, 0, kX11Major); off += 2;
-    bo.write16(body.data() + off, 0, kX11Minor); off += 2;
-    bo.write16(body.data() + off, 0, 28); off += 2;  // additional data length in 4-byte units (112/4)
+    // [0..7] Reply header.
+    body[0] = 1;             // success
+    body[1] = 0;             // pad
+    put16(2, 11);            // proto major
+    put16(4, 0);             // proto minor
+    put16(6, 31);            // length: 31 * 4 = 124 bytes follow
 
-    // 1) Fixed setup prefix (18 bytes)
-    bo.write32(body.data() + off, 0, 0);          // release-number
-    bo.write32(body.data() + off, 4, 0x00200000); // resource-id-base
-    bo.write32(body.data() + off, 8, 0x001FFFFF); // resource-id-mask
-    bo.write32(body.data() + off, 12, 256);        // motion-buffer-size
-    bo.write16(body.data() + off, 16, 0);          // vendor-length
-    off += 18;
+    // [8..39] Fixed setup info.
+    put32(8, 0);             // release_number
+    put32(12, resourceIdBase);   // per-connection — Java increments by 0x100000
+    put32(16, 0x000FFFFF);   // resource_id_mask   (Java: 0x000fffff)
+    put32(20, 0);            // motion_buffer_size (Java: 0)
+    put16(24, 11);           // vendor length      ("Open source" = 11)
+    put16(26, 0x7FFF);       // max_request_length
+    body[28] = 1;            // num roots/screens
+    body[29] = 1;            // num formats
+    body[30] = 0;            // image byte order = LSB
+    body[31] = 1;            // bitmap bit order = MSB  (Java: 1)
+    body[32] = 8;            // bitmap scanline unit
+    body[33] = 8;            // bitmap scanline pad
+    body[34] = 8;            // min keycode
+    body[35] = 0xA4;         // max keycode = 164       (Java: 0xa4)
+    // [36..39] pad — already zero.
 
-    // 2) Max request length, counts, image format, keycodes, pad (14 bytes)
-    bo.write16(body.data() + off, 0, 32767); off += 2;  // max_request_length
-    body[off++] = 1;   // num roots (screens)
-    body[off++] = 1;   // num formats
-    body[off++] = bo.msbFirst ? 1 : 0;  // image byte order
-    body[off++] = bo.msbFirst ? 1 : 0;  // bitmap bit order
-    body[off++] = 8; body[off++] = 8;    // bitmap scanline unit, pad
-    body[off++] = 8; body[off++] = 255;  // min/max keycode
-    body[off++] = 0; body[off++] = 0; body[off++] = 0; body[off++] = 0;  // pad
+    // [40..51] Vendor string "Open source" + 1 pad byte.
+    static const char* vendor = "Open source";
+    for (size_t i = 0; i < 11; i++) body[40 + i] = (uint8_t)vendor[i];
+    body[51] = 0;
 
-    // 3) PixmapFormat (8 bytes)
-    body[off++] = 24; body[off++] = 32;  // depth, bits_per_pixel
-    bo.write16(body.data() + off, 0, 32); off += 2;  // scanline_pad
-    memset(body.data() + off, 0, 4); off += 4;
+    // [52..59] PixmapFormat:  depth=32, bpp=32, scanline_pad=32.
+    // (Was bpp=24/pad=8 to match the Java X server. But depth=32 windows
+    //  carry genuine 32-bit BGRA pixels — e.g. CEF/Chromium editors like
+    //  BIAS FX 2. With bpp=24, wine computes the PutImage width as
+    //  row_bytes/3 and ships the raw 4-byte BGRA mislabeled as 3-byte, so
+    //  our reader unpacks it 3-wide → garbled/striped render. bpp=32 makes
+    //  wine send 4-byte BGRA at the true width; the PutImage handler
+    //  auto-detects 3 vs 4 bytes, so 3-byte-era plugins are unaffected.
+    //  The "endless pixmap probing" warning was about depth=24, not this.)
+    body[52] = 32;
+    body[53] = 32;
+    body[54] = 32;
+    // [55..59] pad.
 
-    // 4) WindowRoot (40 bytes)
-    bo.write32(body.data() + off, 0, kRootWindowId);
-    bo.write32(body.data() + off, 4, kDefaultColormapId);
-    bo.write32(body.data() + off, 8, kWhitePixel);
-    bo.write32(body.data() + off, 12, kBlackPixel);
-    bo.write32(body.data() + off, 16, 0);  // current-input-masks
-    bo.write16(body.data() + off, 20, (uint16_t)displayWidth);
-    bo.write16(body.data() + off, 22, (uint16_t)displayHeight);
-    bo.write16(body.data() + off, 24, (uint16_t)(displayWidth * 254 / 100));   // width-mm
-    bo.write16(body.data() + off, 26, (uint16_t)(displayHeight * 254 / 100));  // height-mm
-    bo.write16(body.data() + off, 28, 0);  // min-installed-maps
-    bo.write16(body.data() + off, 30, 0);  // max-installed-maps
-    bo.write32(body.data() + off, 32, kDefaultVisualId);  // root_visual
-    body[off + 36] = 0;   // backing-stores
-    body[off + 37] = 0;   // save-unders
-    body[off + 38] = 24;  // root-depth
-    body[off + 39] = 1;   // allowed-depths-count
-    off += 40;
+    // [60..91] Screen header (32 bytes).
+    put32(60, kRootWindowId);                          // root window
+    put32(64, kDefaultColormapId);                     // default colormap
+    put32(68, kWhitePixel);                            // white pixel
+    put32(72, kBlackPixel);                            // black pixel
+    put32(76, 0);                                      // current input masks
+    put16(80, (uint16_t)displayWidth);                 // width
+    put16(82, (uint16_t)displayHeight);                // height
+    // Java X server (au.com.darkside.xserver) hardcodes 65mm x 27mm
+    // and that's what wine sees when it works against Java. Our prior
+    // `px * 254 / 100` gave 3373mm x 1422mm which is 100x too big and
+    // makes wine think DPI ≈ 10. Match Java byte-for-byte.
+    put16(84, 65);                                     // mm-width
+    put16(86, 27);                                     // mm-height
+    put16(88, 1);                                      // min installed maps
+    put16(90, 1);                                      // max installed maps
+    put32(92, kDefaultVisualId);                       // root visual ID
 
-    // 5) Depth (8 bytes) + VisualType (24 bytes)
-    body[off++] = 24; body[off++] = 0;  // depth, pad
-    bo.write16(body.data() + off, 0, 1); off += 2;  // visuals-count
-    memset(body.data() + off, 0, 4); off += 4;      // pad
+    // [96..99]
+    body[96] = 2;            // backing-stores = Always
+    body[97] = 0;            // save-unders = false
+    body[98] = 32;           // root depth (must match format above)
+    body[99] = 1;             // num allowed depths
 
-    bo.write32(body.data() + off, 0, kDefaultVisualId);  // visual ID
-    body[off + 4] = 4;     // class = TrueColor
-    body[off + 5] = 8;     // bits_per_rgb_value (per channel, not total)
-    bo.write16(body.data() + off, 6, 256);  // colormap_entries
-    bo.write32(body.data() + off, 8, 0xff0000);   // red_mask
-    bo.write32(body.data() + off, 12, 0x00ff00);  // green_mask
-    bo.write32(body.data() + off, 16, 0x0000ff);  // blue_mask
-    memset(body.data() + off + 20, 0, 4);         // pad
-    off += 24;
+    // [100..107] Allowed-depth entry.
+    body[100] = 32;          // depth
+    body[101] = 0;            // pad
+    put16(102, 1);            // num visuals at this depth
+    // [104..107] pad
+
+    // [108..131] Visual (24 bytes).
+    put32(108, kDefaultVisualId);     // visual ID
+    body[112] = 4;                    // class = TrueColor
+    body[113] = 8;                    // bits per RGB value
+    put16(114, 256);                  // colormap entries
+    put32(116, 0x00FF0000);           // red mask
+    put32(120, 0x0000FF00);           // green mask
+    put32(124, 0x000000FF);           // blue mask
+    // [128..131] pad
 
     return body;
 }

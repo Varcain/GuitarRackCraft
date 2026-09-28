@@ -18,8 +18,7 @@ protected:
         req[0] = 0x6c;
         bo.write16(req, 2, 11);
         ASSERT_EQ(send(fd, req, 12, MSG_NOSIGNAL), 12);
-        uint8_t reply[120];
-        ASSERT_TRUE(recvExact(fd, reply, 120));
+        ASSERT_FALSE(recvSetupReply(fd, bo).empty());
     }
 
     void TearDown() override {
@@ -235,8 +234,7 @@ TEST_F(ImageOpsWireTest, PutImageGetImage_MSB) {
     req[0] = 0x42;  // MSB
     msbBo.write16(req, 2, 11);
     ASSERT_EQ(send(msbFd, req, 12, MSG_NOSIGNAL), 12);
-    uint8_t connReply[120];
-    ASSERT_TRUE(recvExact(msbFd, connReply, 120));
+    ASSERT_FALSE(recvSetupReply(msbFd, msbBo).empty());
 
     // PutImage a 2x2 pattern
     uint32_t pixels[4] = {0x00110022, 0x00330044, 0x00550066, 0x00770088};
