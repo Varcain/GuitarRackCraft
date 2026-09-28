@@ -94,6 +94,14 @@ static void swapRB_neon(const uint32_t* __restrict src, uint32_t* __restrict dst
 #endif
 }
 
+/* X11_TRACE_REPLIES=1: hex-dump every reply (and the setup reply) to logcat
+ * under tag "xrep", for byte-for-byte comparison with another X server.
+ * Off by default: a logcat write per reply is a multi-ms hitch on every
+ * round-trip, and it puts property contents in the log. */
+#ifndef X11_TRACE_REPLIES
+#define X11_TRACE_REPLIES 0
+#endif
+
 namespace guitarrackcraft {
 
 static constexpr int kX11BasePort = 6000;
@@ -1131,6 +1139,7 @@ struct X11NativeDisplay::Impl {
 
     /** Send a reply and update lastReplySeq_ for correct event sequence tracking. */
     bool sendReply(const void* data, size_t len, uint16_t replySeq) {
+#if X11_TRACE_REPLIES
         // Mirror what the Java X server logs at "I xrep ..." so we can
         // diff byte-for-byte: tag is "#<seq>" then a hex dump.
         {
@@ -1145,6 +1154,7 @@ struct X11NativeDisplay::Impl {
             __android_log_print(ANDROID_LOG_INFO, "xrep",
                 "#%u [%zu] %s", (unsigned)replySeq, len, hex);
         }
+#endif
         bool ok = sendAllLocked(clientFd, data, len);
         if (ok) {
             lastReplySeq_ = replySeq;
@@ -1299,6 +1309,7 @@ struct X11NativeDisplay::Impl {
             byteOrder_, reportW, reportH, myBase);
         LOGI("X11 conn: assigned resource_id_base=0x%08x to fd=%d (screen=%dx%d frozen=%d)",
              (unsigned)myBase, clientFd, reportW, reportH, fbSizeFrozen ? 1 : 0);
+#if X11_TRACE_REPLIES
         // xrep-tagged hex dump so we can diff against the Java server's
         // setup reply byte-for-byte.
         {
@@ -1311,6 +1322,7 @@ struct X11NativeDisplay::Impl {
             __android_log_print(ANDROID_LOG_INFO, "xrep",
                 "#0 setup [%zu] %s", reply.size(), hex);
         }
+#endif
         if (!sendAllLocked(clientFd, reply.data(), reply.size())) {
             LOGE("X11 connection reply: send failed");
         }
