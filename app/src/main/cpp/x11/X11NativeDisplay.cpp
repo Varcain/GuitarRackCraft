@@ -640,9 +640,9 @@ struct X11NativeDisplay::Impl {
      * the last-clicked widget). Not load-bearing. */
     std::atomic<uint32_t> focusedWindowId{0};
     /* DEBUG focus-emulation A/B switch (BIAS FX 2 CEF caret bisection). Bitmask
-     * read from <appCache>/x11_focus_mode.txt, re-read at startServer + on every
-     * touch-down, so focus-emulation variants can be toggled on-device WITHOUT
-     * rebuilding the APK (write the file via `toybox tee`, then tap). 0 = current
+     * read from <appCache>/x11_focus_mode.txt when the display's server starts,
+     * so focus-emulation variants can be tried on-device WITHOUT rebuilding the
+     * APK (write the file via `toybox tee`, then open the editor). 0 = current
      * behavior. Bits:
      *   0x1  skip synthetic WM_TAKE_FOCUS in click-to-focus
      *   0x2  skip synthetic FocusOut/FocusIn in click-to-focus
@@ -1582,13 +1582,6 @@ struct X11NativeDisplay::Impl {
             lastPointerX.store(t.x, std::memory_order_relaxed);
             lastPointerY.store(t.y, std::memory_order_relaxed);
             if (t.action == 0) {
-                // DEBUG: re-read the focus-emulation A/B mask on every touch-down
-                // so variants can be toggled live (no relaunch). See focusModeMask_.
-                {
-                    uint32_t fm = readFocusMode();
-                    uint32_t prevFm = focusModeMask_.exchange(fm, std::memory_order_relaxed);
-                    if (fm != prevFm) LOGI("X11 focusMode -> 0x%x (was 0x%x)", fm, prevFm);
-                }
                 // Flush any pending drag before ButtonPress
                 if (hasPendingDrag) {
                     sendEventToChild(MotionNotify, pendingDragX, pendingDragY, 0, seq);
@@ -6031,8 +6024,7 @@ bool X11NativeDisplay::startServer(int placeholderW, int placeholderH, bool wine
     }
     impl_->wineHost_ = wineHost;  // set before any connection thread exists
     /* DEBUG: load the focus-emulation A/B mask once at startup (so variants that
-     * affect load-time focus apply when the flag is written before launch). It
-     * is also re-read on every touch-down for live toggling. */
+     * affect load-time focus apply when the flag is written before launch). */
     {
         uint32_t fm = impl_->readFocusMode();
         impl_->focusModeMask_.store(fm, std::memory_order_relaxed);
