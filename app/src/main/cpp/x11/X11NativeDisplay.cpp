@@ -386,10 +386,7 @@ struct X11NativeDisplay::Impl {
     }
 
     std::atomic<bool> detachDeferred{false};  // Set when detach is deferred due to plugin creation
-    // Graceful teardown state
-    std::atomic<bool> closingGracefully{false};  // Set when graceful teardown initiated
-    std::atomic<bool> destroyNotifySent{false};  // Set when DestroyNotify has been sent
-    std::chrono::steady_clock::time_point closeStartTime;  // When graceful teardown started
+    std::atomic<bool> detaching_{false};  // Set by signalDetach(); later calls return early
     // Idle callback - called from pluginUI thread to process plugin UI events
     std::function<void()> idleCallback;
     std::mutex idleCallbackMutex;
@@ -2613,46 +2610,7 @@ struct X11NativeDisplay::Impl {
                  * This prevents xcb_xlib_threads_sequence_lost crashes.
                  */
 
-                /* Step 1: Check for graceful teardown */
-                if (closingGracefully.load()) {
-                    if (!destroyNotifySent.load() && !childWindows.empty()) {
-                        /* childWindows is shared with the other connections;
-                         * held only for this walk, not across the wait below. */
-                        std::lock_guard<std::mutex> teardownReqLock(requestMutex);
-                        LOGI("X11 graceful teardown: sending DestroyNotify for %zu windows", childWindows.size());
-                        for (uint32_t wid : childWindows) {
-                            uint8_t evt[32];
-                            memset(evt, 0, 32);
-                            evt[0] = DestroyNotify;
-                            evt[1] = 0;
-                            write16(evt, 2, lastReplySeq_);
-                            write32(evt, 4, wid);
-                            write32(evt, 8, wid);
-                            /* vstpoc 2026-05-24: per-fd mutex via sendAllLocked. */
-                            sendAllLocked(clientFd, evt, 32);
-                            seq++;
-                            lastSeq_.store(seq, std::memory_order_relaxed);
-                            lastReplySeq_ = seq;
-                            {
-                                std::lock_guard<std::mutex> lk(fdSeqMutex);
-                                fdLastSeq[clientFd] = seq;
-                            }
-                        }
-                        destroyNotifySent.store(true);
-                        LOGI("X11 graceful teardown: DestroyNotify sent, waiting for client to disconnect");
-                    }
-
-                    auto elapsed = std::chrono::steady_clock::now() - closeStartTime;
-                    if (elapsed > std::chrono::seconds(2)) {
-                        LOGI("X11 graceful teardown: timeout reached (2s), forcing disconnect");
-                        break;
-                    }
-
-                    usleep(10000);
-                    continue;
-                }
-
-                /* Step 2: Drain touch events BEFORE polling/processing.
+                /* Step 1: Drain touch events BEFORE polling/processing.
                  * This ensures touch input is delivered promptly even when
                  * the plugin is sending a burst of requests. */
                 {
@@ -2660,7 +2618,7 @@ struct X11NativeDisplay::Impl {
                     drainTouchQueue();
                 }
 
-                /* Step 3: Poll socket for X11 requests with short timeout.
+                /* Step 2: Poll socket for X11 requests with short timeout.
                  * While output for this connection is queued (its socket buffer
                  * was full), also wait for POLLOUT and flush it: a client blocked
                  * waiting for the rest of a reply sends no further requests, so
@@ -6237,16 +6195,10 @@ bool X11NativeDisplay::attachSurface(JNIEnv* jniEnv, jobject jSurface, int width
 }
 
 bool X11NativeDisplay::signalDetach() {
-    /* Graceful teardown strategy:
-     * 1. Mark connection as "closing" instead of hard close
-     * 2. Stop sending new events  
-     * 3. Let client drain pending events
-     * 4. Send synthetic DestroyNotify
-     * 5. Close after timeout or client disconnect
-     * 
-     * Hard TCP/socket close while client is mid-request causes xcb_xlib_threads_sequence_lost.
-     * This mirrors how real X servers behave.
-     */
+    /* Stops the server: the accept loop, every client connection (their
+     * sockets are shut down, so each thread's recv fails and it cleans up),
+     * the AHB side channel and the render loop, then waits up to ~1s for
+     * the client threads to exit. The threads are joined in detachSurface(). */
     
     // Check if plugin creation is in progress for this display - if so, defer closing the connection
     if (isCreatingPluginUIForDisplay(displayNumber_)) {
@@ -6256,18 +6208,16 @@ bool X11NativeDisplay::signalDetach() {
         return true;  // deferred
     }
     
-    // Already closing gracefully? Just return
-    if (impl_->closingGracefully.load()) {
-        LOGI("X11Debug: X11 signalDetach already closing gracefully display=%d", displayNumber_);
+    // Already detaching? Just return
+    if (impl_->detaching_.load()) {
+        LOGI("X11Debug: X11 signalDetach already detaching display=%d", displayNumber_);
         return false;
     }
     
-    LOGI("X11Debug: X11 signalDetach ENTER display=%d tid=%ld clientFd=%d (initiating graceful teardown)",
+    LOGI("X11Debug: X11 signalDetach ENTER display=%d tid=%ld clientFd=%d",
          displayNumber_, getTid(), impl_->clientFd);
 
-    // Mark as closing gracefully - server thread will handle the rest
-    impl_->closingGracefully.store(true);
-    impl_->closeStartTime = std::chrono::steady_clock::now();
+    impl_->detaching_.store(true);
 
     // Wake up the serverLoop's blocking accept() so serverThread.join()
     // can complete. The loop checks `running` after accept returns and
