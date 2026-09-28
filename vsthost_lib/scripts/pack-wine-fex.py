@@ -44,6 +44,8 @@ import tarfile
 from pathlib import Path
 from typing import Iterator
 
+import wine_prune
+
 
 # --- paths on device (inside app's files dir) ----------------------------
 # These are the "chroot-style" paths the wine install will appear at on the
@@ -312,6 +314,8 @@ def main() -> int:
     ap.add_argument("--repo-root", required=True, type=Path)
     ap.add_argument("--strip", default=default_strip,
                     help="llvm-strip path (defaults to $ANDROID_NDK/.../llvm-strip)")
+    ap.add_argument("--no-prune", action="store_true",
+                    help="ship every wine PE file (ignore wine-prune.conf)")
     args = ap.parse_args()
 
     repo = args.repo_root.resolve()
@@ -352,10 +356,39 @@ def main() -> int:
         if stale.exists():
             stale.unlink()
 
+    outputs = list(iter_build_outputs(wine_build, fex_arm64ec, fex_wow64))
+
+    # Leave unneeded wine PE files out (wine-prune.conf); refuses to prune
+    # anything a kept module still depends on.
+    pruned: set[str] = set()
+    if not args.no_prune:
+        pe_files = [(src, dp) for src, dp in outputs
+                    if not dp.startswith("_X11_RAW_/") and src.exists() and is_pe(src)]
+        try:
+            result = wine_prune.plan(pe_files, repo / "wine-prune.conf", wine_prune.find_readobj(repo))
+        except wine_prune.PruneError as e:
+            print(f"error: {e}", file=sys.stderr)
+            return 1
+        pruned = result["pruned"]
+        report = repo / "build/wine-prune-report.json"
+        report.parent.mkdir(parents=True, exist_ok=True)
+        report.write_text(json.dumps(result["report"], indent=1))
+        print(f"pruned {len(pruned)} of {len(pe_files)} wine PE files (report → {report})")
+        for p in result["report"]["deny_patterns_matching_nothing"]:
+            print(f"  WARN: wine-prune.conf deny pattern matches nothing: {p}", file=sys.stderr)
+    # A unix-side lib whose PE module is pruned in every arch is dead weight too.
+    pruned_stems = {Path(dp).stem.lower() for dp in pruned}
+    kept_stems = {Path(dp).stem.lower() for src, dp in outputs
+                  if "-windows/" in dp and dp not in pruned}
+    orphan_stems = pruned_stems - kept_stems
+
     total_bytes = 0
-    for src, device_path in iter_build_outputs(wine_build, fex_arm64ec, fex_wow64):
+    for src, device_path in outputs:
         if not src.exists():
             print(f"  skip (missing): {src}", file=sys.stderr)
+            continue
+        if device_path in pruned or (
+                "/aarch64-unix/" in device_path and Path(device_path).stem.lower() in orphan_stems):
             continue
         if not file_needs_exec(src):
             # Just-in-case fallback; everything we list should be ELF or PE.
