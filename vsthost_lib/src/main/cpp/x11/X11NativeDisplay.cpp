@@ -878,12 +878,16 @@ struct X11NativeDisplay::Impl {
                     y += rows;
                 }
             }
-            /* Snapshot mapped popup overlays in X11 stacking order. Needs only
-             * windowMapMutex (it copies popup pixel buffers, not the framebuffer)
-             * — keep it OFF bufferMutex so it never adds to the request thread's
-             * wait. isRenderablePopup() filters wine's drop-shadow strips and
-             * unpainted internal helper windows; real menu/dialog bodies pass. */
+            /* Snapshot mapped popup overlays in X11 stacking order.
+             * popupOverlays (incl. each popup's pixel buffer) is written by the
+             * request threads under bufferMutex - ConfigureWindow reallocates
+             * p.pixels, DestroyWindow erases the entry - so copying it needs
+             * bufferMutex; windowMapMutex guards the stacking order. Lock order:
+             * bufferMutex, then windowMapMutex. isRenderablePopup() filters
+             * wine's drop-shadow strips and unpainted internal helper windows;
+             * real menu/dialog bodies pass. */
             {
+                std::lock_guard<std::mutex> fbLock(bufferMutex);
                 std::lock_guard<std::mutex> mapLock(windowMapMutex);
                 for (uint32_t wid : windowManager_.childWindows()) {
                     auto it = popupOverlays.find(wid);
@@ -2024,7 +2028,11 @@ struct X11NativeDisplay::Impl {
         // root coords made wine see clicks as outside → popup dismissed.
         int rootX = x, rootY = y;
         {
-            std::lock_guard<std::mutex> lk(windowMapMutex);
+            // popupOverlays is guarded by bufferMutex, the window tree by
+            // windowMapMutex (lock order: bufferMutex first). Callers hold
+            // neither.
+            std::lock_guard<std::mutex> fbLock(bufferMutex);
+            std::lock_guard<std::mutex> mapLock(windowMapMutex);
             auto pit = popupOverlays.find(windowId);
             if (pit != popupOverlays.end()) {
                 rootX = pit->second.reqX + x;
@@ -4333,6 +4341,7 @@ struct X11NativeDisplay::Impl {
                         int qpWineY = qpFbY;
                         {
                             std::lock_guard<std::mutex> fbLock(bufferMutex);
+                            std::lock_guard<std::mutex> mapLock(windowMapMutex);
                             const auto& cws = windowManager_.childWindows();
                             for (auto it = cws.rbegin(); it != cws.rend(); ++it) {
                                 auto pit = popupOverlays.find(*it);
