@@ -148,6 +148,10 @@ static constexpr bool kGpuCompositor = true;
 
 struct X11NativeDisplay::Impl {
     ANativeWindow* window = nullptr;
+    /* Set by setSurfaceSize() on non-wine displays: the render thread
+     * re-applies ANativeWindow_setBuffersGeometry(width, height) before its
+     * next frame, so the window's buffers keep matching the view. */
+    std::atomic<bool> geometryPending_{false};
     EGLDisplay eglDisplay = EGL_NO_DISPLAY;
     EGLSurface eglSurface = EGL_NO_SURFACE;
     EGLContext eglContext = EGL_NO_CONTEXT;
@@ -847,6 +851,23 @@ struct X11NativeDisplay::Impl {
                 usleep(5000);
                 continue;
             }
+            /* Resize the window's buffers to the view size setSurfaceSize()
+             * recorded. Done here, between this thread's own frames, never
+             * concurrently with its eglSwapBuffers. The buffer already
+             * dequeued may still have the old size, so draw one more frame
+             * after this one. */
+            bool geometryChanged = false;
+            if (geometryPending_.exchange(false) && window) {
+                int gw, gh;
+                {
+                    std::lock_guard<std::mutex> lock(bufferMutex);
+                    gw = width;
+                    gh = height;
+                }
+                ANativeWindow_setBuffersGeometry(window, gw, gh, 1 /* AHARDWAREBUFFER_FORMAT_R8G8B8A8_UNORM */);
+                geometryChanged = true;
+                LOGI("X11 display %d: window buffers resized to %dx%d", displayNumber_, gw, gh);
+            }
             if (!glInited) {
                 glInited = initGL();
                 if (!glInited) {
@@ -1095,6 +1116,7 @@ struct X11NativeDisplay::Impl {
             if (++swapCount <= 10 || swapCount % 60 == 0) {
                 LOGI("X11Debug: render thread display=%d swapped buffer #%d", displayNumber_, swapCount);
             }
+            if (geometryChanged) dirty = true;
         }
         /* Skip EGL teardown: eglDestroyContext/eglTerminate can destroy process-wide
          * driver state and cause "pthread_mutex_lock on destroyed mutex" in HWUI threads
@@ -6405,13 +6427,18 @@ void X11NativeDisplay::setSurfaceSize(int width, int height) {
             impl_->framebuffer.assign((size_t)fw * fh, bgX11);
             impl_->fbFullUpload = true;  // Phase A: framebuffer resized
         }
+        // Don't call ANativeWindow_setBuffersGeometry here: calling it while
+        // the render thread is mid-eglSwapBuffers crashes the Adreno GLES
+        // driver with SIGSEGV. But attachSurface() pinned the buffers to the
+        // attach-time size, and the renderer draws a width x height viewport
+        // from the bottom-left of the buffer: if the view resizes (an LV2
+        // view shrinks to the plugin's aspect once the UI reports its size),
+        // the image ends up squashed at the bottom of the view. So on non-wine
+        // displays the render thread re-pins the buffers before its next frame.
+        // Wine displays keep their current (tested) behaviour.
+        if (!impl_->wineHost_) impl_->geometryPending_.store(true);
         impl_->dirty = true;
         impl_->dirtyCv.notify_one();  // Wake render thread to re-render at new size
-        // Don't touch ANativeWindow_setBuffersGeometry here. Android's
-        // SurfaceFlinger has already resized the buffer queue by the time
-        // surfaceChanged fires; calling it again while the render thread is
-        // mid-eglSwapBuffers crashes the Adreno GLES driver with SIGSEGV.
-        // GL viewport in renderLoop already accommodates the new dimensions.
     }
 }
 
