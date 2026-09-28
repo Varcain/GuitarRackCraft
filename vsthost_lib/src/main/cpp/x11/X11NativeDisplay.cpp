@@ -411,6 +411,10 @@ struct X11NativeDisplay::Impl {
     // (effects-rack layout). Protected by `windowMapMutex` (same mutex that
     // protects windowManager_'s child window list).
     std::vector<uint32_t> pluginSlotWindows;
+    /* Display serves a wine process (set by startServer(..., wineHost=true)
+     * before any connection thread starts; constant afterwards). Gates the
+     * wine-specific slot replacement in CreateWindow. */
+    bool wineHost_ = false;
 
     /* Override-redirect popup overlays.
      *
@@ -3206,7 +3210,12 @@ struct X11NativeDisplay::Impl {
                         //     appended and the framebuffer grows N× tall,
                         //     causing only the top 1/N of the editor to be
                         //     visible after letterbox.
-                        const bool takeAsReplacement   = parentIsExistingSlot;
+                        /* Replacement is wine-only: for an LV2 UI the slot
+                         * is the plugin's own top-level window, and its child
+                         * widgets (xputty creates an X window per widget,
+                         * often >= 64 px) must not replace it - replacement
+                         * resizes and clears the framebuffer to the child. */
+                        const bool takeAsReplacement   = wineHost_ && parentIsExistingSlot;
                         const bool takeAsFirstSlot     = isRootChildSlot && pluginSlotWindows.empty();
                         if (takeAsReplacement || takeAsFirstSlot) {
                             std::lock_guard<std::mutex> fbLock(bufferMutex);
@@ -5899,11 +5908,15 @@ int X11NativeDisplay::getActualPort() const {
     return impl_->actualPort_;
 }
 
-bool X11NativeDisplay::startServer(int placeholderW, int placeholderH) {
+bool X11NativeDisplay::startServer(int placeholderW, int placeholderH, bool wineHost) {
     if (impl_->running) {
         LOGI("X11 display %d: startServer skipped (already running)", displayNumber_);
+        if (wineHost != impl_->wineHost_)
+            LOGE("X11 display %d: startServer(wineHost=%d) on a display already running with wineHost=%d",
+                 displayNumber_, wineHost ? 1 : 0, impl_->wineHost_ ? 1 : 0);
         return true;
     }
+    impl_->wineHost_ = wineHost;  // set before any connection thread exists
     /* DEBUG: load the focus-emulation A/B mask once at startup (so variants that
      * affect load-time focus apply when the flag is written before launch). It
      * is also re-read on every touch-down for live toggling. */
@@ -6716,9 +6729,9 @@ void withDisplaySetFramebufferFrozen(int displayNumber, bool frozen) {
     }
 }
 
-void withDisplayStartServer(int displayNumber, int placeholderW, int placeholderH) {
+void withDisplayStartServer(int displayNumber, int placeholderW, int placeholderH, bool wineHost) {
     X11NativeDisplay* disp = getOrCreateX11Display(displayNumber);
-    if (disp) disp->startServer(placeholderW, placeholderH);
+    if (disp) disp->startServer(placeholderW, placeholderH, wineHost);
 }
 
 bool withDisplayGetPluginSize(int displayNumber, int& w, int& h) {

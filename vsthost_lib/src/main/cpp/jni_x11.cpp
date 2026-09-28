@@ -95,7 +95,7 @@ JNIEXPORT void JNICALL
 Java_com_varcain_vsthost_NativeBridge_nativeStartX11Server(
     JNIEnv* /*env*/, jobject /*thiz*/,
     jint displayNumber, jint placeholderW, jint placeholderH) {
-    withDisplayStartServer(displayNumber, placeholderW, placeholderH);
+    withDisplayStartServer(displayNumber, placeholderW, placeholderH, /*wineHost=*/true);
 }
 
 JNIEXPORT void JNICALL

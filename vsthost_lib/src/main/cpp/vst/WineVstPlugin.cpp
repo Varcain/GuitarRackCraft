@@ -213,7 +213,7 @@ void WineVstPlugin::activate(float sampleRate, uint32_t bufferSize) {
     // wider than that (AmpCraft is 1290x612, etc.). 4096x2160 fits any
     // current VST editor; nativeSetX11PluginSize() later tells the server
     // the actual editor size so the SurfaceView letterboxes correctly.
-    guitarrackcraft::withDisplayStartServer(displayNumber_, 4096, 2160);
+    guitarrackcraft::withDisplayStartServer(displayNumber_, 4096, 2160, /*wineHost=*/true);
     // Read the ACTUAL port the X11 server bound on. If a previous wine
     // subprocess crashed and left an orphan listener on 6001, our server
     // skips up to 6101/6201/… and reports the higher port. We need to
