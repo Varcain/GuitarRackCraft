@@ -1393,40 +1393,56 @@ struct X11NativeDisplay::Impl {
         sendReply(buf, 32, seq);
     }
 
-    /** Send Expose events to root + all child windows to force a full redraw.
-     *  Called after resuming from hidden state so the plugin repaints everything. */
+    /** Send each window an Expose covering it, on the connection that
+     *  created it, so the client repaints everything after the display
+     *  resumes from the hidden state. Runs on the UI thread (startRenderThread),
+     *  where the per-connection clientFd / lastReplySeq_ are unset: it takes
+     *  requestMutex so the events go out between requests, like the touch
+     *  drain, and stamps each with its connection's last sequence number.
+     *  Skipped on wine displays - the pixels are all in the server-side
+     *  framebuffer, which a restarted render thread re-uploads in full, and a
+     *  wine client would repaint hundreds of windows for nothing. */
     void sendExposeToAllWindows() {
-        if (clientFd < 0) return;
-        uint16_t evtSeq = lastReplySeq_;
-
-        auto sendExpose = [&](uint32_t wid) {
-            int w = width, h = height;
-            auto sz = windowManager_.getSize(wid);
-            if (sz.first > 0 && sz.second > 0) {
-                w = sz.first;
-                h = sz.second;
+        if (wineHost_) return;
+        std::lock_guard<std::mutex> reqLock(requestMutex);
+        struct Target { uint32_t wid; int w, h; };
+        std::vector<Target> targets;
+        {
+            std::lock_guard<std::mutex> mapLock(windowMapMutex);
+            for (uint32_t wid : childWindows) {
+                auto sz = windowManager_.getSize(wid);
+                targets.push_back({wid, sz.first > 0 ? sz.first : width,
+                                   sz.second > 0 ? sz.second : height});
+            }
+        }
+        size_t sent = 0;
+        for (const Target& t : targets) {
+            int fd;
+            {
+                std::lock_guard<std::mutex> lk(windowCreatorMutex);
+                auto it = windowCreator.find(t.wid);
+                if (it == windowCreator.end()) continue;
+                fd = it->second;
+            }
+            uint16_t evtSeq = 0;
+            {
+                std::lock_guard<std::mutex> lk(fdSeqMutex);
+                auto it = fdLastSeq.find(fd);
+                if (it != fdLastSeq.end()) evtSeq = it->second;
             }
             uint8_t evt[32];
             memset(evt, 0, 32);
             evt[0] = Expose;
             write16(evt, 2, evtSeq);
-            write32(evt, 4, wid);
+            write32(evt, 4, t.wid);
             write16(evt, 8, 0);
             write16(evt, 10, 0);
-            write16(evt, 12, (uint16_t)w);
-            write16(evt, 14, (uint16_t)h);
+            write16(evt, 12, (uint16_t)t.w);
+            write16(evt, 14, (uint16_t)t.h);
             write16(evt, 16, 0);  // count=0 (no more Expose events follow)
-            sendAllLocked(clientFd, evt, 32);
-            LOGI("X11 resume: sent Expose for window 0x%x %dx%d", wid, w, h);
-        };
-
-        // Expose root window
-        sendExpose(kRootWindowId);
-        // Expose all child windows
-        for (uint32_t wid : childWindows) {
-            sendExpose(wid);
+            if (sendAllLocked(fd, evt, 32)) ++sent;
         }
-        LOGI("X11 resume: sent Expose to %zu windows (root + children)", 1 + childWindows.size());
+        LOGI("X11 resume: sent Expose to %zu of %zu windows", sent, targets.size());
     }
 
     /* Drain queued touch events and send them on the socket.
