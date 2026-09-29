@@ -104,7 +104,8 @@ static void swapRB_neon(const uint32_t* __restrict src, uint32_t* __restrict dst
 
 /* X11_TRACE_STATS=1: every 2 s, per client connection, log request
  * throughput (PutImage count / time / socket-receive time; the other
- * requests' count / average / slowest), and dump the first touches' mapping
+ * requests' count / average / slowest); every ~1-2 s, per display, the
+ * plugin-UI loop's idle and loop times; and dump the first touches' mapping
  * inputs. Off by default: the summaries log continuously while a plugin
  * draws. Logs of individual slow operations (> ~5 ms) stay on regardless. */
 #ifndef X11_TRACE_STATS
@@ -5952,11 +5953,11 @@ struct X11NativeDisplay::Impl {
                     callback();
                     auto idleUs = std::chrono::duration_cast<std::chrono::microseconds>(
                         std::chrono::steady_clock::now() - idleStart).count();
-                    if (idleUs > 1000 || loopCount % 60 == 0) {
+                    if (idleUs > 5000 || (X11_TRACE_STATS && loopCount % 60 == 0)) {
                         LOGI("X11Perf: idle took %lld us (loop #%d, tasks=%d)", (long long)idleUs, loopCount, taskCount);
                     }
                 } else {
-                    if (loopCount % 60 == 0) {
+                    if (X11_TRACE_STATS && loopCount % 60 == 0) {
                         LOGI("X11Perf: no idle callback (loop #%d)", loopCount);
                     }
                 }
@@ -5964,7 +5965,7 @@ struct X11NativeDisplay::Impl {
 
             auto loopUs = std::chrono::duration_cast<std::chrono::microseconds>(
                 std::chrono::steady_clock::now() - loopStart).count();
-            if (loopUs > 20000 || loopCount % 120 == 0) {
+            if (loopUs > 20000 || (X11_TRACE_STATS && loopCount % 120 == 0)) {
                 LOGI("X11Perf: loop #%d total %lld us (tasks=%d)", loopCount, (long long)loopUs, taskCount);
             }
 
