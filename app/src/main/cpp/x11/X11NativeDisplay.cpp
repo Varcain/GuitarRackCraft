@@ -679,8 +679,8 @@ struct X11NativeDisplay::Impl {
      *   0x80 send an EnterNotify to the hit window BEFORE the ButtonPress */
     std::atomic<uint32_t> focusModeMask_{0};
     uint32_t readFocusMode() {
-        static std::string fmPath;
-        if (fmPath.empty()) {
+        // Computed once, thread-safely (displays can start concurrently).
+        static const std::string fmPath = [] {
             std::string pkg;
             if (FILE* c = fopen("/proc/self/cmdline", "r")) {
                 char b[256] = {0}; (void)fread(b, 1, sizeof(b) - 1, c); fclose(c);
@@ -689,8 +689,8 @@ struct X11NativeDisplay::Impl {
                 if (colon != std::string::npos) pkg.resize(colon);
             }
             if (pkg.empty()) pkg = "com.varcain.guitarrackcraft";
-            fmPath = "/data/data/" + pkg + "/cache/x11_focus_mode.txt";
-        }
+            return "/data/data/" + pkg + "/cache/x11_focus_mode.txt";
+        }();
         uint32_t v = 0;
         if (FILE* f = fopen(fmPath.c_str(), "r")) { if (fscanf(f, "%u", &v) != 1) v = 0; fclose(f); }
         return v;
