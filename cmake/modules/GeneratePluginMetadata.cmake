@@ -359,6 +359,16 @@ foreach(_item IN LISTS AVAILABLE_PLUGINS)
     math(EXPR _idx "${_idx} + 1")
 endforeach()
 
-# Write output
-file(WRITE "${ASSETS_DIR}/../plugin_metadata.json" "${JSON_DATA}")
-message(STATUS "Generated plugin_metadata.json at ${ASSETS_DIR}/../plugin_metadata.json")
+# Write output - only when it changed: this runs on every build, and an
+# untouched file keeps Gradle's asset merge up to date.
+set(_metadata_json "${ASSETS_DIR}/../plugin_metadata.json")
+set(_previous_json "")
+if(EXISTS "${_metadata_json}")
+    file(READ "${_metadata_json}" _previous_json)
+endif()
+if(_previous_json STREQUAL JSON_DATA)
+    message(STATUS "plugin_metadata.json unchanged")
+else()
+    file(WRITE "${_metadata_json}" "${JSON_DATA}")
+    message(STATUS "Generated plugin_metadata.json at ${_metadata_json}")
+endif()

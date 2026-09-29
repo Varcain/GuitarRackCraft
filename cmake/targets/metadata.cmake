@@ -21,9 +21,6 @@
 # Must run last — scans all plugin assets for available binaries.
 # =============================================================================
 
-set(_stamps_dir "${CMAKE_BINARY_DIR}/stamps")
-file(MAKE_DIRECTORY "${_stamps_dir}")
-
 # ─── All plugin targets that metadata depends on ─────────────────────────────
 set(_all_plugin_deps
     gx_plugins_done
@@ -44,54 +41,40 @@ set(_all_plugin_deps
     doubletracker_done
 )
 
-# ─── Plugin metadata JSON (stamp-based) ─────────────────────────────────────
-set(_metadata_generator_script "${PROJECT_ROOT}/cmake/modules/GeneratePluginMetadata.cmake")
-set(_metadata_stamp "${_stamps_dir}/metadata_json.stamp")
+# The three steps below read every staged bundle - a set only known once the
+# plugin targets have run - so they run on every build (well under a second
+# together) instead of behind a stamp that nothing would invalidate. They
+# rewrite only what changed, so Gradle still sees an up-to-date asset tree.
 
-add_custom_command(
-    OUTPUT "${_metadata_stamp}"
+# ─── Plugin metadata JSON ───────────────────────────────────────────────────
+add_custom_target(metadata_json
     COMMAND ${CMAKE_COMMAND}
         -DPROJECT_ROOT=${PROJECT_ROOT}
         -DASSETS_DIR=${ASSETS_DIR}
-        -P "${_metadata_generator_script}"
-    COMMAND ${CMAKE_COMMAND} -E touch "${_metadata_stamp}"
+        -P "${PROJECT_ROOT}/cmake/modules/GeneratePluginMetadata.cmake"
     WORKING_DIRECTORY "${PROJECT_ROOT}"
-    DEPENDS ${_all_plugin_deps}
     COMMENT "Generating plugin_metadata.json"
 )
-add_custom_target(metadata_json DEPENDS "${_metadata_stamp}")
+add_dependencies(metadata_json ${_all_plugin_deps})
 
-# ─── Shared modgui resources (stamp-based) ───────────────────────────────────
-set(_modgui_resources_script "${PROJECT_ROOT}/cmake/modules/CopyModguiResources.cmake")
-set(_modgui_stamp "${_stamps_dir}/modgui_resources.stamp")
-
-add_custom_command(
-    OUTPUT "${_modgui_stamp}"
+# ─── Shared modgui resources ─────────────────────────────────────────────────
+add_custom_target(modgui_resources
     COMMAND ${CMAKE_COMMAND}
         -DPROJECT_ROOT=${PROJECT_ROOT}
         -DTHIRD_PARTY=${THIRD_PARTY}
         -DASSETS_RESOURCES=${ASSETS_DIR}/modgui_shared_resources/resources
-        -P "${_modgui_resources_script}"
-    COMMAND ${CMAKE_COMMAND} -E touch "${_modgui_stamp}"
+        -P "${PROJECT_ROOT}/cmake/modules/CopyModguiResources.cmake"
     WORKING_DIRECTORY "${PROJECT_ROOT}"
-    DEPENDS
-        gx_plugins_done
-        trunk_plugins_done
     COMMENT "Building shared modgui resources"
 )
-add_custom_target(modgui_resources DEPENDS "${_modgui_stamp}")
+add_dependencies(modgui_resources gx_plugins_done trunk_plugins_done)
 
-# ─── Strip redundant .so from assets (stamp-based) ──────────────────────────
-set(_strip_stamp "${_stamps_dir}/strip_asset_binaries.stamp")
-
-add_custom_command(
-    OUTPUT "${_strip_stamp}"
+# ─── Strip redundant .so from assets ─────────────────────────────────────────
+add_custom_target(strip_asset_binaries
     COMMAND find "${ASSETS_DIR}" -name "*.so" -type f -delete
-    COMMAND ${CMAKE_COMMAND} -E touch "${_strip_stamp}"
-    DEPENDS metadata_json
     COMMENT "Stripping redundant plugin .so from assets"
 )
-add_custom_target(strip_asset_binaries DEPENDS "${_strip_stamp}")
+add_dependencies(strip_asset_binaries metadata_json)
 
 # ─── Aggregate metadata target ───────────────────────────────────────────────
 add_custom_target(metadata_done
