@@ -2997,7 +2997,22 @@ struct X11NativeDisplay::Impl {
                     int x = (int)(int16_t)read16(buf, 16);
                     int y = (int)(int16_t)read16(buf, 18);
                     size_t pixelDataLen = (length >= 6) ? ((size_t)length * 4 - 24) : 0;
-                    if (w > 0 && h > 0 && w <= 4096 && h <= 4096 && pixelDataLen > 0) {
+                    /* Only ZPixmap images of our pixel depths are drawable
+                     * here: format is byte 1, depth byte 21. XYBitmap /
+                     * XYPixmap and depth-1 data (wine's monochrome cursor and
+                     * mask pixmaps) would be decoded as 32-bit pixels and
+                     * drawn as garbage - there are no 1-bit drawables to put
+                     * them in. Their data is read and dropped below. */
+                    const bool zPixmap = (buf[1] == 2 /*ZPixmap*/ && buf[21] != 1);
+                    if (!zPixmap) {
+                        thread_local bool warnedFormat = false;
+                        if (!warnedFormat) {
+                            warnedFormat = true;
+                            LOGI("X11 PutImage: dropping format=%u depth=%u images (drawable=0x%x %dx%d)",
+                                 (unsigned)buf[1], (unsigned)buf[21], drawable, w, h);
+                        }
+                    }
+                    if (zPixmap && w > 0 && h > 0 && w <= 4096 && h <= 4096 && pixelDataLen > 0) {
                         // Reuse thread-local buffer to avoid allocation per PutImage
                         static thread_local std::vector<uint8_t> pixels;
                         if (pixels.size() < pixelDataLen) pixels.resize(pixelDataLen);
@@ -3402,7 +3417,8 @@ struct X11NativeDisplay::Impl {
                             }
                         }
                     } else if (pixelDataLen > 0) {
-                        /* Image too large or invalid dimensions — discard pixel data */
+                        /* Not drawable (see zPixmap), too large or invalid
+                         * dimensions — discard pixel data */
                         std::vector<uint8_t> discard(pixelDataLen);
                         recvAll(clientFd, discard.data(), pixelDataLen);
                     }
