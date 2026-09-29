@@ -93,8 +93,6 @@ include(WatchSources)
 include(LV2PluginUtils)
 include(SharedLibs)
 include(BrummerPlugin)
-include(InitSubmodules)
-setup_submodules()
 include(ExternalBuild)
 
 # ─── Generate build-time configurations ──────────────────────────────────────
