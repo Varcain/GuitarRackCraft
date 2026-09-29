@@ -106,8 +106,8 @@ static void swapRB_neon(const uint32_t* __restrict src, uint32_t* __restrict dst
 /* X11_TRACE_STATS=1: every 2 s, per client connection, log request
  * throughput (PutImage count / time / socket-receive time; the other
  * requests' count / average / slowest); every ~1-2 s, per display, the
- * plugin-UI loop's idle and loop times; and dump the first touches' mapping
- * inputs. Off by default: the summaries log continuously while a plugin
+ * plugin-UI loop's idle and loop times; every 60th rendered frame; and dump
+ * the first touches' mapping inputs. Off by default: the summaries log continuously while a plugin
  * draws. Logs of individual slow operations (> ~5 ms) stay on regardless. */
 #ifndef X11_TRACE_STATS
 #define X11_TRACE_STATS 0
@@ -874,7 +874,7 @@ struct X11NativeDisplay::Impl {
             }
 
             frameCount++;
-            if (frameCount <= 5 || frameCount % 60 == 0) {
+            if (frameCount <= 5 || (X11_TRACE_STATS && frameCount % 60 == 0)) {
                 LOGI("X11Debug: render thread display=%d frame #%d dirty=%d eglSurface=%p",
                      displayNumber_, frameCount, dirty.load() ? 1 : 0, (void*)eglSurface);
             }
@@ -1154,7 +1154,7 @@ struct X11NativeDisplay::Impl {
                 break;
             }
             thread_local int swapCount = 0;
-            if (++swapCount <= 10 || swapCount % 60 == 0) {
+            if (++swapCount <= 10 || (X11_TRACE_STATS && swapCount % 60 == 0)) {
                 LOGI("X11Debug: render thread display=%d swapped buffer #%d", displayNumber_, swapCount);
             }
             if (geometryChanged) dirty = true;
