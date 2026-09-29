@@ -5955,24 +5955,36 @@ struct X11NativeDisplay::Impl {
                              ~97 keycodes × 12 bytes = ~1164 bytes of zeros
                              follow (zero-initialized via trailing brace). */
                         };
+                        /* Answer the requested range: first-keycode (byte 4),
+                         * count (byte 5), inside the setup reply's 8..164.
+                         * libX11's startup request is 8/157 - the whole table,
+                         * 471 words, Java's reply. */
                         const uint8_t kpk = 3;
-                        const uint32_t replyLengthWords = 471;  /* Java's value */
+                        const int kMinKc = 8, kMaxKc = 164;
+                        const int firstKc = (length >= 2) ? buf[4] : 0;
+                        const int count = (length >= 2) ? buf[5] : 0;
+                        if (firstKc < kMinKc || firstKc + count - 1 > kMaxKc) {
+                            sendError(2 /*BadValue*/, seq, (uint32_t)firstKc);
+                            break;
+                        }
+                        const uint32_t replyLengthWords = (uint32_t)count * kpk;
                         const size_t dataBytes = (size_t)replyLengthWords * 4;
                         std::vector<uint8_t> reply(32 + dataBytes, 0);
                         reply[0] = 1;
                         reply[1] = kpk;
                         write16(reply.data(), 2, seq);
-                        write32(reply.data(), 4, replyLengthWords);  /* 471 words = Java */
-                        /* Copy known keysyms (covers ~22 keycodes); the rest
-                         * stay NoSymbol (zero-initialized vector). */
-                        const size_t copyBytes = sizeof(kJavaKeymapPayload) < dataBytes
-                            ? sizeof(kJavaKeymapPayload) : dataBytes;
-                        memcpy(reply.data() + 32, kJavaKeymapPayload, copyBytes);
+                        write32(reply.data(), 4, replyLengthWords);
+                        /* The table covers 8..164 (157 keycodes x 12 bytes);
+                         * keycodes past the populated ones are NoSymbol. */
+                        static_assert(sizeof(kJavaKeymapPayload) == (164 - 8 + 1) * 3 * 4,
+                                      "keymap table must cover keycodes 8..164");
+                        const size_t copyBytes = dataBytes;
+                        if (copyBytes)
+                            memcpy(reply.data() + 32,
+                                   kJavaKeymapPayload + (size_t)(firstKc - kMinKc) * kpk * 4, copyBytes);
                         /* Dump first 6 keycodes (72 bytes) of the keysym data
                          * so we can verify wine reads what we send. */
                         {
-                            uint8_t firstKc = (length >= 2) ? buf[4] : 0;
-                            uint8_t count = (length >= 2) ? buf[5] : 0;
                             char hex[3 * 80 + 1];
                             size_t off = 0;
                             for (size_t i = 0; i < 80 && i < copyBytes; ++i)
