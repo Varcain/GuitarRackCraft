@@ -498,6 +498,14 @@ struct X11NativeDisplay::Impl {
      * cap a bogus 65535x65535 override-redirect window made vector::assign
      * throw bad_alloc on a connection thread, terminating the app. An
      * oversized popup gets no buffer, so it is never composited or hit. */
+    static constexpr int kMaxPopupDim = 4096;
+    static bool popupDimsOk(int w, int h) {
+        return w > 0 && h > 0 && w <= kMaxPopupDim && h <= kMaxPopupDim;
+    }
+    static bool isRenderablePopup(const PopupOverlay& p) {
+        return p.mapped && p.hasContent &&
+               p.w >= kMinPopupDim && p.h >= kMinPopupDim;
+    }
     /* The framebuffer as the W x H window drawable the drawing requests index
      * it as - pluginWidth x pluginHeight, or the surface's width x height
      * before the plugin size is known - or nullptr when it doesn't actually
@@ -510,14 +518,6 @@ struct X11NativeDisplay::Impl {
         h = pluginHeight > 0 ? pluginHeight : height;
         if (w <= 0 || h <= 0 || (size_t)w * h > framebuffer.size()) return nullptr;
         return framebuffer.data();
-    }
-    static constexpr int kMaxPopupDim = 4096;
-    static bool popupDimsOk(int w, int h) {
-        return w > 0 && h > 0 && w <= kMaxPopupDim && h <= kMaxPopupDim;
-    }
-    static bool isRenderablePopup(const PopupOverlay& p) {
-        return p.mapped && p.hasContent &&
-               p.w >= kMinPopupDim && p.h >= kMinPopupDim;
     }
     // Mirror used by renderLoop while it holds bufferMutex (we snapshot
     // mapped popups into this list under the lock, then composite outside).
