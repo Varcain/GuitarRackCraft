@@ -67,21 +67,10 @@ fi
 # Initialize submodules (no-op if already inited)
 git -C "$PROJECT_ROOT" submodule update --init --recursive
 
-# Apply patches (skip if already applied via dry-run check)
-PATCHES_DIR="$PROJECT_ROOT/3rd_party/patches"
-if [ -d "$PATCHES_DIR" ]; then
-    for p in $(find "$PATCHES_DIR" -name "*.patch" | sort); do
-        rel="${p#$PATCHES_DIR/}"
-        submod_rel="${rel%/*}"
-        submod_dir="$PROJECT_ROOT/3rd_party/$submod_rel"
-        if [ -d "$submod_dir" ]; then
-            if ! patch -p1 --forward --dry-run -d "$submod_dir" < "$p" >/dev/null 2>&1; then
-                continue
-            fi
-            patch -p1 --forward --no-backup-if-mismatch -d "$submod_dir" < "$p" >/dev/null 2>&1 || true
-        fi
-    done
-fi
+# Apply 3rd_party/patches: patches already in a tree are skipped, and one
+# that neither applies nor is applied stops the build (scripts/apply-patches.sh).
+echo "=== Applying 3rd_party patches ==="
+"$PROJECT_ROOT/scripts/apply-patches.sh"
 
 # ─── Generate FFTW3 codelets (requires OCaml + ocamlbuild) ───────────────────
 # The FFTW git repo doesn't ship pre-generated codelet .c files — they require
