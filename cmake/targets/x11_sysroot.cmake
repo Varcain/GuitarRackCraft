@@ -93,9 +93,9 @@ add_custom_command(
     COMMAND ${CMAKE_COMMAND} -E copy_if_different "${X11_SYSROOT}/lib/libXau.so" "${JNILIBS_DIR}/libXau.so.6"
     COMMAND ${CMAKE_COMMAND} -E copy_if_different "${X11_SYSROOT}/lib/libxcb.so" "${JNILIBS_DIR}/libxcb.so.1"
     COMMAND ${CMAKE_COMMAND} -E copy_if_different "${X11_SYSROOT}/lib/libX11.so" "${JNILIBS_DIR}/libX11.so.6"
-    COMMAND ${NDK_STRIP} --strip-unneeded "${JNILIBS_DIR}/libXau.so.6" || true
-    COMMAND ${NDK_STRIP} --strip-unneeded "${JNILIBS_DIR}/libxcb.so.1" || true
-    COMMAND ${NDK_STRIP} --strip-unneeded "${JNILIBS_DIR}/libX11.so.6" || true
+    COMMAND ${NDK_STRIP} --strip-unneeded "${JNILIBS_DIR}/libXau.so.6"
+    COMMAND ${NDK_STRIP} --strip-unneeded "${JNILIBS_DIR}/libxcb.so.1"
+    COMMAND ${NDK_STRIP} --strip-unneeded "${JNILIBS_DIR}/libX11.so.6"
     # X11 extensions wine's winex11.drv dlopens (unversioned SONAMEs → staged as
     # lib*.so directly; is_core_lib in build.sh keeps them in the main jniLibs).
     COMMAND ${CMAKE_COMMAND} -E copy_if_different "${X11_SYSROOT}/lib/libXext.so"    "${JNILIBS_DIR}/libXext.so"
@@ -106,7 +106,7 @@ add_custom_command(
     COMMAND ${CMAKE_COMMAND} -E copy_if_different "${X11_SYSROOT}/lib/libXcursor.so" "${JNILIBS_DIR}/libXcursor.so"
     COMMAND ${CMAKE_COMMAND} -E copy_if_different "${X11_SYSROOT}/lib/libXxf86vm.so" "${JNILIBS_DIR}/libXxf86vm.so"
     COMMAND ${CMAKE_COMMAND} -E copy_if_different "${X11_SYSROOT}/lib/libXdmcp.so"   "${JNILIBS_DIR}/libXdmcp.so"
-    COMMAND bash -c "${NDK_STRIP} --strip-unneeded '${JNILIBS_DIR}'/libX{ext,render,i,fixes,randr,cursor,xf86vm,dmcp}.so || true"
+    COMMAND bash -c "${NDK_STRIP} --strip-unneeded '${JNILIBS_DIR}'/libX{ext,render,i,fixes,randr,cursor,xf86vm,dmcp}.so"
     COMMAND ${CMAKE_COMMAND} -E touch "${_x11_rt_stamp}"
     DEPENDS "${X11_SYSROOT}/lib/libXau.so" "${X11_SYSROOT}/lib/libxcb.so" "${X11_SYSROOT}/lib/libX11.so"
             "${X11_SYSROOT}/lib/libXext.so" "${X11_SYSROOT}/lib/libXrender.so" "${X11_SYSROOT}/lib/libXi.so"
@@ -251,13 +251,13 @@ add_custom_command(
     COMMAND ${CMAKE_COMMAND} -E make_directory "${JNILIBS_DIR}"
     COMMAND ${CMAKE_COMMAND} -E copy_if_different "${X11_SYSROOT}/lib/libGL.so" "${JNILIBS_DIR}/libGL.so.1"
     COMMAND ${CMAKE_COMMAND} -E copy_if_different "${X11_SYSROOT}/lib/libglapi.so" "${JNILIBS_DIR}/libglapi.so.0"
-    COMMAND ${NDK_STRIP} --strip-unneeded "${JNILIBS_DIR}/libGL.so.1" || true
-    COMMAND ${NDK_STRIP} --strip-unneeded "${JNILIBS_DIR}/libglapi.so.0" || true
+    COMMAND ${NDK_STRIP} --strip-unneeded "${JNILIBS_DIR}/libGL.so.1"
+    COMMAND ${NDK_STRIP} --strip-unneeded "${JNILIBS_DIR}/libglapi.so.0"
     COMMAND ${CMAKE_COMMAND} -E make_directory "${APP_ROOT}/assets/x11_libs/arm64-v8a"
     COMMAND ${CMAKE_COMMAND} -E copy_if_different "${X11_SYSROOT}/lib/libGL.so" "${APP_ROOT}/assets/x11_libs/arm64-v8a/libGL.so.1"
     COMMAND ${CMAKE_COMMAND} -E copy_if_different "${X11_SYSROOT}/lib/libglapi.so" "${APP_ROOT}/assets/x11_libs/arm64-v8a/libglapi.so.0"
-    COMMAND ${NDK_STRIP} --strip-unneeded "${APP_ROOT}/assets/x11_libs/arm64-v8a/libGL.so.1" || true
-    COMMAND ${NDK_STRIP} --strip-unneeded "${APP_ROOT}/assets/x11_libs/arm64-v8a/libglapi.so.0" || true
+    COMMAND ${NDK_STRIP} --strip-unneeded "${APP_ROOT}/assets/x11_libs/arm64-v8a/libGL.so.1"
+    COMMAND ${NDK_STRIP} --strip-unneeded "${APP_ROOT}/assets/x11_libs/arm64-v8a/libglapi.so.0"
     COMMAND ${CMAKE_COMMAND} -E touch "${_mesa_rt_stamp}"
 )
 add_custom_target(mesa_runtime_libs DEPENDS "${_mesa_rt_stamp}")

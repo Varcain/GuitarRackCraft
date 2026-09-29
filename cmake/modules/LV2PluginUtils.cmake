@@ -107,8 +107,8 @@ function(lv2_sync_dsp_ui)
         COMMAND ${CMAKE_COMMAND} -E make_directory "${JNILIBS_DIR}"
         COMMAND ${CMAKE_COMMAND} -E copy_if_different "${ARG_BUILD_DIR}/${ARG_OUTPUT_NAME}.so" "${JNILIBS_DIR}/lib${ARG_OUTPUT_NAME}.so"
         COMMAND ${CMAKE_COMMAND} -E copy_if_different "${ARG_BUILD_DIR}/${ARG_OUTPUT_NAME}_ui.so" "${JNILIBS_DIR}/lib${ARG_OUTPUT_NAME}_ui.so"
-        COMMAND ${NDK_STRIP} --strip-unneeded "${JNILIBS_DIR}/lib${ARG_OUTPUT_NAME}.so" || true
-        COMMAND ${NDK_STRIP} --strip-unneeded "${JNILIBS_DIR}/lib${ARG_OUTPUT_NAME}_ui.so" || true
+        COMMAND ${NDK_STRIP} --strip-unneeded "${JNILIBS_DIR}/lib${ARG_OUTPUT_NAME}.so"
+        COMMAND ${NDK_STRIP} --strip-unneeded "${JNILIBS_DIR}/lib${ARG_OUTPUT_NAME}_ui.so"
         COMMAND ${CMAKE_COMMAND} -E touch "${_stamp}"
         DEPENDS ${ARG_DSP_TARGET} ${ARG_UI_TARGET}
         COMMENT "Syncing ${ARG_OUTPUT_NAME} to jniLibs"
