@@ -184,7 +184,12 @@ JNIEXPORT jboolean JNICALL
 Java_com_varcain_vsthost_NativeBridge_nativeAhbChannelTest(
     JNIEnv* env, jobject /*thiz*/, jint displayNumber, jint holdMs, jstring logPath) {
     const char* lpath = logPath ? env->GetStringUTFChars(logPath, nullptr) : nullptr;
-    bool ok = guitarrackcraft::runAhbChannelTest(displayNumber, holdMs, lpath);
+    // The listener is named after the display number wine sees in DISPLAY
+    // (bound port - 6000), which differs from displayNumber if the server
+    // had to bind another port.
+    const int port = guitarrackcraft::withDisplayGetActualPort(displayNumber);
+    const int ahbDisplay = (port > 0) ? port - 6000 : displayNumber;
+    bool ok = guitarrackcraft::runAhbChannelTest(ahbDisplay, holdMs, lpath);
     if (lpath) env->ReleaseStringUTFChars(logPath, lpath);
     return ok ? JNI_TRUE : JNI_FALSE;
 }

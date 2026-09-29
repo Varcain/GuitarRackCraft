@@ -386,6 +386,10 @@ struct X11NativeDisplay::Impl {
     };
     std::thread ahbChannelThread;
     std::atomic<bool> ahbChannelRunning_{false};
+    /* N in the listener's name 'guitarrack-ahb-N': the display number wine
+     * has in DISPLAY, i.e. the bound X11 port - 6000 (not displayNumber_ if
+     * the server had to step up to another port). Set before the thread. */
+    int ahbDisplayNumber_ = -1;
     int ahbChannelFd_ = -1;       // listen fd
     int ahbChannelConnFd_ = -1;   // current connection fd (teardown shuts it down)
     std::mutex ahbChannelMutex_;
@@ -2328,10 +2332,10 @@ struct X11NativeDisplay::Impl {
         int lfd = socket(AF_UNIX, SOCK_STREAM, 0);
         if (lfd < 0) { LOGE("ahbChannel: socket failed: %s", strerror(errno)); return; }
         struct sockaddr_un addr;
-        socklen_t alen = ahbch_make_addr(&addr, displayNumber_);
+        socklen_t alen = ahbch_make_addr(&addr, ahbDisplayNumber_);
         if (bind(lfd, (struct sockaddr*)&addr, alen) < 0) {
             LOGE("ahbChannel: bind abstract 'guitarrack-ahb-%d' failed: %s",
-                 displayNumber_, strerror(errno));
+                 ahbDisplayNumber_, strerror(errno));
             close(lfd);
             return;
         }
@@ -2341,7 +2345,8 @@ struct X11NativeDisplay::Impl {
             return;
         }
         ahbChannelFd_ = lfd;
-        LOGI("ahbChannel: listening on abstract 'guitarrack-ahb-%d'", displayNumber_);
+        LOGI("ahbChannel: listening on abstract 'guitarrack-ahb-%d' (display %d)",
+             ahbDisplayNumber_, displayNumber_);
         while (running && ahbChannelRunning_) {
             int cfd = accept(lfd, nullptr, nullptr);
             if (cfd < 0 || !running || !ahbChannelRunning_) {
@@ -6103,16 +6108,24 @@ bool X11NativeDisplay::startServer(int placeholderW, int placeholderH, bool wine
     impl_->pluginUIRunning = true;
     impl_->serverThread   = std::thread(&Impl::serverLoop,   impl_.get());
     impl_->pluginUIThread = std::thread(&Impl::pluginUILoop, impl_.get());
+
+    for (int i = 0; i < 100 && !impl_->listening_; i++) usleep(10000);
+
     // Phase 2: AHB side-channel listener (abstract AF_UNIX socket). Additive —
     // does nothing until a producer connects. Only wine displays have a
     // producer (the wine subprocess), so other displays (LV2 UIs) don't
     // open the socket at all. Teardown copes with it never having started.
+    // Wine names the socket after the display number in its DISPLAY, which
+    // comes from the port the X11 server bound - so start it only now.
     if (wineHost) {
-        impl_->ahbChannelRunning_ = true;
-        impl_->ahbChannelThread = std::thread(&Impl::ahbChannelLoop, impl_.get());
+        if (impl_->listening_ && impl_->actualPort_ > 0) {
+            impl_->ahbDisplayNumber_ = impl_->actualPort_ - kX11BasePort;
+            impl_->ahbChannelRunning_ = true;
+            impl_->ahbChannelThread = std::thread(&Impl::ahbChannelLoop, impl_.get());
+        } else {
+            LOGE("X11 display %d: not listening, AHB side channel not started", displayNumber_);
+        }
     }
-
-    for (int i = 0; i < 100 && !impl_->listening_; i++) usleep(10000);
     LOGI("X11 display %d server started (placeholder fb %dx%d, listening=%d)",
          displayNumber_, impl_->width, impl_->height, (int)impl_->listening_);
     return true;
