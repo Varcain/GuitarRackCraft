@@ -393,6 +393,12 @@ struct X11NativeDisplay::Impl {
     int ahbDisplayNumber_ = -1;
     int ahbChannelFd_ = -1;       // listen fd
     int ahbChannelConnFd_ = -1;   // current connection fd (teardown shuts it down)
+    /* Guards the two fds: the channel thread publishes and closes them under
+     * it, teardown (stopAhbChannel) shuts them down under it - so teardown
+     * never touches a number that was just closed and maybe reused. */
+    std::mutex ahbFdMutex_;
+    /* At most this many registered windows (normal use: one editor). */
+    static constexpr size_t kMaxAhbChannelWindows = 16;
     std::mutex ahbChannelMutex_;
     std::unordered_map<uint32_t, AhbChannelWindow> ahbChannelWindows_;
 
@@ -2490,7 +2496,7 @@ struct X11NativeDisplay::Impl {
      * accepts one producer connection at a time (the wine subprocess, or the
      * synthetic test client — both single, long-lived). Pure socket I/O; all GL
      * import stays on the render thread via setEditorAhb. Stopped by clearing
-     * running/ahbChannelRunning_ + shutdown(ahbChannelFd_/ConnFd_) in teardown. */
+     * running and stopAhbChannel() in teardown. */
     void ahbChannelLoop() {
         int lfd = socket(AF_UNIX, SOCK_STREAM, 0);
         if (lfd < 0) { LOGE("ahbChannel: socket failed: %s", strerror(errno)); return; }
@@ -2507,7 +2513,13 @@ struct X11NativeDisplay::Impl {
             close(lfd);
             return;
         }
-        ahbChannelFd_ = lfd;
+        {
+            // Publish, then re-check: a teardown before this point found no
+            // fd to shut down, and accept() below would never wake up.
+            std::lock_guard<std::mutex> lk(ahbFdMutex_);
+            if (!running || !ahbChannelRunning_) { close(lfd); return; }
+            ahbChannelFd_ = lfd;
+        }
         LOGI("ahbChannel: listening on abstract 'guitarrack-ahb-%d' (display %d)",
              ahbDisplayNumber_, displayNumber_);
         while (running && ahbChannelRunning_) {
@@ -2516,17 +2528,49 @@ struct X11NativeDisplay::Impl {
                 if (cfd >= 0) close(cfd);
                 break;
             }
-            ahbChannelConnFd_ = cfd;
-            LOGI("ahbChannel: producer connected fd=%d", cfd);
+            /* The abstract name is reachable by anything that can connect to
+             * it; only this app's own processes may drive the editor image -
+             * the wine subprocess (spawned by the app, same uid) and the
+             * in-process test client. */
+            struct ucred cred = {};
+            socklen_t credLen = sizeof(cred);
+            if (getsockopt(cfd, SOL_SOCKET, SO_PEERCRED, &cred, &credLen) != 0 ||
+                cred.uid != getuid()) {
+                LOGE("ahbChannel: rejecting producer pid=%d uid=%d (app uid %d)",
+                     (int)cred.pid, (int)cred.uid, (int)getuid());
+                close(cfd);
+                continue;
+            }
+            {
+                std::lock_guard<std::mutex> lk(ahbFdMutex_);
+                if (!running || !ahbChannelRunning_) { close(cfd); break; }
+                ahbChannelConnFd_ = cfd;
+            }
+            LOGI("ahbChannel: producer connected fd=%d pid=%d", cfd, (int)cred.pid);
             handleAhbChannelConnection(cfd);
-            ahbChannelConnFd_ = -1;
-            close(cfd);
+            {
+                std::lock_guard<std::mutex> lk(ahbFdMutex_);
+                ahbChannelConnFd_ = -1;
+                close(cfd);
+            }
             LOGI("ahbChannel: producer disconnected");
         }
-        ahbChannelFd_ = -1;
-        close(lfd);
+        {
+            std::lock_guard<std::mutex> lk(ahbFdMutex_);
+            ahbChannelFd_ = -1;
+            close(lfd);
+        }
         std::lock_guard<std::mutex> lk(ahbChannelMutex_);
         releaseAllAhbChannelWindowsLocked();
+    }
+
+    /* Wakes the side channel's blocking accept()/recvmsg() so its thread can
+     * be joined (see ahbFdMutex_). */
+    void stopAhbChannel() {
+        ahbChannelRunning_.store(false);
+        std::lock_guard<std::mutex> lk(ahbFdMutex_);
+        if (ahbChannelFd_ >= 0)     ::shutdown(ahbChannelFd_, SHUT_RDWR);
+        if (ahbChannelConnFd_ >= 0) ::shutdown(ahbChannelConnFd_, SHUT_RDWR);
     }
 
     // Per-connection message loop. Reads AhbChMsg's until EOF/error. REGISTER
@@ -2564,14 +2608,26 @@ struct X11NativeDisplay::Impl {
                     break;
                 }
                 bool announce = true;  // a streaming producer REGISTERs per frame; log only on change
+                bool full = false;
                 {
                     std::lock_guard<std::mutex> lk(ahbChannelMutex_);
                     auto it = ahbChannelWindows_.find(msg.window_id);
-                    if (it != ahbChannelWindows_.end()) {
-                        announce = (it->second.w != win.w || it->second.h != win.h);
-                        for (AHardwareBuffer* b : it->second.buffers) if (b) AHardwareBuffer_release(b);
+                    if (it == ahbChannelWindows_.end() &&
+                        ahbChannelWindows_.size() >= kMaxAhbChannelWindows) {
+                        full = true;
+                    } else {
+                        if (it != ahbChannelWindows_.end()) {
+                            announce = (it->second.w != win.w || it->second.h != win.h);
+                            for (AHardwareBuffer* b : it->second.buffers) if (b) AHardwareBuffer_release(b);
+                        }
+                        ahbChannelWindows_[msg.window_id] = std::move(win);
                     }
-                    ahbChannelWindows_[msg.window_id] = std::move(win);
+                }
+                if (full) {
+                    for (AHardwareBuffer* b : win.buffers) if (b) AHardwareBuffer_release(b);
+                    LOGE("ahbChannel: REGISTER wid=0x%x rejected: %zu windows already registered",
+                         msg.window_id, kMaxAhbChannelWindows);
+                    break;
                 }
                 if (announce)
                     LOGI("ahbChannel: REGISTER wid=0x%x %dx%d count=%u",
@@ -6424,9 +6480,7 @@ bool X11NativeDisplay::signalDetach() {
     }
     // Phase 2: wake the AHB side-channel's blocking accept()/recvmsg() so
     // ahbChannelThread.join() can complete (joined in detachSurface).
-    impl_->ahbChannelRunning_.store(false);
-    if (impl_->ahbChannelFd_ >= 0)     ::shutdown(impl_->ahbChannelFd_, SHUT_RDWR);
-    if (impl_->ahbChannelConnFd_ >= 0) ::shutdown(impl_->ahbChannelConnFd_, SHUT_RDWR);
+    impl_->stopAhbChannel();
     // Wake every per-client thread's blocking recv() by shutting down
     // its socket. Per-client threads are .detach()'ed inside serverLoop
     // and we can't join them — but they each pop themselves from
@@ -6553,9 +6607,7 @@ void X11NativeDisplay::detachSurface() {
         impl_->serverThread.join();
         LOGI("X11Debug: detachSurface display=%d serverThread joined", displayNumber_);
     }
-    impl_->ahbChannelRunning_.store(false);
-    if (impl_->ahbChannelFd_ >= 0)     ::shutdown(impl_->ahbChannelFd_, SHUT_RDWR);
-    if (impl_->ahbChannelConnFd_ >= 0) ::shutdown(impl_->ahbChannelConnFd_, SHUT_RDWR);
+    impl_->stopAhbChannel();
     if (impl_->ahbChannelThread.joinable()) {
         LOGI("X11Debug: detachSurface display=%d joining ahbChannelThread...", displayNumber_);
         impl_->ahbChannelThread.join();
