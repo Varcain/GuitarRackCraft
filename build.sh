@@ -60,6 +60,16 @@ if [ "$FLAVOR" = "clean" ]; then
     # and any local WIP under vsthost_lib/ are preserved.
     git -C "$PROJECT_ROOT" clean -fdX vsthost_lib
 
+    echo "Cleaning staged app outputs..."
+    # What the native build and the staging step below write into the source
+    # sets: jniLibs, the full overlay, the asset packs, generated assets and the
+    # app's LV2 prefix. -X again: only ignored files go, so the tracked plugin
+    # screenshots under assets/lv2 stay.
+    git -C "$PROJECT_ROOT" clean -fdX \
+        app/src/main/jniLibs app/src/full/jniLibs app/src/main/cpp/libs \
+        app/src/main/assets app/src/playstore/assets \
+        gxplugins_pack/src/main/assets neural_pack/src/main/assets brummer_pack/src/main/assets
+
     echo "Clean complete."
     exit 0
 fi
