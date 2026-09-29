@@ -32,8 +32,13 @@ if(EXISTS "${_patches_dir}/x11_egl.c")
     configure_file("${_patches_dir}/x11_egl.c" "${_pugl_extra}/x11_egl.c" COPYONLY)
 endif()
 
-if(EXISTS "${_patches_dir}/0001-dpf-egl-gles2-android-backend.patch")
-    execute_process(COMMAND patch -p1 --forward --no-backup-if-mismatch INPUT_FILE "${_patches_dir}/0001-dpf-egl-gles2-android-backend.patch" WORKING_DIRECTORY "${_aidax_full_src}" RESULT_VARIABLE _patch_result ERROR_QUIET OUTPUT_QUIET)
+# The DPF EGL/GLES2 backend patch (also applied by build.sh; skipped when present).
+execute_process(
+    COMMAND bash "${PROJECT_ROOT}/scripts/apply-patches.sh"
+            "${_patches_dir}/0001-dpf-egl-gles2-android-backend.patch" "${_aidax_full_src}"
+    RESULT_VARIABLE _patch_result)
+if(_patch_result)
+    message(FATAL_ERROR "AIDA-X: 0001-dpf-egl-gles2-android-backend.patch does not apply")
 endif()
 
 set(_fb_cpp "${_aidax_full_src}/modules/dpf/distrho/extra/FileBrowserDialogImpl.cpp")

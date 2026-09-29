@@ -119,27 +119,15 @@ add_meson_project(sratom
 )
 
 # ─── lilv (LV2 host library, Waf) ────────────────────────────────────────────
-set(_lilv_patch_script "${LV2_BUILD_DIR}/patch_lilv_waf.sh")
-file(WRITE "${_lilv_patch_script}"
-"#!/bin/bash
-set -e
-cd \"$1\"
-sed -i 's/match = version_re(err)/match = version_re(err.decode(\"utf-8\") if isinstance(err, bytes) else err)/' waflib/extras/c_nec.py 2>/dev/null || true
-for waf_tool in compiler_c compiler_cxx; do
-    [ \"$waf_tool\" = \"compiler_c\" ] && var=CC && opt=check_c_compiler && comp=clang
-    [ \"$waf_tool\" = \"compiler_cxx\" ] && var=CXX && opt=check_cxx_compiler && comp=clang++
-    f=\"waflib/Tools/\${waf_tool}.py\"
-    [ ! -f \"$f\" ] && continue
-    grep -q \"Honor $var from environment\" \"$f\" && continue
-    if ! grep -q '^import os$' \"$f\"; then sed -i '1a import os' \"$f\"; fi
-    awk -v var=\"$var\" -v opt=\"$opt\" -v comp=\"$comp\" '/^def configure\\(conf\\):/ { print; print \"\\t# Honor \" var \" from environment (e.g. Android NDK)\"; print \"\\tif os.environ.get(\\\"\" var \"\\\"):\"; print \"\\t\\tconf.env.\" var \" = conf.cmd_to_list(os.environ[\\\"\" var \"\\\"])\"; print \"\\t\\t_s = os.environ.get(\\\"\" var \"\\\", \\\"\\\")\"; print \"\\t\\tif \\\"clang\\\" in _s and not getattr(conf.options, \\\"\" opt \"\\\", None):\"; print \"\\t\\t\\tconf.options.\" opt \" = \\\"\" comp \"\\\"\"; next } { print }' \"$f\" > \"\${f}.tmp\" && mv \"\${f}.tmp\" \"$f\"
-done
-")
-
 ExternalProject_Add(lilv
     SOURCE_DIR      "${THIRD_PARTY}/lilv"
     INSTALL_DIR     "${LV2_PREFIX}"
-    PATCH_COMMAND   bash "${_lilv_patch_script}" <SOURCE_DIR>
+    # 3rd_party/patches/lilv (also applied by build.sh; skipped when present):
+    # waflib's compiler detection honouring CC/CXX, and the Android dlopen fallback.
+    PATCH_COMMAND   bash "${PROJECT_ROOT}/scripts/apply-patches.sh"
+                        "${THIRD_PARTY}/patches/lilv/0001-android-dlopen-ext-fd-fallback.patch" <SOURCE_DIR>
+            COMMAND bash "${PROJECT_ROOT}/scripts/apply-patches.sh"
+                        "${THIRD_PARTY}/patches/lilv/waflib/0001-android-ndk-compiler-detection.patch" <SOURCE_DIR>/waflib
     CONFIGURE_COMMAND ${NDK_ENV_CMD} "SERD_DIR=${LV2_PREFIX}" "SORD_DIR=${LV2_PREFIX}" "ZIX_DIR=${LV2_PREFIX}" "CFLAGS=-fPIC -DANDROID -Wno-error=implicit-function-declaration" "CXXFLAGS=-fPIC -DANDROID" "PKG_CONFIG_PATH=${_lv2_pkg}" python3 waf configure --prefix=<INSTALL_DIR> --static --no-utils
     BUILD_COMMAND ${NDK_ENV_CMD} "PKG_CONFIG_PATH=${_lv2_pkg}" python3 waf build
     INSTALL_COMMAND ${NDK_ENV_CMD} python3 waf install

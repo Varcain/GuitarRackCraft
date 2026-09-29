@@ -233,7 +233,10 @@ file(WRITE "${CMAKE_BINARY_DIR}/scripts/WriteZlibPC.cmake" "include(\"${PROJECT_
 # ─── 9. Mesa ────────────────────────────────────────────────────────────────
 ExternalProject_Add(mesa
     SOURCE_DIR "${THIRD_PARTY}/mesa" BINARY_DIR "${MESA_BUILD_DIR}" INSTALL_DIR "${X11_SYSROOT}"
-    PATCH_COMMAND bash -c "sed -i 's/#if defined(__ANDROID__)/#if defined(__ANDROID__) \\&\\& !defined(MESA_FORCE_LINUX)/' <SOURCE_DIR>/src/util/detect_os.h 2>/dev/null || true"
+    # build.sh applies this too, but the VST turnip scripts reset
+    # 3rd_party/mesa after it; apply-patches.sh skips it when present.
+    PATCH_COMMAND bash "${PROJECT_ROOT}/scripts/apply-patches.sh"
+        "${THIRD_PARTY}/patches/mesa/0001-allow-force-linux-detection-on-android.patch" <SOURCE_DIR>
     CONFIGURE_COMMAND ${CMAKE_COMMAND} -E env "PKG_CONFIG_PATH=${_x11_pkg}" "PKG_CONFIG_LIBDIR=${X11_SYSROOT}/lib/pkgconfig" "PKG_CONFIG_SYSROOT_DIR=" meson setup <BINARY_DIR> <SOURCE_DIR> --cross-file "${MESA_BUILD_DIR}/mesa_cross.txt" --prefix=<INSTALL_DIR> --default-library=shared -Dplatforms=x11 -Dgallium-drivers=softpipe -Dvulkan-drivers= -Dglx=xlib -Degl=disabled -Dgbm=disabled -Dllvm=disabled -Dshared-glapi=enabled -Dgles1=disabled -Dgles2=disabled -Dosmesa=false -Dvalgrind=disabled -Dlibunwind=disabled -Dlmsensors=disabled -Dbuild-tests=false -Dxmlconfig=disabled -Dxlib-lease=disabled
     BUILD_COMMAND ninja -C <BINARY_DIR> -j${NJOBS}
     INSTALL_COMMAND ninja -C <BINARY_DIR> install

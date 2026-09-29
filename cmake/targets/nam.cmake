@@ -66,22 +66,15 @@ if(IS_DIRECTORY "${_nam_src}/resources/modgui")
 endif()
 
 # ─── Phase 2: CMake cross-compile ────────────────────────────────────────────
-set(_nam_patch_script "${_nam_build}/patch_nam.sh")
-file(WRITE "${_nam_patch_script}"
-"#!/bin/bash
-cd \"$1\"
-if grep -q 'Unrecognized Platform' CMakeLists.txt 2>/dev/null; then
-    sed -i 's/message(FATAL_ERROR \"Unrecognized Platform!\")/# Android: no extra link flags needed/' CMakeLists.txt
-fi
-")
-
 set(_nam_so_output "${_nam_build}/neural_amp_modeler.lv2/neural_amp_modeler.so")
 
 ExternalProject_Add(nam_build
     SOURCE_DIR      "${_nam_src}"
     BINARY_DIR      "${_nam_build}"
     INSTALL_DIR     "${_nam_assets}"
-    PATCH_COMMAND   bash "${_nam_patch_script}" <SOURCE_DIR>
+    # Android platform compat (also applied by build.sh; skipped when present).
+    PATCH_COMMAND   bash "${PROJECT_ROOT}/scripts/apply-patches.sh"
+                        "${THIRD_PARTY}/patches/neural-amp-modeler-lv2/0001-android-platform-compat.patch" <SOURCE_DIR>
     CMAKE_ARGS
         -DCMAKE_POLICY_VERSION_MINIMUM=3.5
         -DCMAKE_TOOLCHAIN_FILE=${CMAKE_TOOLCHAIN_FILE}
