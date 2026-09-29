@@ -167,9 +167,14 @@ foreach(_bundle IN LISTS _trunk_bundles)
         continue()
     endif()
 
+    # Phase 1 has staged this bundle's TTL, so a bundle that can't be built
+    # would ship as a plugin without its .so: fail instead of skipping it.
+    # Plugins that are deliberately not built go in _skip_plugins.
+    set(_trunk_skip_hint "(add ${_base_name} to _skip_plugins to leave it out)")
+
     # Parse wscript
     if(NOT EXISTS "${_bundle}/wscript")
-        continue()
+        message(FATAL_ERROR "trunk plugin ${_dir_name}: no wscript ${_trunk_skip_hint}")
     endif()
 
     execute_process(
@@ -179,13 +184,13 @@ foreach(_bundle IN LISTS _trunk_bundles)
         RESULT_VARIABLE _parse_result)
 
     if(NOT _parse_result EQUAL 0 OR NOT _wscript_json)
-        continue()
+        message(FATAL_ERROR "trunk plugin ${_dir_name}: could not parse its wscript ${_trunk_skip_hint}")
     endif()
 
     # Parse JSON output
     string(JSON _lv2_base GET "${_wscript_json}" "base")
     if(NOT _lv2_base)
-        continue()
+        message(FATAL_ERROR "trunk plugin ${_dir_name}: wscript has no lv2 base name ${_trunk_skip_hint}")
     endif()
 
     # Get sources array
@@ -200,7 +205,7 @@ foreach(_bundle IN LISTS _trunk_bundles)
     endif()
 
     if(NOT _sources)
-        continue()
+        message(FATAL_ERROR "trunk plugin ${_dir_name}: wscript lists no sources ${_trunk_skip_hint}")
     endif()
 
     # Get uses array

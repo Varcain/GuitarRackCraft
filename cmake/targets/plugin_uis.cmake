@@ -143,6 +143,7 @@ foreach(_pdir IN LISTS _trunk_plugin_dirs)
     endforeach()
 
     if(NOT _asset_dir)
+        message(WARNING "trunk UI ${_pname}/${_ui_base}.cpp: no staged bundle references ${_so_name}; UI not built")
         continue()
     endif()
 
@@ -212,12 +213,14 @@ if(IS_DIRECTORY "${_gx_plugins_src}")
         endforeach()
 
         if(NOT _so_name)
+            message(WARNING "GxPlugins UI ${_bundle_name}: no guiext:binary in plugin/*.ttl; UI not built")
             continue()
         endif()
 
         # Find matching asset dir
         set(_asset_dir "${ASSETS_DIR}/GxPlugins.lv2/${_bundle_name}")
         if(NOT IS_DIRECTORY "${_asset_dir}")
+            message(WARNING "GxPlugins UI ${_bundle_name}: bundle not staged at ${_asset_dir}; UI not built")
             continue()
         endif()
 

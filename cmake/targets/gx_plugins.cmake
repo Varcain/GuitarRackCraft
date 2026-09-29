@@ -130,8 +130,10 @@ foreach(_bundle IN LISTS _gx_bundles)
         endif()
     endif()
 
+    # Phase 1 has staged this bundle's TTL; without a .so it would ship as a
+    # plugin that can't load.
     if(NOT _source)
-        continue()
+        message(FATAL_ERROR "GxPlugins ${_bundle_name}: no plugin/*.cpp to build")
     endif()
 
     # Determine output name from Makefile or source basename
