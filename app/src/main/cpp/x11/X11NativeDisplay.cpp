@@ -4741,7 +4741,23 @@ struct X11NativeDisplay::Impl {
                         /* No reply: a reply to a void request desyncs the
                          * client's sequence tracking. Nothing to emulate. */
                         break;
-                    case 103: /* GetKeyboardControl */
+                    case 103: { /* GetKeyboardControl: 32-byte header + 20 bytes
+                                   (reply length 5), X.org's default settings */
+                        uint8_t reply[52];
+                        memset(reply, 0, sizeof(reply));
+                        reply[0] = 1;
+                        reply[1] = 1;               /* global-auto-repeat = On */
+                        write16(reply, 2, seq);
+                        write32(reply, 4, 5);       /* reply length (4-byte units) */
+                        write32(reply, 8, 0);       /* led-mask */
+                        reply[12] = 0;              /* key-click-percent */
+                        reply[13] = 50;             /* bell-percent */
+                        write16(reply, 14, 400);    /* bell-pitch (Hz) */
+                        write16(reply, 16, 100);    /* bell-duration (ms) */
+                        memset(reply + 20, 0xFF, 32);  /* auto-repeats: every key */
+                        sendReply(reply, sizeof(reply), seq);
+                        break;
+                    }
                     case 106: /* GetPointerControl */
                     case 116: /* SetPointerMapping (1-byte status reply) */
                     case 118: /* SetModifierMapping (1-byte status reply) */ {
