@@ -4736,12 +4736,15 @@ struct X11NativeDisplay::Impl {
                         sendReply(reply.data(), reply.size(), seq);
                         break;
                     }
-                    case 102: /* GetKeyboardMapping */
+                    case 102: /* ChangeKeyboardControl (void) */
+                    case 104: /* Bell (void) */
+                        /* No reply: a reply to a void request desyncs the
+                         * client's sequence tracking. Nothing to emulate. */
+                        break;
                     case 103: /* GetKeyboardControl */
-                    case 104: /* GetPointerControl */
-                    case 106: /* GetPointerMapping */
-                    case 116: /* SetPointerMapping (has 1-byte reply) */
-                    case 118: /* SetModifierMapping (has 1-byte reply) */ {
+                    case 106: /* GetPointerControl */
+                    case 116: /* SetPointerMapping (1-byte status reply) */
+                    case 118: /* SetModifierMapping (1-byte status reply) */ {
                         if (reqLogCount <= 50) LOGI("X11 handle %s opcode=%u (generic 32-byte reply)", x11OpcodeName(opcode), (unsigned)opcode);
                         uint8_t reply[32];
                         memset(reply, 0, 32);
