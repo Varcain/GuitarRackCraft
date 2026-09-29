@@ -2145,6 +2145,99 @@ struct X11NativeDisplay::Impl {
         return clientFd;
     }
 
+    /* MapWindow for one window: map it, raise its subtree, show it if it is
+     * a popup overlay, and send the requesting client MapNotify, a WM_STATE
+     * PropertyNotify and an Expose. Used by MapWindow and MapSubwindows.
+     * Runs on a connection thread with requestMutex held. */
+    void mapWindowAndNotify(uint32_t wid) {
+        {
+            std::lock_guard<std::mutex> mapLock(windowMapMutex);
+            windowManager_.mapWindow(wid);
+
+            /* Raise popup subtree to front: when a top-level window
+             * (child of root, e.g. a popup menu) is mapped, move its
+             * entire subtree to the end of childWindows so the hit test
+             * (reverse iteration) finds popup windows before regular
+             * plugin widgets. */
+            size_t raised = windowManager_.raiseSubtreeToFront(wid);
+            if (raised > 0) {
+                LOGI("X11 MapWindow: raised subtree of 0x%x "
+                     "(%zu windows) to front", wid, raised);
+            }
+        }
+        /* Popup compositor: a mapped override_redirect window
+         * gets composited over the editor framebuffer until
+         * it's unmapped. The dirty flag wakes the renderer. */
+        {
+            std::lock_guard<std::mutex> fbLock(bufferMutex);
+            auto popIt = popupOverlays.find(wid);
+            if (popIt != popupOverlays.end()) {
+                popIt->second.mapped = true;
+                LOGI("X11 popup MAP wid=0x%x at (%d,%d) %dx%d",
+                     wid, popIt->second.x, popIt->second.y,
+                     popIt->second.w, popIt->second.h);
+                dirty = true;
+                dirtyCv.notify_one();
+            }
+        }
+        int expW = width, expH = height;
+        {
+            auto mapSize = windowManager_.getSize(wid);
+            if (mapSize.first > 0 && mapSize.second > 0) {
+                expW = mapSize.first;
+                expH = mapSize.second;
+            }
+        }
+        LOGI("X11 handle MapWindow wid=0x%x -> sending Expose %dx%d", wid, expW, expH);
+        uint16_t evtSeq = lastReplySeq_;
+        /* MapNotify + WM_STATE PropertyNotify. Wine's
+         * can_activate_window gates NtUserSetForegroundWindow
+         * on data->current_state.wm_state != WithdrawnState,
+         * and the only way that flips to NormalState is via
+         * a WM_STATE PropertyNotify (handle_wm_state_notify
+         * → XGetWindowProperty(WM_STATE)). On a real X11
+         * setup the WM sets this property after XMapWindow.
+         * No WM here → we set it ourselves so wine considers
+         * the window activatable for keyboard input. */
+        {
+            uint8_t mn[32];
+            memset(mn, 0, 32);
+            mn[0] = 19;  /* MapNotify */
+            write16(mn, 2, evtSeq);
+            write32(mn, 4, wid);
+            write32(mn, 8, wid);
+            mn[12] = 0;  /* override_redirect */
+            sendAllLocked(clientFd, mn, 32);
+        }
+        {
+            std::lock_guard<std::mutex> lk(wmStateMutex);
+            wmStateValues[wid] = 1;  /* NormalState */
+        }
+        {
+            uint32_t wmStateAtom = atoms_.intern("WM_STATE", false);
+            uint8_t pn[32];
+            memset(pn, 0, 32);
+            pn[0] = 28;  /* PropertyNotify */
+            write16(pn, 2, evtSeq);
+            write32(pn, 4, wid);
+            write32(pn, 8, wmStateAtom);
+            write32(pn, 12, x11Timestamp());
+            pn[16] = 0;  /* state = NewValue */
+            sendAllLocked(clientFd, pn, 32);
+        }
+        uint8_t expose[32];
+        memset(expose, 0, 32);
+        expose[0] = Expose;
+        write16(expose, 2, evtSeq);
+        write32(expose, 4, wid);
+        write16(expose, 8, 0);
+        write16(expose, 10, 0);
+        write16(expose, 12, (uint16_t)expW);
+        write16(expose, 14, (uint16_t)expH);
+        write16(expose, 16, 0);
+        sendAllLocked(clientFd, expose, 32);
+    }
+
     /* What destroyWindowTree() removed. */
     struct DestroyedWindows { size_t windows = 0, slots = 0, popups = 0; };
 
@@ -3437,93 +3530,7 @@ struct X11NativeDisplay::Impl {
                     }
                     case MapWindow: {
                         uint32_t wid = read32(buf, 4);
-                        {
-                            std::lock_guard<std::mutex> mapLock(windowMapMutex);
-                            windowManager_.mapWindow(wid);
-
-                            /* Raise popup subtree to front: when a top-level window
-                             * (child of root, e.g. a popup menu) is mapped, move its
-                             * entire subtree to the end of childWindows so the hit test
-                             * (reverse iteration) finds popup windows before regular
-                             * plugin widgets. */
-                            size_t raised = windowManager_.raiseSubtreeToFront(wid);
-                            if (raised > 0) {
-                                LOGI("X11 MapWindow: raised subtree of 0x%x "
-                                     "(%zu windows) to front", wid, raised);
-                            }
-                        }
-                        /* Popup compositor: a mapped override_redirect window
-                         * gets composited over the editor framebuffer until
-                         * it's unmapped. The dirty flag wakes the renderer. */
-                        {
-                            std::lock_guard<std::mutex> fbLock(bufferMutex);
-                            auto popIt = popupOverlays.find(wid);
-                            if (popIt != popupOverlays.end()) {
-                                popIt->second.mapped = true;
-                                LOGI("X11 popup MAP wid=0x%x at (%d,%d) %dx%d",
-                                     wid, popIt->second.x, popIt->second.y,
-                                     popIt->second.w, popIt->second.h);
-                                dirty = true;
-                                dirtyCv.notify_one();
-                            }
-                        }
-                        int expW = width, expH = height;
-                        {
-                            auto mapSize = windowManager_.getSize(wid);
-                            if (mapSize.first > 0 && mapSize.second > 0) {
-                                expW = mapSize.first;
-                                expH = mapSize.second;
-                            }
-                        }
-                        LOGI("X11 handle MapWindow wid=0x%x -> sending Expose %dx%d", wid, expW, expH);
-                        uint16_t evtSeq = lastReplySeq_;
-                        /* MapNotify + WM_STATE PropertyNotify. Wine's
-                         * can_activate_window gates NtUserSetForegroundWindow
-                         * on data->current_state.wm_state != WithdrawnState,
-                         * and the only way that flips to NormalState is via
-                         * a WM_STATE PropertyNotify (handle_wm_state_notify
-                         * → XGetWindowProperty(WM_STATE)). On a real X11
-                         * setup the WM sets this property after XMapWindow.
-                         * No WM here → we set it ourselves so wine considers
-                         * the window activatable for keyboard input. */
-                        {
-                            uint8_t mn[32];
-                            memset(mn, 0, 32);
-                            mn[0] = 19;  /* MapNotify */
-                            write16(mn, 2, evtSeq);
-                            write32(mn, 4, wid);
-                            write32(mn, 8, wid);
-                            mn[12] = 0;  /* override_redirect */
-                            sendAllLocked(clientFd, mn, 32);
-                        }
-                        {
-                            std::lock_guard<std::mutex> lk(wmStateMutex);
-                            wmStateValues[wid] = 1;  /* NormalState */
-                        }
-                        {
-                            uint32_t wmStateAtom = atoms_.intern("WM_STATE", false);
-                            uint8_t pn[32];
-                            memset(pn, 0, 32);
-                            pn[0] = 28;  /* PropertyNotify */
-                            write16(pn, 2, evtSeq);
-                            write32(pn, 4, wid);
-                            write32(pn, 8, wmStateAtom);
-                            write32(pn, 12, x11Timestamp());
-                            pn[16] = 0;  /* state = NewValue */
-                            sendAllLocked(clientFd, pn, 32);
-                        }
-                        uint8_t expose[32];
-                        memset(expose, 0, 32);
-                        expose[0] = Expose;
-                        write16(expose, 2, evtSeq);
-                        write32(expose, 4, wid);
-                        write16(expose, 8, 0);
-                        write16(expose, 10, 0);
-                        write16(expose, 12, (uint16_t)expW);
-                        write16(expose, 14, (uint16_t)expH);
-                        write16(expose, 16, 0);
-                        sendAllLocked(clientFd, expose, 32);
-                        if (reqLogCount <= 100) LOGI("X11 MapWindow: sent Expose for window 0x%x", wid);
+                        mapWindowAndNotify(wid);
                         break;
                     }
                     /* NOTE: X11Protocol.h defines ResizeWindow=23, but X11 opcode 23 is
@@ -4881,8 +4888,38 @@ struct X11NativeDisplay::Impl {
                         }
                         break;
                     }
-                    case 5:  /* DestroySubwindows */
-                    case 9:  /* MapSubwindows */
+                    case 5:    /* DestroySubwindows */
+                    case 9: {  /* MapSubwindows */
+                        /* Request: opcode(1) unused(1) length(2)=2 window(4).
+                         * Both act on the window's direct children. */
+                        if (length < 2) break;
+                        const uint32_t parent = read32(buf, 4);
+                        std::vector<uint32_t> children;
+                        {
+                            std::lock_guard<std::mutex> mapLock(windowMapMutex);
+                            for (uint32_t w : childWindows)
+                                if (windowManager_.getPosition(w).parent == parent) children.push_back(w);
+                        }
+                        if (opcode == 5) {
+                            const DestroyedWindows gone = destroyWindowTree(
+                                std::unordered_set<uint32_t>(children.begin(), children.end()));
+                            LOGI("X11 handle DestroySubwindows window=0x%x (%zu windows, %zu slots, %zu popups)",
+                                 parent, gone.windows, gone.slots, gone.popups);
+                        } else {
+                            size_t mapped = 0;
+                            for (uint32_t w : children) {
+                                bool unmapped;
+                                {
+                                    std::lock_guard<std::mutex> mapLock(windowMapMutex);
+                                    unmapped = windowManager_.isUnmapped(w);
+                                }
+                                if (unmapped) { mapWindowAndNotify(w); ++mapped; }
+                            }
+                            LOGI("X11 handle MapSubwindows window=0x%x (mapped %zu of %zu children)",
+                                 parent, mapped, children.size());
+                        }
+                        break;
+                    }
                     case 12: { /* ConfigureWindow — may resize the plugin window */
                         /* Request layout: opcode(1) unused(1) length(2) window(4) value-mask(2) pad(2) values... */
                         uint32_t cfgWid = read32(buf, 4);
