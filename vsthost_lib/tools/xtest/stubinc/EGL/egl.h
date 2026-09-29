@@ -37,6 +37,9 @@ typedef void* EGLNativePixmapType;
 #define EGL_RENDERABLE_TYPE      0x3040
 #define EGL_OPENGL_ES2_BIT       0x0004
 #define EGL_CONTEXT_CLIENT_VERSION 0x3098
+#define EGL_EXTENSIONS           0x3055
+
+typedef void (*__eglMustCastToProperFunctionPointerType)(void);
 
 EGLDisplay eglGetDisplay(EGLNativeDisplayType display_id);
 EGLBoolean eglInitialize(EGLDisplay dpy, EGLint* major, EGLint* minor);
@@ -55,6 +58,9 @@ EGLBoolean eglDestroyContext(EGLDisplay dpy, EGLContext ctx);
 EGLBoolean eglMakeCurrent(EGLDisplay dpy, EGLSurface draw,
                           EGLSurface read, EGLContext ctx);
 EGLBoolean eglSwapBuffers(EGLDisplay dpy, EGLSurface surface);
+EGLint eglGetError(void);
+const char* eglQueryString(EGLDisplay dpy, EGLint name);
+__eglMustCastToProperFunctionPointerType eglGetProcAddress(const char* procname);
 
 #ifdef __cplusplus
 }

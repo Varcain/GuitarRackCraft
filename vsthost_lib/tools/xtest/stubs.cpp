@@ -10,6 +10,7 @@
 #include <jni.h>
 #include <EGL/egl.h>
 #include <GLES2/gl2.h>
+#include <android/hardware_buffer.h>
 
 #include <cstdarg>
 #include <cstdio>
@@ -60,6 +61,9 @@ EGLContext eglCreateContext(EGLDisplay, EGLConfig, EGLContext, const EGLint*) { 
 EGLBoolean eglDestroyContext(EGLDisplay, EGLContext) { return EGL_FALSE; }
 EGLBoolean eglMakeCurrent(EGLDisplay, EGLSurface, EGLSurface, EGLContext) { return EGL_FALSE; }
 EGLBoolean eglSwapBuffers(EGLDisplay, EGLSurface) { return EGL_FALSE; }
+EGLint eglGetError(void) { return 0; }
+const char* eglQueryString(EGLDisplay, EGLint) { return ""; }
+__eglMustCastToProperFunctionPointerType eglGetProcAddress(const char*) { return nullptr; }
 
 /* ---- GLES2/gl2.h ---- */
 void   glActiveTexture(GLenum) {}
@@ -87,6 +91,38 @@ void   glUniform1i(GLint, GLint) {}
 void   glUseProgram(GLuint) {}
 void   glVertexAttribPointer(GLuint, GLint, GLenum, GLboolean, GLsizei, const void*) {}
 void   glViewport(GLint, GLint, GLsizei, GLsizei) {}
+void   glDeleteBuffers(GLsizei, const GLuint*) {}
+void   glDeleteProgram(GLuint) {}
+void   glDeleteTextures(GLsizei, const GLuint*) {}
+GLenum glGetError(void) { return GL_NO_ERROR; }
+const GLubyte* glGetString(GLenum) { return (const GLubyte*)""; }
+GLboolean glIsProgram(GLuint) { return GL_FALSE; }
+GLboolean glIsTexture(GLuint) { return GL_FALSE; }
+void   glTexSubImage2D(GLenum, GLint, GLint, GLint, GLsizei, GLsizei, GLenum, GLenum, const void*) {}
+
+/* ---- android/hardware_buffer.h : no buffers exist here ---- */
+int  AHardwareBuffer_allocate(const AHardwareBuffer_Desc*, AHardwareBuffer** out) {
+    if (out) *out = nullptr;
+    return -1;
+}
+void AHardwareBuffer_acquire(AHardwareBuffer*) {}
+void AHardwareBuffer_release(AHardwareBuffer*) {}
+void AHardwareBuffer_describe(const AHardwareBuffer*, AHardwareBuffer_Desc* desc) {
+    if (desc) *desc = AHardwareBuffer_Desc{};
+}
+int  AHardwareBuffer_lock(AHardwareBuffer*, uint64_t, int32_t, const ARect*, void** addr) {
+    if (addr) *addr = nullptr;
+    return -1;
+}
+int  AHardwareBuffer_unlock(AHardwareBuffer*, int32_t* fence) {
+    if (fence) *fence = -1;
+    return -1;
+}
+int  AHardwareBuffer_sendHandleToUnixSocket(const AHardwareBuffer*, int) { return -1; }
+int  AHardwareBuffer_recvHandleFromUnixSocket(int, AHardwareBuffer** out) {
+    if (out) *out = nullptr;
+    return -1;
+}
 
 } // extern "C"
 

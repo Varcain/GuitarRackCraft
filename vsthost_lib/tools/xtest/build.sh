@@ -24,6 +24,7 @@ g++ -std=c++17 -O0 -g -pthread \
     "$X11SRC/X11AtomStore.cpp" \
     "$X11SRC/X11PropertyStore.cpp" \
     "$X11SRC/X11Worker.cpp" \
+    "$X11SRC/AhbTexture.cpp" \
     $(pkg-config --libs sdl2) \
     -o "$XTEST/xtest"
 

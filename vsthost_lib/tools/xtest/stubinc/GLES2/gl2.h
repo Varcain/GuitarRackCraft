@@ -38,6 +38,11 @@ typedef ptrdiff_t      GLintptr;
 #define GL_TRIANGLE_STRIP   0x0005
 #define GL_TEXTURE_2D       0x0DE1
 #define GL_TEXTURE0         0x84C0
+#define GL_NO_ERROR         0
+#define GL_EXTENSIONS       0x1F03
+#define GL_TEXTURE_WRAP_S   0x2802
+#define GL_TEXTURE_WRAP_T   0x2803
+#define GL_CLAMP_TO_EDGE    0x812F
 #define GL_TEXTURE_MAG_FILTER 0x2800
 #define GL_TEXTURE_MIN_FILTER 0x2801
 #define GL_LINEAR           0x2601
@@ -75,6 +80,16 @@ void   glUseProgram(GLuint program);
 void   glVertexAttribPointer(GLuint index, GLint size, GLenum type,
                              GLboolean normalized, GLsizei stride, const void* pointer);
 void   glViewport(GLint x, GLint y, GLsizei width, GLsizei height);
+void   glDeleteBuffers(GLsizei n, const GLuint* buffers);
+void   glDeleteProgram(GLuint program);
+void   glDeleteTextures(GLsizei n, const GLuint* textures);
+GLenum glGetError(void);
+const GLubyte* glGetString(GLenum name);
+GLboolean glIsProgram(GLuint program);
+GLboolean glIsTexture(GLuint texture);
+void   glTexSubImage2D(GLenum target, GLint level, GLint xoffset, GLint yoffset,
+                       GLsizei width, GLsizei height, GLenum format, GLenum type,
+                       const void* pixels);
 
 #ifdef __cplusplus
 }
