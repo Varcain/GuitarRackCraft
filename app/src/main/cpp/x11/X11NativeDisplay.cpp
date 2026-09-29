@@ -4469,7 +4469,10 @@ struct X11NativeDisplay::Impl {
                             }
                             if (found && (reqType == 0 || reqType == pv.type)) {
                                 uint32_t total = (uint32_t)pv.data.size();
-                                if (longOff > total) longOff = total;
+                                if (longOff > total) {  /* offset past the end → Value error */
+                                    sendError(2 /*BadValue*/, seq, read32(buf, 16));
+                                    break;
+                                }
                                 uint32_t unit = pv.format / 8;
                                 uint32_t ret = std::min(total - longOff, longLen);
                                 ret -= ret % unit;                       /* whole format units */
@@ -4486,18 +4489,38 @@ struct X11NativeDisplay::Impl {
                                 if (ret) memcpy(reply.data() + 32, pv.data.data() + longOff, ret);
                                 sendReply(reply.data(), 32 + ret + pad, seq);
                                 if (buf[1] /*delete*/ && bytesAfter == 0) {
-                                    std::lock_guard<std::mutex> lk(propStoreMutex);
-                                    propStore_.erase(pk);
+                                    {
+                                        std::lock_guard<std::mutex> lk(propStoreMutex);
+                                        propStore_.erase(pk);
+                                    }
+                                    /* The spec generates PropertyNotify(Deleted)
+                                     * here, as for DeleteProperty. */
+                                    uint8_t evt[32];
+                                    memset(evt, 0, 32);
+                                    evt[0] = 28;  /* PropertyNotify */
+                                    write16(evt, 2, seq);
+                                    write32(evt, 4, gpWid);
+                                    write32(evt, 8, gpAtom);
+                                    write32(evt, 12, (uint32_t)(seq * 4 + 0x300));
+                                    evt[16] = 1;  /* state = Deleted */
+                                    sendReply(evt, 32, seq);
                                 }
                             } else {
-                                /* not found, or type mismatch → empty reply (with
-                                 * the actual type on mismatch, per X spec). */
+                                /* Not found: type None, format 0, no data. Type
+                                 * mismatch: no data, but the actual type, format
+                                 * and length (bytes-after) - libX11 answers a
+                                 * non-None type with format 0 by returning
+                                 * BadImplementation from XGetWindowProperty. */
                                 uint8_t reply[32];
                                 memset(reply, 0, 32);
                                 reply[0] = 1;
                                 write16(reply, 2, seq);
                                 write32(reply, 4, 0);
-                                if (found) write32(reply, 8, pv.type);
+                                if (found) {
+                                    reply[1] = pv.format;
+                                    write32(reply, 8, pv.type);
+                                    write32(reply, 12, (uint32_t)pv.data.size());  /* bytes-after */
+                                }
                                 sendReply(reply, 32, seq);
                             }
                         }
