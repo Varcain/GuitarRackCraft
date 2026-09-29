@@ -4293,7 +4293,12 @@ struct X11NativeDisplay::Impl {
                             if (sW - srcX < c1) c1 = sW - srcX;
                             if (dW - dstX < c1) c1 = dW - dstX;
                             std::vector<std::pair<int,int>> rowCuts;  // clipped col-intervals, reused per row
-                            for (int row = 0; row < ch; row++) {
+                            /* Within one buffer, copying down (dstY > srcY) must
+                             * go bottom-up, or each row overwrites source rows
+                             * not yet copied. memmove covers overlap in a row. */
+                            const bool bottomUp = (srcPixels == dstPixels && dstY > srcY);
+                            for (int i = 0; i < ch; i++) {
+                                const int row = bottomUp ? ch - 1 - i : i;
                                 int sy = srcY + row, dy = dstY + row;
                                 if (sy < 0 || sy >= sH || dy < 0 || dy >= dH) continue;
                                 if (c1 <= c0) continue;
