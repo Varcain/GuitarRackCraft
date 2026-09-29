@@ -2043,8 +2043,11 @@ struct X11NativeDisplay::Impl {
                 if (target == 0 && !pluginSlotWindows.empty()) target = pluginSlotWindows[0];
                 if (target == 0) target = grabWindow;
             }
-            const int px = lastPointerX.load(std::memory_order_relaxed);
-            const int py = lastPointerY.load(std::memory_order_relaxed);
+            /* The last touch point (root coordinates) as local coordinates
+             * of the key target, so the events' root-x/y are that point. */
+            const auto keyOrigin = eventWindowOrigin(target);
+            const int px = lastPointerX.load(std::memory_order_relaxed) - keyOrigin.first;
+            const int py = lastPointerY.load(std::memory_order_relaxed) - keyOrigin.second;
             constexpr uint16_t kShiftMask = 1 << 0;
             constexpr uint16_t kCtrlMask  = 1 << 2;
             constexpr uint8_t  kShiftLKc  = 65;  // XK_Shift_L in our kJavaKeymapPayload
@@ -2395,6 +2398,22 @@ struct X11NativeDisplay::Impl {
              fd, gone.windows, gone.slots, gone.popups, pixmaps.size(), gcs.size());
     }
 
+    /* Root position of `wid`'s origin in WINE's coordinate space — for popups
+     * that we smart-flipped, wine believes the popup is still at its requested
+     * (reqX, reqY) position, and the menu-loop's "is this click inside the
+     * popup?" test compares root coords against that requested rectangle.
+     * Sending displayed-pos root coords made wine see clicks as outside →
+     * popup dismissed. Callers hold neither bufferMutex nor windowMapMutex. */
+    std::pair<int, int> eventWindowOrigin(uint32_t wid) {
+        // popupOverlays is guarded by bufferMutex, the window tree by
+        // windowMapMutex (lock order: bufferMutex first).
+        std::lock_guard<std::mutex> fbLock(bufferMutex);
+        std::lock_guard<std::mutex> mapLock(windowMapMutex);
+        auto pit = popupOverlays.find(wid);
+        if (pit != popupOverlays.end()) return {pit->second.reqX, pit->second.reqY};
+        return windowManager_.getAbsolutePos(wid);
+    }
+
     void sendEvent(uint8_t type, uint32_t windowId, int x, int y, int button, uint16_t lastSeq, int stateOverride = -1) {
         uint8_t buf[32];
         memset(buf, 0, 32);
@@ -2418,29 +2437,9 @@ struct X11NativeDisplay::Impl {
             auto it = fdLastSeq.find(targetFd);
             if (it != fdLastSeq.end()) outSeq = it->second;
         }
-        // x, y are LOCAL coordinates within windowId. Compute root_x/root_y
-        // in WINE's coordinate space — for popups that we smart-flipped, wine
-        // believes the popup is still at its requested (reqX, reqY) position,
-        // and the menu-loop's "is this click inside the popup?" test compares
-        // root coords against that requested rectangle. Sending displayed-pos
-        // root coords made wine see clicks as outside → popup dismissed.
-        int rootX = x, rootY = y;
-        {
-            // popupOverlays is guarded by bufferMutex, the window tree by
-            // windowMapMutex (lock order: bufferMutex first). Callers hold
-            // neither.
-            std::lock_guard<std::mutex> fbLock(bufferMutex);
-            std::lock_guard<std::mutex> mapLock(windowMapMutex);
-            auto pit = popupOverlays.find(windowId);
-            if (pit != popupOverlays.end()) {
-                rootX = pit->second.reqX + x;
-                rootY = pit->second.reqY + y;
-            } else {
-                auto abs = windowManager_.getAbsolutePos(windowId);
-                rootX = abs.first + x;
-                rootY = abs.second + y;
-            }
-        }
+        // x, y are LOCAL coordinates within windowId (see eventWindowOrigin).
+        const auto origin = eventWindowOrigin(windowId);
+        const int rootX = origin.first + x, rootY = origin.second + y;
         write16(buf, 2, outSeq);                // sequence number
         write32(buf, 4, x11Timestamp());        // time
         write32(buf, 8, kRootWindowId);        // root window
@@ -2454,7 +2453,10 @@ struct X11NativeDisplay::Impl {
         if (stateOverride >= 0) {
             state = (uint16_t)stateOverride;
         } else {
-            if (type == ButtonRelease && button == 1) state = (1 << 8); // Button1Mask
+            // The state is the one before the event: a release still has
+            // its button down.
+            if (type == ButtonRelease && button == 1) state = (1 << 8);  // Button1Mask
+            if (type == ButtonRelease && button == 3) state = (1 << 10); // Button3Mask
             if (type == MotionNotify) state = (1 << 8); // Button1Mask while dragging
         }
         write16(buf, 28, state);                // state
