@@ -259,6 +259,7 @@ add_custom_command(
     COMMAND ${NDK_STRIP} --strip-unneeded "${APP_ROOT}/assets/x11_libs/arm64-v8a/libGL.so.1"
     COMMAND ${NDK_STRIP} --strip-unneeded "${APP_ROOT}/assets/x11_libs/arm64-v8a/libglapi.so.0"
     COMMAND ${CMAKE_COMMAND} -E touch "${_mesa_rt_stamp}"
+    DEPENDS "${X11_SYSROOT}/lib/libGL.so" "${X11_SYSROOT}/lib/libglapi.so"
 )
 add_custom_target(mesa_runtime_libs DEPENDS "${_mesa_rt_stamp}")
 add_dependencies(mesa_runtime_libs mesa)

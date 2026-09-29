@@ -59,10 +59,13 @@ ExternalProject_Add(aidax_full_native
     CMAKE_ARGS -DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DCMAKE_C_COMPILER=cc -DCMAKE_CXX_COMPILER=c++ -DCMAKE_BUILD_TYPE=Release -DAIDAX_SRC=${_aidax_full_src} -DRTNEURAL_XSIMD=ON ${NDK_CCACHE_CMAKE_ARGS} CMAKE_CACHE_ARGS -DCMAKE_TOOLCHAIN_FILE:FILEPATH=
     BUILD_COMMAND ${CMAKE_COMMAND} --build <BINARY_DIR> -j${NJOBS}
     INSTALL_COMMAND bash -c "mkdir -p '${_ttl_dir}' && cp <BINARY_DIR>/bin/AIDA-X.lv2/*.ttl '${_ttl_dir}/'"
+    INSTALL_BYPRODUCTS "${_ttl_dir}/manifest.ttl" "${_ttl_dir}/AIDA-X_dsp.ttl"
 )
 
 # ─── Phase 2: CMake cross-compile for ARM64 ──────────────────────────────────
 set(_cross_build "${_aidax_full_build}/cross")
+set(_cross_dsp_so "${_cross_build}/bin/AIDA-X.lv2/AIDA-X_dsp.so")
+set(_cross_ui_so  "${_cross_build}/bin/AIDA-X.lv2/AIDA-X_ui.so")
 
 # Generate configure script from template
 set(_aidax_full_configure_script "${_aidax_full_build}/configure.sh")
@@ -86,6 +89,8 @@ ExternalProject_Add(aidax_full_cross
     BUILD_COMMAND ${_aidax_pkg_env} ${CMAKE_COMMAND} --build <BINARY_DIR> --target AIDA-X-lv2 -j${NJOBS}
     INSTALL_COMMAND ${_aidax_pkg_env} ${CMAKE_COMMAND} --build <BINARY_DIR> --target AIDA-X-lv2-ui -j${NJOBS}
     DEPENDS aidax_full_native x11_sysroot lv2_libs
+    BUILD_BYPRODUCTS "${_cross_dsp_so}"
+    INSTALL_BYPRODUCTS "${_cross_ui_so}"
 )
 
 watch_external_sources(aidax_full_native DIRECTORIES "${_aidax_full_src}/src")
@@ -106,7 +111,8 @@ add_custom_command(
     OUTPUT "${_aidax_full_sync_stamp}"
     COMMAND bash "${_aidax_full_sync_script}"
     COMMAND ${CMAKE_COMMAND} -E touch "${_aidax_full_sync_stamp}"
-    DEPENDS aidax_full_cross
+    DEPENDS aidax_full_cross "${_cross_dsp_so}" "${_cross_ui_so}"
+            "${_ttl_dir}/manifest.ttl" "${_ttl_dir}/AIDA-X_dsp.ttl" "${_aidax_full_sync_script}"
     COMMENT "Syncing AIDA-X (full) to assets"
 )
 add_custom_target(aidax_full_sync DEPENDS "${_aidax_full_sync_stamp}")
