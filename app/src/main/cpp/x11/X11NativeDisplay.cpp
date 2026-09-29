@@ -3096,7 +3096,12 @@ struct X11NativeDisplay::Impl {
                              *
                              * Note: bufferMutex is already held here.
                              * windowManager_.getSize needs windowMapMutex. */
-                            if (isWindow && w >= 200) {
+                            /* Wine displays only: on an LV2 display the first
+                             * top-level window is the plugin (see CreateWindow),
+                             * and a large child - a full-size container, a
+                             * scrolling viewport - must not take it over and
+                             * clear the framebuffer. */
+                            if (wineHost_ && isWindow && w >= 200) {
                                 bool isInSlot = false;
                                 for (uint32_t s : pluginSlotWindows) {
                                     if (s == drawable) { isInSlot = true; break; }
