@@ -182,29 +182,22 @@ fi
 
 # ─── Partition .so files into core vs plugin for Play Store dual-build ────────
 
-# Core libs that stay in main jniLibs (base module)
+# Core libs that stay in main jniLibs (base module): the globs in
+# config/core-libs.txt, which the app's verifyNativeInputs Gradle check reads too.
+CORE_LIB_PATTERNS=()
+while IFS= read -r line || [ -n "$line" ]; do
+    line="${line%%#*}"
+    line="${line//[[:space:]]/}"
+    [ -n "$line" ] && CORE_LIB_PATTERNS+=("$line")
+done < "$PROJECT_ROOT/config/core-libs.txt"
+
 is_core_lib() {
-    local name="$1"
-    case "$name" in
-        libguitarrackcraft.so) return 0 ;;
-        libc++_shared.so)      return 0 ;;
-        liblilv-0.so*)         return 0 ;;
-        libX11.so*)            return 0 ;;
-        libxcb.so*)            return 0 ;;
-        libXau.so*)            return 0 ;;
-        libGL.so*)             return 0 ;;
-        libglapi.so*)          return 0 ;;
-        # X11 extensions wine's winex11.drv dlopens (source-built, was Termux)
-        libXext.so*)           return 0 ;;
-        libXrender.so*)        return 0 ;;
-        libXi.so*)             return 0 ;;
-        libXfixes.so*)         return 0 ;;
-        libXrandr.so*)         return 0 ;;
-        libXcursor.so*)        return 0 ;;
-        libXxf86vm.so*)        return 0 ;;
-        libXdmcp.so*)          return 0 ;;
-        *)                     return 1 ;;
-    esac
+    local name="$1" pat
+    for pat in "${CORE_LIB_PATTERNS[@]}"; do
+        # Unquoted on purpose: $pat is a glob.
+        [[ "$name" == $pat ]] && return 0
+    done
+    return 1
 }
 
 # Classify plugin .so into asset packs

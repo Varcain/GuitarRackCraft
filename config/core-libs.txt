@@ -1,0 +1,31 @@
+# Libraries that ship in the base APK, i.e. that may stay in
+# app/src/main/jniLibs/arm64-v8a. Everything else build.sh finds there is a
+# plugin library: it moves those to the full-flavor overlay
+# (app/src/full/jniLibs) and/or a Play asset pack. The app's
+# verifyNativeInputs Gradle check fails the build if anything outside this
+# list is left there.
+#
+# One shell glob per line, matched against the file name. '#' starts a comment.
+
+libguitarrackcraft.so
+libc++_shared.so
+liblilv-0.so*
+
+# X11 client libraries (plugin UIs, wine's winex11.drv)
+libX11.so*
+libxcb.so*
+libXau.so*
+libXdmcp.so*
+
+# X11 extensions wine's winex11.drv dlopens
+libXext.so*
+libXrender.so*
+libXi.so*
+libXfixes.so*
+libXrandr.so*
+libXcursor.so*
+libXxf86vm.so*
+
+# Mesa GL
+libGL.so*
+libglapi.so*
