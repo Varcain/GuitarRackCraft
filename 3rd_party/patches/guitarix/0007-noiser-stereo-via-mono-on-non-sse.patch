@@ -1,0 +1,40 @@
+--- a/trunk/src/LV2/gx_amp_stereo.lv2/gxamp_stereo.cpp
++++ b/trunk/src/LV2/gx_amp_stereo.lv2/gxamp_stereo.cpp
+@@ -549,7 +549,9 @@ void GxPluginStereo::run_dsp_stereo(uint32_t n_samples)
+   bool byp = bp.pre_check_bypass(bypass, buf, buf1, input, input1, n_samples);
+   if (!byp) {
+ #ifndef __SSE__
+-    wn->stereo_audio(static_cast<int>(n_samples), input, input1, input, input1, wn);;
++    // noiser implements only mono_audio (its stereo_audio is NULL): run it per channel
++    wn->mono_audio(static_cast<int>(n_samples), input, input, wn);
++    wn->mono_audio(static_cast<int>(n_samples), input1, input1, wn);
+ #endif
+     // run selected tube model
+     a_model_ = std::min(a_max, static_cast<uint32_t>(*(a_model)));
+--- a/trunk/src/LV2/gx_studiopre_st.lv2/gx_studiopre_st.cpp
++++ b/trunk/src/LV2/gx_studiopre_st.lv2/gx_studiopre_st.cpp
+@@ -150,7 +150,9 @@ void Gx_studiopre_st::run_dsp_stereo(uint32_t n_samples)
+ {
+   if (n_samples< 1) return;
+ #ifndef __SSE__
+-  wn->stereo_audio(static_cast<int>(n_samples), input, input1, input, input1, wn);;
++  // noiser implements only mono_audio (its stereo_audio is NULL): run it per channel
++  wn->mono_audio(static_cast<int>(n_samples), input, input, wn);
++  wn->mono_audio(static_cast<int>(n_samples), input1, input1, wn);
+ #endif
+   studiopre_stereo->stereo_audio(static_cast<int>(n_samples), input,input1,
+                         output, output1, studiopre_stereo);
+--- a/trunk/src/LV2/gxtape_st.lv2/gxtape_st.cpp
++++ b/trunk/src/LV2/gxtape_st.lv2/gxtape_st.cpp
+@@ -130,8 +130,9 @@ void Gxtape_st::run_dsp_stereo(uint32_t n_samples)
+ {
+   if (n_samples< 1) return;
+ #ifndef __SSE__
+-  wn->stereo_audio(static_cast<int>(n_samples), input0,
+-                         input1, output0,output1,  wn);;
++  // noiser implements only mono_audio (its stereo_audio is NULL): run it per channel
++  wn->mono_audio(static_cast<int>(n_samples), input0, output0, wn);
++  wn->mono_audio(static_cast<int>(n_samples), input1, output1, wn);
+ #endif
+   tape->stereo_audio(static_cast<int>(n_samples), input0,
+                         input1, output0,output1, tape);	
