@@ -6320,8 +6320,15 @@ bool X11NativeDisplay::attachSurface(JNIEnv* jniEnv, jobject jSurface, int width
         return false;
     }
 
-    impl_->width = width > 0 ? width : 1;
-    impl_->height = height > 0 ? height : 1;
+    {
+        /* The connection threads are already running (startServer above or
+         * earlier) and read the surface size under requestMutex or
+         * bufferMutex. The render thread isn't running here. */
+        std::lock_guard<std::mutex> reqLock(impl_->requestMutex);
+        std::lock_guard<std::mutex> fbLock(impl_->bufferMutex);
+        impl_->width = width > 0 ? width : 1;
+        impl_->height = height > 0 ? height : 1;
+    }
     ANativeWindow_setBuffersGeometry(win, impl_->width, impl_->height, 1 /* AHARDWAREBUFFER_FORMAT_R8G8B8A8_UNORM */);
 
     EGLDisplay display = eglGetDisplay(EGL_DEFAULT_DISPLAY);
@@ -6989,8 +6996,14 @@ void withDisplaySetFramebufferFrozen(int displayNumber, bool frozen) {
 }
 
 void withDisplayStartServer(int displayNumber, int placeholderW, int placeholderH, bool wineHost) {
-    X11NativeDisplay* disp = getOrCreateX11Display(displayNumber);
-    if (disp) disp->startServer(placeholderW, placeholderH, wineHost);
+    /* Find-or-create and start under the map lock, like the other
+     * withDisplay* calls: the plugin-load thread calls this while the UI
+     * thread may destroyX11Display() the same number. Held until the
+     * listener is up (startServer waits for it, normally milliseconds). */
+    std::lock_guard<std::mutex> lock(g_displayMutex);
+    auto& slot = g_displays[displayNumber];
+    if (!slot) slot = std::make_unique<X11NativeDisplay>(displayNumber);
+    slot->startServer(placeholderW, placeholderH, wineHost);
 }
 
 bool withDisplayGetPluginSize(int displayNumber, int& w, int& h) {
