@@ -6334,6 +6334,7 @@ bool X11NativeDisplay::startServer(int placeholderW, int placeholderH, bool wine
         return true;
     }
     impl_->wineHost_ = wineHost;  // set before any connection thread exists
+    impl_->detaching_.store(false);  // a restart after a detach can be detached again
     /* DEBUG: load the focus-emulation A/B mask once at startup (so variants that
      * affect load-time focus apply when the flag is written before launch). */
     {
