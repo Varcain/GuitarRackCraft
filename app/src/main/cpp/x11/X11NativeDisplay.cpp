@@ -4954,12 +4954,33 @@ struct X11NativeDisplay::Impl {
                                 break;  /* consumed by the WM — do not echo back */
                             }
                         }
-                        /* Default: forward the event back to the client (set bit 7
-                         * = "sent via SendEvent"; rewrite seq to match XCB). */
-                        if (reqLogCount <= 30) LOGI("X11 handle SendEvent (forwarding 32-byte event to client)");
-                        write16(buf + 12, 2, lastReplySeq_);
+                        /* Default: deliver to the client that created the
+                         * destination window - wine has one connection per
+                         * thread, and a window's events belong on the
+                         * connection that created it. The sender gets it only
+                         * when the owner is unknown (root, PointerWindow=0,
+                         * InputFocus=1). Set bit 7 = "sent via SendEvent", and
+                         * the target connection's own last sequence number. */
+                        int seFd = -1;
+                        if (seDest > 1) {
+                            std::lock_guard<std::mutex> lk(windowCreatorMutex);
+                            auto it = windowCreator.find(seDest);
+                            if (it != windowCreator.end()) seFd = it->second;
+                        }
+                        uint16_t seSeq = lastReplySeq_;
+                        if (seFd < 0) {
+                            seFd = clientFd;
+                        } else if (seFd != clientFd) {
+                            std::lock_guard<std::mutex> lk(fdSeqMutex);
+                            auto it = fdLastSeq.find(seFd);
+                            if (it != fdLastSeq.end()) seSeq = it->second;
+                        }
+                        if (reqLogCount <= 30)
+                            LOGI("X11 handle SendEvent type=%u dest=0x%x -> fd=%d%s",
+                                 (unsigned)seEvType, seDest, seFd, seFd == clientFd ? " (sender)" : "");
+                        write16(buf + 12, 2, seSeq);
                         buf[12] |= 0x80;
-                        sendAllLocked(clientFd, buf + 12, 32);
+                        sendAllLocked(seFd, buf + 12, 32);
                         break;
                     }
                     case 10: { /* UnmapWindow (opcode 10) */
