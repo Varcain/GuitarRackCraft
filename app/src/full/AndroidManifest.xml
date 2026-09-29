@@ -21,5 +21,16 @@
             android:configChanges="orientation|screenSize|screenLayout"
             android:theme="@style/Theme.GuitarRackCraft" />
 
+        <!-- Wine launcher logs (private cache) for `adb shell content
+             query/read`, which is how they are read on release builds (no
+             run-as). Exported, but guarded by the DUMP permission, which the
+             adb shell holds and third-party apps can't obtain. Read-only,
+             log names only. See HostLogProvider. -->
+        <provider
+            android:name="com.varcain.guitarrackcraft.diagnostics.HostLogProvider"
+            android:authorities="${applicationId}.hostlogs"
+            android:exported="true"
+            android:permission="android.permission.DUMP" />
+
     </application>
 </manifest>
