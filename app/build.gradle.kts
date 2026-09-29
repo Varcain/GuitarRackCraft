@@ -20,11 +20,18 @@
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.net.InetAddress
+import java.nio.file.FileSystems
+import java.nio.file.Paths
 
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
 }
+
+// UI-only work without a native prebuild: downgrade the native-input checks
+// below to warnings and let the app's CMake build its stub LV2 backend.
+val allowMissingNativeInputs = providers.gradleProperty("grc.allowMissingNativeInputs")
+    .map { it.toBoolean() }.getOrElse(false)
 
 android {
     namespace = "com.varcain.guitarrackcraft"
@@ -55,6 +62,7 @@ android {
             cmake {
                 cppFlags += "-std=c++17"
                 arguments += listOf("-DANDROID_STL=c++_shared")
+                if (allowMissingNativeInputs) arguments += "-DGRC_ALLOW_LV2_STUB=ON"
             }
         }
 
@@ -205,6 +213,81 @@ android {
         }
     }
 }
+
+// ─── Checks of the native inputs ./build.sh stages into src/ ─────────────────
+// Gradle packages whatever is in those directories, so a missing or
+// half-finished native prebuild would otherwise ship silently. Plugin
+// libraries left in the base APK's jniLibs always fail the build; missing
+// inputs can be downgraded to warnings with -Pgrc.allowMissingNativeInputs=true.
+val coreLibGlobs = rootProject.file("config/core-libs.txt").readLines()
+    .map { it.substringBefore('#').trim() }
+    .filter { it.isNotEmpty() }
+
+androidComponents {
+    onVariants { variant ->
+        val cap = variant.name.replaceFirstChar { it.uppercase() }
+        val isFull = variant.flavorName == "full"
+        val prebuild = if (isFull) "full" else "playstore"
+        val mainJniDir = file("src/main/jniLibs/arm64-v8a")
+        val fullJniDir = file("src/full/jniLibs/arm64-v8a")
+        val lv2LibDir = file("src/main/cpp/libs/lv2/lib")
+        val wineManifest = rootProject.file("vsthost_lib/src/main/assets/wine-fex-manifest.json")
+        val globs = coreLibGlobs
+        val allowMissing = allowMissingNativeInputs
+
+        val verify = tasks.register("verifyNativeInputs$cap") {
+            group = "verification"
+            description = "Checks the native prebuild outputs the $cap build packages."
+            doLast {
+                val matchers = globs.map { FileSystems.getDefault().getPathMatcher("glob:$it") }
+                val stray = mainJniDir.listFiles().orEmpty()
+                    .filter { f -> matchers.none { it.matches(Paths.get(f.name)) } }
+                    .map { it.name }.sorted()
+                if (stray.isNotEmpty()) {
+                    throw GradleException(
+                        "$mainJniDir holds libraries that must not ship in the base APK " +
+                        "(not in config/core-libs.txt): ${stray.joinToString()}. " +
+                        "Run ./build.sh $prebuild - it moves plugin libraries out of there.")
+                }
+                val missing = mutableListOf<String>()
+                if (lv2LibDir.listFiles { f -> f.name.startsWith("liblilv-0.") }.isNullOrEmpty())
+                    missing += "LV2 libraries ($lv2LibDir)"
+                if (isFull) {
+                    if (fullJniDir.listFiles { f -> f.name.endsWith(".so") }.isNullOrEmpty())
+                        missing += "plugin libraries ($fullJniDir)"
+                    if (!wineManifest.isFile)
+                        missing += "wine runtime ($wineManifest)"
+                }
+                if (missing.isNotEmpty()) {
+                    val msg = "Native prebuild outputs missing for $cap: ${missing.joinToString()}. " +
+                        "Run ./build.sh $prebuild."
+                    if (allowMissing) logger.warn("WARNING: $msg") else throw GradleException(msg)
+                }
+            }
+        }
+        tasks.matching { it.name == "pre${cap}Build" }.configureEach { dependsOn(verify) }
+    }
+}
+
+// Play bundles carry the plugin libraries in the asset packs, which only
+// ./build.sh playstore (or all) fills.
+val assetPackPluginDirs = listOf("gxplugins_pack", "neural_pack", "brummer_pack")
+    .map { rootProject.file("$it/src/main/assets/plugins/arm64-v8a") }
+val verifyAssetPacks = tasks.register("verifyAssetPacks") {
+    group = "verification"
+    description = "Checks that the Play asset packs hold plugin libraries."
+    val dirs = assetPackPluginDirs
+    val allowMissing = allowMissingNativeInputs
+    doLast {
+        val empty = dirs.filter { d -> d.listFiles { f -> f.name.endsWith(".so") }.isNullOrEmpty() }
+        if (empty.isNotEmpty()) {
+            val msg = "Play asset packs hold no plugin libraries: ${empty.joinToString()}. " +
+                "Run ./build.sh playstore (or all)."
+            if (allowMissing) logger.warn("WARNING: $msg") else throw GradleException(msg)
+        }
+    }
+}
+tasks.matching { it.name.startsWith("bundlePlaystore") }.configureEach { dependsOn(verifyAssetPacks) }
 
 dependencies {
     // X11 plugin UIs: native EGL + ANativeWindow (see app/src/main/cpp/x11/)

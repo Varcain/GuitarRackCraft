@@ -92,6 +92,19 @@ else()
     message(STATUS "To enable LV2 support, compile libraries and set LV2_LIBS_DIR")
 endif()
 
+# Without the LV2 libraries the app builds a stub backend with no plugin host.
+# That is only useful for UI-only work without a native prebuild, so it has
+# to be asked for: Gradle's -Pgrc.allowMissingNativeInputs=true passes
+# GRC_ALLOW_LV2_STUB=ON. Otherwise a missing prebuild fails here instead of
+# producing an app that silently hosts nothing.
+option(GRC_ALLOW_LV2_STUB "Build a stub LV2 backend when the LV2 libraries are missing" OFF)
+if(NOT LV2_AVAILABLE AND NOT GRC_ALLOW_LV2_STUB)
+    message(FATAL_ERROR
+        "LV2 libraries not found in ${LV2_LIBS_DIR}. Run ./build.sh <flavor> "
+        "(the native prebuild), or pass -Pgrc.allowMissingNativeInputs=true "
+        "to Gradle for a stub build.")
+endif()
+
 # Include directories
 include_directories(
     ${CMAKE_CURRENT_SOURCE_DIR}
