@@ -28,7 +28,7 @@ LLVM_PREFIX="$repo_root/external/llvm-android/install-android-arm64"
 OUT="$repo_root/toolchain/turnip-libs"
 PREFIX="$M/build-android-lavapipe/install"
 
-NDK="${ANDROID_NDK:-$HOME/Android/Sdk/ndk/26.1.10909125}"
+. "$repo_root/scripts/lib/common.sh"  # NDK: ndk.version.vst, config/toolchain.properties
 NDKBIN="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin"
 API=28
 

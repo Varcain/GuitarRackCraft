@@ -21,7 +21,7 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"            # vsthost_lib/
 cd "$repo_root"
 
-NDK="${ANDROID_NDK:-$HOME/Android/Sdk/ndk/26.1.10909125}"
+. "$repo_root/scripts/lib/common.sh"  # NDK: ndk.version.vst, config/toolchain.properties
 NDKBIN="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin"
 API=28
 DRM_VER="${DRM_VER:-2.4.125}"

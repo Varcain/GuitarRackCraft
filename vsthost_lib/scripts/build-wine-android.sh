@@ -21,7 +21,7 @@ cd "$repo_root"
 "$(dirname "$0")/apply-wine-patches.sh"
 
 # --- toolchain --------------------------------------------------------------
-NDK="${ANDROID_NDK:-$HOME/Android/Sdk/ndk/26.1.10909125}"
+. "$repo_root/scripts/lib/common.sh"  # NDK: ndk.version.vst, config/toolchain.properties
 [ -d "$NDK" ] || { echo "error: NDK not found at $NDK; export ANDROID_NDK"; exit 1; }
 HOST_TAG=linux-x86_64
 TARGET=aarch64-linux-android

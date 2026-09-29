@@ -40,7 +40,8 @@
 #   mesa             needs NDK only    pack  needs  wine + fex + winedeps (+ dxvk/mesa/turnip/hosts assets)
 #
 # Requirements (one-time host setup):
-#   - Android NDK r26.1 at $ANDROID_NDK or $HOME/Android/Sdk/ndk/26.1.10909125
+#   - Android NDK ndk.version.vst (config/toolchain.properties) at $ANDROID_NDK
+#     or $HOME/Android/Sdk/ndk/<version>
 #   - apt: build-essential, autoconf, automake, libtool, bison, flex,
 #          gettext-base, gperf, pkg-config, gcc-mingw-w64-x86-64,
 #          gcc-mingw-w64-i686, g++-mingw-w64-x86-64, cmake, ninja-build,

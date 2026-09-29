@@ -23,7 +23,7 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$repo_root"
 
-NDK="${ANDROID_NDK:-$HOME/Android/Sdk/ndk/26.1.10909125}"
+. "$repo_root/scripts/lib/common.sh"  # NDK: ndk.version.vst, config/toolchain.properties
 [ -d "$NDK" ] || { echo "error: NDK not found at $NDK; export ANDROID_NDK" >&2; exit 1; }
 
 src="external/libadrenotools"

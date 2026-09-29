@@ -19,7 +19,7 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$repo_root"
 
-NDK="${ANDROID_NDK:-$HOME/Android/Sdk/ndk/26.1.10909125}"
+. "$repo_root/scripts/lib/common.sh"  # NDK: ndk.version.vst, config/toolchain.properties
 [ -d "$NDK" ] || { echo "error: NDK not found at $NDK"; exit 1; }
 HOST_TAG=linux-x86_64
 TARGET=aarch64-linux-android

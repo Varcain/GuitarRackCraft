@@ -21,7 +21,7 @@ BUILD="$L/build-android-arm64"
 PREFIX="$L/install-android-arm64"
 HOST_TBLGEN="${HOST_LLVM_TBLGEN:-/usr/bin/llvm-tblgen-18}"
 
-NDK="${ANDROID_NDK:-$HOME/Android/Sdk/ndk/26.1.10909125}"
+. "$repo_root/scripts/lib/common.sh"  # NDK: ndk.version.vst, config/toolchain.properties
 API=28
 
 if [ ! -f "$SRC/CMakeLists.txt" ]; then

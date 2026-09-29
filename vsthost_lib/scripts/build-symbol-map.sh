@@ -24,7 +24,7 @@ set -uo pipefail
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$repo_root"
 
-NDK="${ANDROID_NDK:-$HOME/Android/Sdk/ndk/26.1.10909125}"
+. "$repo_root/scripts/lib/common.sh"  # NDK: ndk.version.vst, config/toolchain.properties
 NM="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-nm"
 if [ ! -x "$NM" ]; then
     NM="$(command -v llvm-nm || true)"

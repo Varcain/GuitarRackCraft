@@ -304,11 +304,23 @@ def sha256_of(path: Path) -> str:
     return h.hexdigest()
 
 
+def toolchain_prop(key: str) -> str:
+    """The value of <key> in config/toolchain.properties (repository root)."""
+    props = Path(__file__).resolve().parents[2] / "config" / "toolchain.properties"
+    for line in props.read_text().splitlines():
+        name, sep, value = line.partition("=")
+        if sep and name.strip() == key:
+            return value.strip()
+    raise SystemExit(f"{props}: no {key}")
+
+
 def main() -> int:
     # Default NDK strip path: $ANDROID_NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip
-    # If $ANDROID_NDK isn't set, fall back to NDK r26.1 under $HOME/Android/Sdk/ — same
-    # default the wine + FEX build scripts use. Override with --strip <path>.
-    default_ndk = os.environ.get("ANDROID_NDK") or os.path.expanduser("~/Android/Sdk/ndk/26.1.10909125")
+    # If $ANDROID_NDK isn't set, fall back to ndk.version.vst (config/toolchain.properties)
+    # under $HOME/Android/Sdk/ - the same default the wine + FEX build scripts use
+    # (scripts/lib/common.sh). Override with --strip <path>.
+    default_ndk = os.environ.get("ANDROID_NDK") or os.path.expanduser(
+        f"~/Android/Sdk/ndk/{toolchain_prop('ndk.version.vst')}")
     default_strip = f"{default_ndk}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip"
 
     ap = argparse.ArgumentParser()

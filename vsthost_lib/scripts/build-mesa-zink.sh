@@ -26,7 +26,7 @@ M="$top/3rd_party/mesa"
 PATCHES="$repo_root/patches/mesa"
 OUT="$repo_root/toolchain/mesa-zink-libs"
 
-NDK="${ANDROID_NDK:-$HOME/Android/Sdk/ndk/26.1.10909125}"
+. "$repo_root/scripts/lib/common.sh"  # NDK: ndk.version.vst, config/toolchain.properties
 NDKBIN="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin"
 
 [ -d "$M/.git" ] || [ -f "$M/.git" ] || {

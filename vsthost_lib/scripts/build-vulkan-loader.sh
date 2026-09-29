@@ -39,7 +39,7 @@ OUT="$repo_root/toolchain/turnip-libs"
 BUILD="$repo_root/.cache/vulkan-loader-build"
 HDR_INSTALL="$BUILD/headers-install"
 
-NDK="${ANDROID_NDK:-$HOME/Android/Sdk/ndk/26.1.10909125}"
+. "$repo_root/scripts/lib/common.sh"  # NDK: ndk.version.vst, config/toolchain.properties
 NDKBIN="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin"
 API=28                                                   # matches build-mesa-zink (the GPU/Vulkan runtime group)
 
