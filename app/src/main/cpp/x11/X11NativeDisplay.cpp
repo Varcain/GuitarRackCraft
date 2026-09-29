@@ -2145,32 +2145,23 @@ struct X11NativeDisplay::Impl {
         return clientFd;
     }
 
-    /* Frees what a disconnected client leaves behind, like a real X server
-     * in the default close-down mode (DestroyAll; wine never changes it):
-     * the windows it created and their subwindows, its pixmaps and GCs, and
-     * the bookkeeping keyed by those ids or by its fd. Without this every
-     * dead window stays on a long-lived display - a dead editor keeps the
-     * plugin slot, so the next editor's top-level window is ignored as an
-     * extra root child, and touches still hit-test into it. Sends no
-     * DestroyNotify, same as the DestroyWindow handler. Called on the
-     * client's own thread before its fd is closed, so a new connection
-     * reusing the fd number can't inherit any of it. */
-    void releaseClientResources(int fd, const std::unordered_set<uint32_t>& pixmaps,
-                                const std::unordered_set<uint32_t>& gcs) {
-        std::lock_guard<std::mutex> reqLock(requestMutex);
-        std::unordered_set<uint32_t> dead;
-        {
-            std::lock_guard<std::mutex> lk(windowCreatorMutex);
-            for (const auto& kv : windowCreator)
-                if (kv.second == fd) dead.insert(kv.first);
-        }
-        size_t slotsLost = 0, popupsFreed = 0;
+    /* What destroyWindowTree() removed. */
+    struct DestroyedWindows { size_t windows = 0, slots = 0, popups = 0; };
+
+    /* Destroys `dead` and every window below them - subwindows die with their
+     * parent, whoever created them, as in X - and drops everything the server
+     * keeps per window: plugin slot, popup overlay, creator, WM_STATE,
+     * properties, pointer grab and focus. The root window is never destroyed.
+     * Sends no DestroyNotify. Caller holds requestMutex and no other lock. */
+    DestroyedWindows destroyWindowTree(std::unordered_set<uint32_t> dead) {
+        DestroyedWindows r;
+        dead.erase(kRootWindowId);
+        if (dead.empty()) return r;
         {
             std::lock_guard<std::mutex> fbLock(bufferMutex);
             {
                 std::lock_guard<std::mutex> mapLock(windowMapMutex);
-                /* Subwindows die with their parent, whoever created them. */
-                for (bool grew = !dead.empty(); grew;) {
+                for (bool grew = true; grew;) {
                     grew = false;
                     for (uint32_t w : childWindows) {
                         if (!dead.count(w) && dead.count(windowManager_.getPosition(w).parent)) {
@@ -2186,10 +2177,9 @@ struct X11NativeDisplay::Impl {
                 std::remove_if(pluginSlotWindows.begin(), pluginSlotWindows.end(),
                                [&dead](uint32_t w) { return dead.count(w) != 0; }),
                 pluginSlotWindows.end());
-            slotsLost = slotsBefore - pluginSlotWindows.size();
-            for (uint32_t w : dead) popupsFreed += popupOverlays.erase(w);
-            for (uint32_t p : pixmaps) pixmapStore_.destroy(p);
-            if (slotsLost || popupsFreed) {
+            r.slots = slotsBefore - pluginSlotWindows.size();
+            for (uint32_t w : dead) r.popups += popupOverlays.erase(w);
+            if (r.slots || r.popups) {
                 dirty = true;
                 dirtyCv.notify_one();
             }
@@ -2209,6 +2199,41 @@ struct X11NativeDisplay::Impl {
                 else ++it;
             }
         }
+        if (dead.count(grabWindow)) grabWindow = 0;
+        uint32_t grab = xPointerGrabWindow_.load(std::memory_order_acquire);
+        if (grab && dead.count(grab) &&
+            xPointerGrabWindow_.compare_exchange_strong(grab, 0, std::memory_order_acq_rel)) {
+            xPointerGrabOwnerEvents_.store(false, std::memory_order_release);
+        }
+        uint32_t focused = focusedWindowId.load();
+        if (focused && dead.count(focused)) focusedWindowId.compare_exchange_strong(focused, 0);
+        r.windows = dead.size();
+        return r;
+    }
+
+    /* Frees what a disconnected client leaves behind, like a real X server
+     * in the default close-down mode (DestroyAll; wine never changes it):
+     * the windows it created and their subwindows, its pixmaps and GCs, and
+     * the bookkeeping keyed by those ids or by its fd. Without this every
+     * dead window stays on a long-lived display - a dead editor keeps the
+     * plugin slot, so the next editor's top-level window is ignored as an
+     * extra root child, and touches still hit-test into it. Called on the
+     * client's own thread before its fd is closed, so a new connection
+     * reusing the fd number can't inherit any of it. */
+    void releaseClientResources(int fd, const std::unordered_set<uint32_t>& pixmaps,
+                                const std::unordered_set<uint32_t>& gcs) {
+        std::lock_guard<std::mutex> reqLock(requestMutex);
+        std::unordered_set<uint32_t> owned;
+        {
+            std::lock_guard<std::mutex> lk(windowCreatorMutex);
+            for (const auto& kv : windowCreator)
+                if (kv.second == fd) owned.insert(kv.first);
+        }
+        const DestroyedWindows gone = destroyWindowTree(std::move(owned));
+        {
+            std::lock_guard<std::mutex> fbLock(bufferMutex);
+            for (uint32_t p : pixmaps) pixmapStore_.destroy(p);
+        }
         {
             std::lock_guard<std::mutex> lk(gcMutex);
             for (uint32_t g : gcs) gcForeground.erase(g);
@@ -2222,16 +2247,8 @@ struct X11NativeDisplay::Impl {
             std::lock_guard<std::mutex> lk(writeMutexFor(fd));
             std::vector<uint8_t>().swap(*q);
         }
-        if (dead.count(grabWindow)) grabWindow = 0;
-        uint32_t grab = xPointerGrabWindow_.load(std::memory_order_acquire);
-        if (grab && dead.count(grab) &&
-            xPointerGrabWindow_.compare_exchange_strong(grab, 0, std::memory_order_acq_rel)) {
-            xPointerGrabOwnerEvents_.store(false, std::memory_order_release);
-        }
-        uint32_t focused = focusedWindowId.load();
-        if (focused && dead.count(focused)) focusedWindowId.compare_exchange_strong(focused, 0);
         LOGI("X11 client fd=%d gone: freed %zu windows (%zu plugin slots, %zu popups), %zu pixmaps, %zu GCs",
-             fd, dead.size(), slotsLost, popupsFreed, pixmaps.size(), gcs.size());
+             fd, gone.windows, gone.slots, gone.popups, pixmaps.size(), gcs.size());
     }
 
     void sendEvent(uint8_t type, uint32_t windowId, int x, int y, int button, uint16_t lastSeq, int stateOverride = -1) {
@@ -4726,26 +4743,15 @@ struct X11NativeDisplay::Impl {
                         if (length < 2) break;
                         {
                             uint32_t window = read32(buf, 4);
-                            {
-                                std::lock_guard<std::mutex> mapLock(windowMapMutex);
-                                windowManager_.destroyWindow(window);
-                            }
-                            {
-                                std::lock_guard<std::mutex> fbLock(bufferMutex);
-                                if (popupOverlays.erase(window)) {
-                                    dirty = true;
-                                    dirtyCv.notify_one();
-                                }
-                            }
-                            /* Defensive: if the grab window is destroyed without a
-                             * preceding UngrabPointer, drop the stale grab so we
-                             * don't keep routing clicks to a dead window. */
-                            uint32_t expectGrab = window;
-                            if (xPointerGrabWindow_.compare_exchange_strong(
-                                    expectGrab, 0, std::memory_order_acq_rel)) {
-                                xPointerGrabOwnerEvents_.store(false, std::memory_order_release);
-                            }
-                            if (reqLogCount <= 15) LOGI("X11 handle DestroyWindow window=0x%x (cleaned up)", window);
+                            /* As in X, the subwindows go too, along with the
+                             * per-window state (slot, popup overlay, pointer
+                             * grab, ...) - a dead window left in the tree is
+                             * still hit by touches, and a dead slot keeps
+                             * routing input to it. */
+                            const DestroyedWindows gone = destroyWindowTree({window});
+                            if (reqLogCount <= 15)
+                                LOGI("X11 handle DestroyWindow window=0x%x (%zu windows, %zu slots, %zu popups)",
+                                     window, gone.windows, gone.slots, gone.popups);
                         }
                         break;
                     case SendEvent: {
