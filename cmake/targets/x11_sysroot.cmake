@@ -90,14 +90,15 @@ set(_x11_rt_stamp "${X11_BUILD_DIR}/x11_runtime_libs.stamp")
 add_custom_command(
     OUTPUT "${_x11_rt_stamp}"
     COMMAND ${CMAKE_COMMAND} -E make_directory "${JNILIBS_DIR}"
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${X11_SYSROOT}/lib/libXau.so" "${JNILIBS_DIR}/libXau.so.6"
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${X11_SYSROOT}/lib/libxcb.so" "${JNILIBS_DIR}/libxcb.so.1"
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${X11_SYSROOT}/lib/libX11.so" "${JNILIBS_DIR}/libX11.so.6"
-    COMMAND ${NDK_STRIP} --strip-unneeded "${JNILIBS_DIR}/libXau.so.6"
-    COMMAND ${NDK_STRIP} --strip-unneeded "${JNILIBS_DIR}/libxcb.so.1"
-    COMMAND ${NDK_STRIP} --strip-unneeded "${JNILIBS_DIR}/libX11.so.6"
-    # X11 extensions wine's winex11.drv dlopens (unversioned SONAMEs → staged as
-    # lib*.so directly; is_core_lib in build.sh keeps them in the main jniLibs).
+    # Staged as lib*.so - the only names Android extracts from an APK. Their
+    # SONAMEs are unversioned too; config/core-libs.txt keeps them in the base.
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${X11_SYSROOT}/lib/libXau.so" "${JNILIBS_DIR}/libXau.so"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${X11_SYSROOT}/lib/libxcb.so" "${JNILIBS_DIR}/libxcb.so"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${X11_SYSROOT}/lib/libX11.so" "${JNILIBS_DIR}/libX11.so"
+    COMMAND ${NDK_STRIP} --strip-unneeded "${JNILIBS_DIR}/libXau.so"
+    COMMAND ${NDK_STRIP} --strip-unneeded "${JNILIBS_DIR}/libxcb.so"
+    COMMAND ${NDK_STRIP} --strip-unneeded "${JNILIBS_DIR}/libX11.so"
+    # X11 extensions wine's winex11.drv dlopens
     COMMAND ${CMAKE_COMMAND} -E copy_if_different "${X11_SYSROOT}/lib/libXext.so"    "${JNILIBS_DIR}/libXext.so"
     COMMAND ${CMAKE_COMMAND} -E copy_if_different "${X11_SYSROOT}/lib/libXrender.so" "${JNILIBS_DIR}/libXrender.so"
     COMMAND ${CMAKE_COMMAND} -E copy_if_different "${X11_SYSROOT}/lib/libXi.so"      "${JNILIBS_DIR}/libXi.so"
@@ -249,10 +250,10 @@ set(_mesa_rt_stamp "${X11_BUILD_DIR}/mesa_runtime_libs.stamp")
 add_custom_command(
     OUTPUT "${_mesa_rt_stamp}"
     COMMAND ${CMAKE_COMMAND} -E make_directory "${JNILIBS_DIR}"
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${X11_SYSROOT}/lib/libGL.so" "${JNILIBS_DIR}/libGL.so.1"
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${X11_SYSROOT}/lib/libglapi.so" "${JNILIBS_DIR}/libglapi.so.0"
-    COMMAND ${NDK_STRIP} --strip-unneeded "${JNILIBS_DIR}/libGL.so.1"
-    COMMAND ${NDK_STRIP} --strip-unneeded "${JNILIBS_DIR}/libglapi.so.0"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${X11_SYSROOT}/lib/libGL.so" "${JNILIBS_DIR}/libGL.so"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${X11_SYSROOT}/lib/libglapi.so" "${JNILIBS_DIR}/libglapi.so"
+    COMMAND ${NDK_STRIP} --strip-unneeded "${JNILIBS_DIR}/libGL.so"
+    COMMAND ${NDK_STRIP} --strip-unneeded "${JNILIBS_DIR}/libglapi.so"
     COMMAND ${CMAKE_COMMAND} -E make_directory "${APP_ROOT}/assets/x11_libs/arm64-v8a"
     COMMAND ${CMAKE_COMMAND} -E copy_if_different "${X11_SYSROOT}/lib/libGL.so" "${APP_ROOT}/assets/x11_libs/arm64-v8a/libGL.so.1"
     COMMAND ${CMAKE_COMMAND} -E copy_if_different "${X11_SYSROOT}/lib/libglapi.so" "${APP_ROOT}/assets/x11_libs/arm64-v8a/libglapi.so.0"

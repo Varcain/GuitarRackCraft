@@ -121,6 +121,7 @@ neural_pack/src/main/assets/plugins/arm64-v8a/*.so
 gxplugins_pack/src/main/assets/plugins/arm64-v8a/*.so
 brummer_pack/src/main/assets/plugins/arm64-v8a/*.so
 app/src/full/jniLibs/arm64-v8a/*.so
+app/src/playstore/assets/plugin_libs.txt
 
 # vsthost_lib build artifacts (rebuilt by vsthost_lib/scripts/)
 # Everything in assets/ and jniLibs/ is generated — wine binaries, FEX PE DLLs,

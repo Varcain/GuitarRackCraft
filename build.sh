@@ -163,7 +163,7 @@ else
     echo "=== Build complete ==="
 fi
 
-# ─── Partition .so files into core vs plugin for Play Store dual-build ────────
+# ─── Core vs plugin libraries ────────────────────────────────────────────────
 
 # Core libs that stay in main jniLibs (base module): the globs in
 # config/core-libs.txt, which the app's verifyNativeInputs Gradle check reads too.
@@ -207,122 +207,83 @@ classify_plugin() {
     esac
 }
 
+# ─── Mirror the staged libraries into the source sets ───────────────────────
+# CMake stages every library the APK ships into $STAGE. Each destination is
+# made to hold exactly its share of it - changed files are copied, files no
+# longer staged are deleted - on every run, whatever the flavor, so a Gradle
+# build of either flavor packages what was just built:
+#   app/src/main/jniLibs         core libs (config/core-libs.txt)
+#   app/src/full/jniLibs         every plugin lib (full flavor)
+#   <pack>/src/main/assets       plugin libs by Play asset pack (playstore)
+#   app/src/playstore/assets/plugin_libs.txt   the packs' file list
+STAGE="$BUILD_DIR/jniLibs/arm64-v8a"
 MAIN_JNILIBS="$PROJECT_ROOT/app/src/main/jniLibs/arm64-v8a"
 FULL_JNILIBS="$PROJECT_ROOT/app/src/full/jniLibs/arm64-v8a"
 GX_PACK="$PROJECT_ROOT/gxplugins_pack/src/main/assets/plugins/arm64-v8a"
 NEURAL_PACK="$PROJECT_ROOT/neural_pack/src/main/assets/plugins/arm64-v8a"
 BRUMMER_PACK="$PROJECT_ROOT/brummer_pack/src/main/assets/plugins/arm64-v8a"
+PLUGIN_LIBS_TXT="$PROJECT_ROOT/app/src/playstore/assets/plugin_libs.txt"
 
-# ─── Rename SONAME-versioned X11/Mesa libs to standard .so extension ─────────
-# Android APK packaging only extracts lib*.so from nativeLibDir. Files like
-# libxcb.so.1 are NOT extracted. The SONAMEs are already unversioned (libxcb.so),
-# so renaming is safe — the linker matches by SONAME, not filename.
-rename_count=0
-for versioned in "$MAIN_JNILIBS"/libX11.so.[0-9]* \
-                 "$MAIN_JNILIBS"/libxcb.so.[0-9]* \
-                 "$MAIN_JNILIBS"/libXau.so.[0-9]* \
-                 "$MAIN_JNILIBS"/libGL.so.[0-9]* \
-                 "$MAIN_JNILIBS"/libglapi.so.[0-9]*; do
-    [ -f "$versioned" ] || continue
-    base="${versioned%%.so.*}.so"
-    if [ ! -f "$base" ]; then
-        mv "$versioned" "$base"
-        rename_count=$((rename_count + 1))
-    else
-        rm -f "$versioned"
-    fi
-done
-[ "$rename_count" -gt 0 ] && echo "Renamed $rename_count SONAME-versioned X11/Mesa libs to .so"
+# mirror_dir <dest> [<file>...]: make <dest> hold exactly these files. Only
+# files whose content differs are copied, so the rest keep their mtime.
+mirror_dir() {
+    local dest="$1" f name
+    shift
+    local -A keep=()
+    mkdir -p "$dest"
+    for f in "$@"; do
+        name="${f##*/}"
+        keep["$name"]=1
+        cmp -s "$f" "$dest/$name" || cp -f "$f" "$dest/$name"
+    done
+    for f in "$dest"/*; do
+        [ -e "$f" ] || continue
+        [ -n "${keep["${f##*/}"]:-}" ] || rm -f "$f"
+    done
+}
 
-if [ "$FLAVOR" = "playstore" ]; then
-    echo "=== Partitioning .so files (playstore) ==="
-    mkdir -p "$GX_PACK" "$NEURAL_PACK" "$BRUMMER_PACK"
-    NEED_FULL=false
-    NEED_PACKS=true
-elif [ "$FLAVOR" = "all" ]; then
-    echo "=== Partitioning .so files (all flavors) ==="
-    mkdir -p "$FULL_JNILIBS" "$GX_PACK" "$NEURAL_PACK" "$BRUMMER_PACK"
-    NEED_FULL=true
-    NEED_PACKS=true
-else
-    echo "=== Partitioning .so files (full) ==="
-    mkdir -p "$FULL_JNILIBS"
-    NEED_FULL=true
-    NEED_PACKS=false
-fi
-
-plugin_count=0
-core_count=0
-
-for so_file in "$MAIN_JNILIBS"/lib*.so*; do
+echo "=== Staging libraries from $STAGE ==="
+core=() plugins=() gx=() neural=() brummer=()
+for so_file in "$STAGE"/lib*.so*; do
     [ -f "$so_file" ] || continue
-    name=$(basename "$so_file")
-
+    name="${so_file##*/}"
     if is_core_lib "$name"; then
-        core_count=$((core_count + 1))
+        core+=("$so_file")
         continue
     fi
-
-    if [ "$NEED_FULL" = true ]; then
-        cp -f "$so_file" "$FULL_JNILIBS/$name"
-    fi
-
-    if [ "$NEED_PACKS" = true ]; then
-        pack=$(classify_plugin "$name")
-        case "$pack" in
-            gx)      cp -f "$so_file" "$GX_PACK/$name" ;;
-            neural)  cp -f "$so_file" "$NEURAL_PACK/$name" ;;
-            brummer) cp -f "$so_file" "$BRUMMER_PACK/$name" ;;
-        esac
-    fi
-
-    # Remove from main jniLibs (only core libs stay there)
-    rm -f "$so_file"
-    plugin_count=$((plugin_count + 1))
+    plugins+=("$so_file")
+    case "$(classify_plugin "$name")" in
+        gx)      gx+=("$so_file") ;;
+        neural)  neural+=("$so_file") ;;
+        brummer) brummer+=("$so_file") ;;
+    esac
 done
-
-# Idempotency: if main was already partitioned (re-run or cache hit), derive
-# packs from the full overlay which still has all plugin .so files.
-if [ "$plugin_count" -eq 0 ] && [ "$NEED_PACKS" = true ] && [ -d "$FULL_JNILIBS" ]; then
-    for so_file in "$FULL_JNILIBS"/lib*.so*; do
-        [ -f "$so_file" ] || continue
-        name=$(basename "$so_file")
-        is_core_lib "$name" && continue
-        pack=$(classify_plugin "$name")
-        case "$pack" in
-            gx)      cp -f "$so_file" "$GX_PACK/$name" ;;
-            neural)  cp -f "$so_file" "$NEURAL_PACK/$name" ;;
-            brummer) cp -f "$so_file" "$BRUMMER_PACK/$name" ;;
-        esac
-        plugin_count=$((plugin_count + 1))
-    done
-    [ "$plugin_count" -gt 0 ] && echo "Packs populated from full overlay (main already partitioned)"
+if [ "${#core[@]}" -eq 0 ]; then
+    echo "error: no core libraries in $STAGE - nothing has been built" >&2
+    exit 1
 fi
 
-echo "Partitioned: $core_count core libs in main, $plugin_count plugin libs moved"
-if [ "$NEED_FULL" = true ]; then
-    echo "  full overlay: $(ls "$FULL_JNILIBS" 2>/dev/null | wc -l) files"
-fi
-if [ "$NEED_PACKS" = true ]; then
-    echo "  gxplugins_pack: $(ls "$GX_PACK" 2>/dev/null | wc -l) files"
-    echo "  neural_pack: $(ls "$NEURAL_PACK" 2>/dev/null | wc -l) files"
-    echo "  brummer_pack: $(ls "$BRUMMER_PACK" 2>/dev/null | wc -l) files"
+mirror_dir "$MAIN_JNILIBS" "${core[@]}"
+mirror_dir "$FULL_JNILIBS" "${plugins[@]}"
+mirror_dir "$GX_PACK" "${gx[@]}"
+mirror_dir "$NEURAL_PACK" "${neural[@]}"
+mirror_dir "$BRUMMER_PACK" "${brummer[@]}"
 
-    # Generate manifest of plugin .so files for PluginAssetExtractor.
-    # assets.list() is unreliable across split APKs; the extractor reads this instead.
-    MANIFEST="$PROJECT_ROOT/app/src/main/assets/plugin_libs.txt"
-    mkdir -p "$(dirname "$MANIFEST")"
-    : > "$MANIFEST"
-    for dir in "$GX_PACK" "$NEURAL_PACK" "$BRUMMER_PACK"; do
-        for f in "$dir"/lib*.so*; do
-            [ -f "$f" ] || continue
-            basename "$f" >> "$MANIFEST"
-        done
-    done
-    manifest_count=$(wc -l < "$MANIFEST")
-    echo "  plugin_libs.txt: $manifest_count entries"
-
+# PluginAssetExtractor reads the packs' file list from this manifest, since
+# assets.list() is unreliable across split APKs. Rewritten only on change.
+mkdir -p "${PLUGIN_LIBS_TXT%/*}"
+for f in "${gx[@]}" "${neural[@]}" "${brummer[@]}"; do
+    echo "${f##*/}"
+done > "$PLUGIN_LIBS_TXT.new"
+if cmp -s "$PLUGIN_LIBS_TXT.new" "$PLUGIN_LIBS_TXT"; then
+    rm -f "$PLUGIN_LIBS_TXT.new"
+else
+    mv -f "$PLUGIN_LIBS_TXT.new" "$PLUGIN_LIBS_TXT"
 fi
+rm -f "$PROJECT_ROOT/app/src/main/assets/plugin_libs.txt"  # its old location
+
+echo "  main: ${#core[@]} core libs; full overlay: ${#plugins[@]} plugin libs"
+echo "  packs: gxplugins ${#gx[@]}, neural ${#neural[@]}, brummer ${#brummer[@]} (plugin_libs.txt)"
 
 # Generate LV2 asset manifests (all flavors).
 # assets.list() is unreliable across split APKs; extractLV2Assets() reads these instead.
@@ -340,4 +301,4 @@ if [ -d "$LV2_ASSET_DIR" ]; then
     lv2_files_count=$(wc -l < "$LV2_FILES")
     echo "  lv2_files.txt: $lv2_files_count entries"
 fi
-echo "=== Partitioning complete ==="
+echo "=== Staging complete ==="

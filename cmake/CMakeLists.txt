@@ -85,7 +85,9 @@ set(PROJECT_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/.." CACHE PATH "Project root" FORC
 set(THIRD_PARTY  "${PROJECT_ROOT}/3rd_party")
 set(APP_ROOT     "${PROJECT_ROOT}/app/src/main" CACHE PATH "App root")
 set(ASSETS_DIR   "${APP_ROOT}/assets/lv2" CACHE PATH "Assets dir")
-set(JNILIBS_DIR  "${APP_ROOT}/jniLibs/arm64-v8a" CACHE PATH "jniLibs dir")
+# Every library the APK ships is staged here, in the build dir. build.sh mirrors
+# it into app/src/main/jniLibs (core), app/src/full/jniLibs and the asset packs.
+set(JNILIBS_DIR  "${CMAKE_BINARY_DIR}/jniLibs/arm64-v8a")
 
 # ─── Include helper modules ──────────────────────────────────────────────────
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/modules")
