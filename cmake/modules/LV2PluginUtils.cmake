@@ -64,8 +64,10 @@ function(lv2_sync_to_jnilibs TARGET_NAME SOURCE_DIR DEPENDS_LIST)
         foreach(_so IN LISTS _sos)
             get_filename_component(_name \"\${_so}\" NAME)
             ${_logic}
-            execute_process(COMMAND \${CMAKE_COMMAND} -E copy_if_different \"\${_so}\" \"\${JNILIBS_DIR}/lib\${_name}\")
-            execute_process(COMMAND \${NDK_STRIP} --strip-unneeded \"\${JNILIBS_DIR}/lib\${_name}\")
+            execute_process(COMMAND \${CMAKE_COMMAND} -E copy_if_different \"\${_so}\" \"\${JNILIBS_DIR}/lib\${_name}\"
+                            COMMAND_ERROR_IS_FATAL ANY)
+            execute_process(COMMAND \${NDK_STRIP} --strip-unneeded \"\${JNILIBS_DIR}/lib\${_name}\"
+                            COMMAND_ERROR_IS_FATAL ANY)
         endforeach()
         file(WRITE \"\${STAMP}\" \"\")
     ")
