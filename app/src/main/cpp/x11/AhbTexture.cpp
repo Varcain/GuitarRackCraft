@@ -80,7 +80,12 @@ void AhbImporter::onContextLost() {
     }
     imgCacheCount_ = 0;
     image_ = nullptr;
-    tex_ = 0;  // texture died with the old context
+    // Same context (a render-thread restart): the texture still exists, free
+    // it. New context (re-attach): the old name means nothing there and
+    // glIsTexture is false - callers run this before creating GL objects in
+    // the new context, so the name can't match a new texture.
+    if (tex_ && glIsTexture(tex_)) glDeleteTextures(1, &tex_);
+    tex_ = 0;
 }
 
 bool AhbImporter::waitFenceFd(int fenceFd) {

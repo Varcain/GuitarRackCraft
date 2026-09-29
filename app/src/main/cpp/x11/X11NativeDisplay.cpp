@@ -535,9 +535,9 @@ struct X11NativeDisplay::Impl {
     /* GPU compositor (kGpuCompositor): one GL texture per popup overlay, keyed
      * by window id. Touched only by the render thread (the one with the GL
      * context). Textures are sized via glTexImage2D on upload, so a recycled
-     * wid with a new size is handled correctly. Bounded (popup wids per
-     * session) and leaked at context teardown — we intentionally skip EGL
-     * teardown, so an explicit GC buys nothing. */
+     * wid with a new size is handled correctly. Only popups drawn in the
+     * current frame keep one: wine makes a new window for every menu or
+     * tooltip it shows, so kept textures would pile up over a session. */
     std::unordered_map<uint32_t, GLuint> popupTextures_;
     X11ByteOrder byteOrder_{true};  // X11 byte order (replaces msbFirst_)
     // Convenience aliases: keep existing call sites working via delegation
@@ -744,7 +744,32 @@ struct X11NativeDisplay::Impl {
     void write16(uint8_t* p, int off, uint16_t val) const { byteOrder_.write16(p, off, val); }
     void write32(uint8_t* p, int off, uint32_t val) const { byteOrder_.write32(p, off, val); }
 
+    /* Frees the GL objects a previous initGL() created. A render-thread
+     * restart (hide/resume) reuses the same context, where they would leak;
+     * after a re-attach the context is new and the old names don't exist in
+     * it (deleting them is a no-op). Runs before initGL creates anything, so
+     * an old name can't match a new object. Needs a current context. */
+    void releaseGLObjects() {
+        if (program && glIsProgram(program)) glDeleteProgram(program);
+        program = 0;
+        if (fbTex) glDeleteTextures(1, &fbTex);
+        fbTex = 0;
+        if (fbVbo) glDeleteBuffers(1, &fbVbo);
+        fbVbo = 0;
+        for (auto& kv : popupTextures_)
+            if (kv.second) glDeleteTextures(1, &kv.second);
+        popupTextures_.clear();
+        // Forget the imported AHB texture/EGLImage and drop any registered AHB
+        // (back to CPU until the producer re-registers — wine re-registers on
+        // resize/re-attach anyway).
+        ahbImporter_.onContextLost();
+        ahbEditorTex_ = 0;
+        if (ahbEditorCurrent_) { AHardwareBuffer_release(ahbEditorCurrent_); ahbEditorCurrent_ = nullptr; }
+        ahbEditorActive_.store(false);  // dropped the GPU source; CPU path until re-registered
+    }
+
     bool initGL() {
+        releaseGLObjects();
         const char* vs = "attribute vec2 aPos; attribute vec2 aTex; varying vec2 vTex; void main() { gl_Position = vec4(aPos, 0, 1); vTex = aTex; }";
         const char* fs = "precision mediump float; varying vec2 vTex; uniform sampler2D uTex; void main() { vec4 c = texture2D(uTex, vTex); gl_FragColor = vec4(c.b, c.g, c.r, 1.0); }";
         GLuint vsId = glCreateShader(GL_VERTEX_SHADER);
@@ -769,14 +794,8 @@ struct X11NativeDisplay::Impl {
         glBindBuffer(GL_ARRAY_BUFFER, fbVbo);
         glBufferData(GL_ARRAY_BUFFER, sizeof(verts), verts, GL_STATIC_DRAW);
         // Phase 1: probe AHB→EGLImage import support (needs a current context).
-        // A re-attach makes a new GL context; forget the stale texture/EGLImage
-        // and drop any registered AHB (back to CPU until the producer re-registers
-        // — wine re-registers on resize/re-attach anyway).
+        // (The previous context's AHB state was dropped in releaseGLObjects.)
         ahbImporter_.init(eglDisplay);
-        ahbImporter_.onContextLost();
-        ahbEditorTex_ = 0;
-        if (ahbEditorCurrent_) { AHardwareBuffer_release(ahbEditorCurrent_); ahbEditorCurrent_ = nullptr; }
-        ahbEditorActive_.store(false);  // dropped the GPU source; CPU path until re-registered
         return program != 0;
     }
 
@@ -1068,6 +1087,16 @@ struct X11NativeDisplay::Impl {
                     if (t == 0) glGenTextures(1, &t);
                     uploadTex(t, p.pixels.data(), p.w, p.h);
                     compositeQuad(t, p.x, p.y, p.w, p.h, width, height, x0, y0, scale);
+                }
+                // Free the textures of popups not in this frame (closed,
+                // unmapped, destroyed); drawn ones are re-uploaded every frame.
+                for (auto it = popupTextures_.begin(); it != popupTextures_.end();) {
+                    bool inFrame = false;
+                    for (const auto& p : popupSnapshots)
+                        if (p.wid == it->first) { inFrame = true; break; }
+                    if (inFrame) { ++it; continue; }
+                    glDeleteTextures(1, &it->second);
+                    it = popupTextures_.erase(it);
                 }
             } else if (width > 0 && height > 0 && fw > 0 && fh > 0 && !renderBuffer.empty()) {
                 // Compute letterbox viewport: scale to fit surface while preserving aspect ratio

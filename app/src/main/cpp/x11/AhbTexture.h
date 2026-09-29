@@ -41,10 +41,11 @@ public:
     // Free the current EGLImage + texture. Needs a current GL context.
     void destroy();
 
-    // The GL context was lost/recreated (re-attach): forget the texture and drop
-    // the EGLImage cache (its backing buffers belong to the now-gone producer
-    // connection). Safe to call from initGL (a live EGLDisplay); destroys cached
-    // EGLImages. The next importToTexture() reallocates.
+    // The GL context was lost/recreated (re-attach) or the render thread is
+    // restarting: free/forget the texture and drop the EGLImage cache (its
+    // backing buffers belong to the producer connection). Needs a current
+    // context and must run before any GL object is created in a new one.
+    // The next importToTexture() reallocates.
     void onContextLost();
 
     ~AhbImporter();
