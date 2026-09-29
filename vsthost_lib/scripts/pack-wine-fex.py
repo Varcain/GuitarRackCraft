@@ -134,16 +134,12 @@ def iter_build_outputs(build_root: Path, fex_arm64ec: Path, fex_wow64: Path) -> 
     for so_name in [
         "libfreetype.so", "libpng16.so",
     ]:
-        src = x11_lib_dir / so_name
-        if src.exists():
-            yield src, f"_X11_RAW_/{so_name}"
+        yield x11_lib_dir / so_name, f"_X11_RAW_/{so_name}"
 
     # GnuTLS for wine's secur32 (Schannel TLS). Built by
     # scripts/build-gnutls-android.sh into toolchain/gnutls-android-arm64/lib.
     # Ships under its original SONAME so wine's runtime link picks it up.
-    gnutls_lib = repo_root / "toolchain/gnutls-android-arm64/lib/libgnutls.so"
-    if gnutls_lib.exists():
-        yield gnutls_lib, "_X11_RAW_/libgnutls.so"
+    yield repo_root / "toolchain/gnutls-android-arm64/lib/libgnutls.so", "_X11_RAW_/libgnutls.so"
 
     # libadrenotools + the namespace-bypass hook libs it needs (built by
     # scripts/build-adrenotools.sh into toolchain/adrenotools-libs). These are
@@ -162,9 +158,7 @@ def iter_build_outputs(build_root: Path, fex_arm64ec: Path, fex_wow64: Path) -> 
     for so_name in [
         "libadrenotools.so", "libhook_impl.so", "libmain_hook.so",
     ]:
-        src = adreno_lib_dir / so_name
-        if src.exists():
-            yield src, f"_X11_RAW_/{so_name}"
+        yield adreno_lib_dir / so_name, f"_X11_RAW_/{so_name}"
 
 
 def strip_symbol_versions(path: Path) -> None:
@@ -224,21 +218,20 @@ def strip_symbol_versions(path: Path) -> None:
         f.truncate()
 
 
+def run_checked(cmd: list[str]) -> str:
+    """Run cmd and return its stdout; exit with its stderr if it fails."""
+    r = subprocess.run(cmd, capture_output=True, text=True)
+    if r.returncode != 0:
+        sys.exit(f"error: {' '.join(cmd)} failed ({r.returncode}):\n{r.stderr.strip()}")
+    return r.stdout
+
+
 def normalize_sonames(path: Path) -> None:
     """patchelf the file in place: strip version suffixes from SONAME and
     NEEDED entries (libz.so.1 → libz.so, libbz2.so.1.0 → libbz2.so).
-    Bionic's dynamic linker rejects versioned SONAMEs from APKs.
-    No-op if patchelf isn't available or the file isn't ELF."""
-    if not shutil.which("patchelf"):
-        return
+    Bionic's dynamic linker rejects versioned SONAMEs from APKs."""
     # readelf to enumerate NEEDED + SONAME
-    try:
-        out = subprocess.run(
-            ["readelf", "-d", str(path)],
-            check=True, capture_output=True, text=True,
-        ).stdout
-    except (subprocess.CalledProcessError, FileNotFoundError):
-        return
+    out = run_checked(["readelf", "-d", str(path)])
 
     def strip_ver(name: str) -> str:
         # libfoo.so.1 → libfoo.so ; libfoo.so.1.2 → libfoo.so
@@ -254,29 +247,19 @@ def normalize_sonames(path: Path) -> None:
             orig = line.split("[", 1)[1].rstrip("]")
             normalized = strip_ver(orig)
             if normalized != orig:
-                subprocess.run(
-                    ["patchelf", "--replace-needed", orig, normalized, str(path)],
-                    check=False, capture_output=True,
-                )
+                run_checked(["patchelf", "--replace-needed", orig, normalized, str(path)])
         elif "(SONAME)" in line and "[" in line:
             orig = line.split("[", 1)[1].rstrip("]")
             normalized = strip_ver(orig)
             if normalized != orig:
-                subprocess.run(
-                    ["patchelf", "--set-soname", normalized, str(path)],
-                    check=False, capture_output=True,
-                )
+                run_checked(["patchelf", "--set-soname", normalized, str(path)])
 
 
 def strip_into(src: Path, dst: Path, strip_tool: str) -> None:
     dst.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(src, dst)
-    # Strip is best-effort: PE DLLs may complain, in which case we keep them as-is.
-    try:
-        subprocess.run([strip_tool, "--strip-unneeded", str(dst)], check=True, capture_output=True)
-    except subprocess.CalledProcessError:
-        # Fall back to keeping the unstripped copy.
-        pass
+    # llvm-strip handles both the ELF and the PE (COFF) files we ship.
+    run_checked([strip_tool, "--strip-unneeded", str(dst)])
 
 
 def elf_lib_name(device_path: str) -> str:
@@ -339,10 +322,18 @@ def main() -> int:
     out_assets = repo / "src/main/assets"
     out_manifest = out_assets / "wine-fex-manifest.json"
 
-    for p in [wine_build / "loader/wine", fex_arm64ec, fex_wow64]:
-        if not p.exists():
-            print(f"missing input: {p}", file=sys.stderr)
-            return 1
+    outputs = list(iter_build_outputs(wine_build, fex_arm64ec, fex_wow64))
+
+    # Check every input and tool before touching the previous pack: a missing
+    # or unexpected build output fails the pack instead of being left out.
+    errors = [f"missing input: {src}" for src, _ in outputs if not src.exists()]
+    errors += [f"input is neither ELF nor PE: {src}" for src, _ in outputs
+               if src.exists() and not file_needs_exec(src)]
+    errors += [f"tool not found: {t}" for t in (args.strip, "readelf", "patchelf")
+               if not shutil.which(t)]
+    if errors:
+        print("\n".join(errors), file=sys.stderr)
+        return 1
 
     out_jni.mkdir(parents=True, exist_ok=True)
 
@@ -369,14 +360,12 @@ def main() -> int:
         if stale.exists():
             stale.unlink()
 
-    outputs = list(iter_build_outputs(wine_build, fex_arm64ec, fex_wow64))
-
     # Leave unneeded wine PE files out (wine-prune.conf); refuses to prune
     # anything a kept module still depends on.
     pruned: set[str] = set()
     if not args.no_prune:
         pe_files = [(src, dp) for src, dp in outputs
-                    if not dp.startswith("_X11_RAW_/") and src.exists() and is_pe(src)]
+                    if not dp.startswith("_X11_RAW_/") and is_pe(src)]
         try:
             result = wine_prune.plan(pe_files, repo / "wine-prune.conf", wine_prune.find_readobj(repo))
         except wine_prune.PruneError as e:
@@ -397,14 +386,8 @@ def main() -> int:
 
     total_bytes = 0
     for src, device_path in outputs:
-        if not src.exists():
-            print(f"  skip (missing): {src}", file=sys.stderr)
-            continue
         if device_path in pruned or (
                 "/aarch64-unix/" in device_path and Path(device_path).stem.lower() in orphan_stems):
-            continue
-        if not file_needs_exec(src):
-            # Just-in-case fallback; everything we list should be ELF or PE.
             continue
         # X11 libs ship with their original SONAME so Bionic's linker can
         # resolve them by the names baked into winex11.so / libX11.so etc.
@@ -483,7 +466,8 @@ def main() -> int:
                     tf.add(f, arcname=f"nls/{f.name}", filter=normalized)
         print(f"NLS tarball → {out_nls_tar} ({out_nls_tar.stat().st_size/1024:.0f} KB)")
     else:
-        print(f"WARN: wine NLS source dir not found at {wine_src_nls}", file=sys.stderr)
+        print(f"error: wine NLS source dir not found at {wine_src_nls}", file=sys.stderr)
+        return 1
 
     # --- wine fonts ----------------------------------------------------------
     # fetch-x11-libs.sh collects Liberation + DejaVu TTFs into toolchain/
@@ -502,7 +486,8 @@ def main() -> int:
             count += 1
         print(f"fonts → {out_fonts} ({count} files)")
     else:
-        print(f"WARN: toolchain/wine-fonts not found; run fetch-x11-libs.sh first", file=sys.stderr)
+        print(f"error: toolchain/wine-fonts not found; run fetch-x11-libs.sh first", file=sys.stderr)
+        return 1
 
     # --- wine's own built-in core fonts --------------------------------------
     # Stock wine ships real Windows core faces (Tahoma, System, MS Sans Serif,
@@ -530,10 +515,12 @@ def main() -> int:
                 shutil.copy2(f, out_fonts / name)
                 wc += 1
             else:
-                print(f"WARN: wine core font missing: {f}", file=sys.stderr)
+                print(f"error: wine core font missing: {f}", file=sys.stderr)
+                return 1
         print(f"wine core fonts → {out_fonts} ({wc} files)")
     else:
-        print(f"WARN: wine source fonts dir not found at {wine_fonts_src}", file=sys.stderr)
+        print(f"error: wine source fonts dir not found at {wine_fonts_src}", file=sys.stderr)
+        return 1
 
     return 0
 
