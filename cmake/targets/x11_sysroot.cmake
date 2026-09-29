@@ -54,7 +54,7 @@ ExternalProject_Add_Step(xtrans autoreconf COMMAND bash "${_ensure_autotools_scr
 add_autotools_project(libXau
     SOURCE_DIR "${_x11_dir}/libXau" BINARY_DIR "${X11_BUILD_DIR}/libXau" INSTALL_DIR "${X11_SYSROOT}"
     DEPENDS xorgproto CONFIGURE_ARGS --enable-shared --disable-static "CFLAGS=${NDK_CFLAGS_STR} -I${X11_SYSROOT}/include" "LDFLAGS=-L${X11_SYSROOT}/lib"
-    EXTERNAL_PROJECT_ARGS BUILD_BYPRODUCTS "${X11_SYSROOT}/lib/libXau.so"
+    EXTERNAL_PROJECT_ARGS INSTALL_BYPRODUCTS "${X11_SYSROOT}/lib/libXau.so"
 )
 ExternalProject_Add_Step(libXau autoreconf COMMAND bash "${_ensure_autotools_script}" <SOURCE_DIR> DEPENDEES download DEPENDERS configure)
 
@@ -69,7 +69,7 @@ ExternalProject_Add_Step(xcb_proto autoreconf COMMAND bash "${_ensure_autotools_
 add_autotools_project(libxcb
     SOURCE_DIR "${_x11_dir}/libxcb" BINARY_DIR "${X11_BUILD_DIR}/libxcb" INSTALL_DIR "${X11_SYSROOT}"
     DEPENDS xcb_proto libXau CONFIGURE_ARGS --enable-shared --disable-static --disable-devel-docs --without-doxygen "CFLAGS=${NDK_CFLAGS_STR} -I${X11_SYSROOT}/include" "LDFLAGS=-L${X11_SYSROOT}/lib" "LIBS=-lXau" ENV "PYTHON=python3"
-    EXTERNAL_PROJECT_ARGS BUILD_BYPRODUCTS "${X11_SYSROOT}/lib/libxcb.so"
+    EXTERNAL_PROJECT_ARGS INSTALL_BYPRODUCTS "${X11_SYSROOT}/lib/libxcb.so"
 )
 ExternalProject_Add_Step(libxcb autoreconf COMMAND bash "${_ensure_autotools_script}" <SOURCE_DIR> DEPENDEES download DEPENDERS configure)
 
@@ -80,7 +80,7 @@ file(WRITE "${_x11_strip_pthread_script}" "#!/bin/bash\nfind \"$1\" -name Makefi
 add_autotools_project(libX11
     SOURCE_DIR "${_x11_dir}/libX11" BINARY_DIR "${X11_BUILD_DIR}/libX11" INSTALL_DIR "${X11_SYSROOT}"
     DEPENDS xorgproto xtrans libxcb CONFIGURE_ARGS "PTHREAD_CFLAGS=" "PTHREAD_LIBS=" --enable-shared --disable-static --disable-xf86bigfont --disable-specs --disable-loadable-i18n --disable-composecache --without-xmlto --without-fop --enable-malloc0returnsnull "CFLAGS=${NDK_CFLAGS_STR} -I${X11_SYSROOT}/include" "LDFLAGS=-L${X11_SYSROOT}/lib"
-    EXTERNAL_PROJECT_ARGS BUILD_BYPRODUCTS "${X11_SYSROOT}/lib/libX11.so"
+    EXTERNAL_PROJECT_ARGS INSTALL_BYPRODUCTS "${X11_SYSROOT}/lib/libX11.so"
 )
 ExternalProject_Add_Step(libX11 autoreconf COMMAND bash "${_ensure_autotools_script}" <SOURCE_DIR> DEPENDEES download DEPENDERS configure)
 ExternalProject_Add_Step(libX11 strip_pthread COMMAND bash "${_x11_strip_pthread_script}" <BINARY_DIR> DEPENDEES configure DEPENDERS build)
@@ -123,7 +123,7 @@ foreach(_lib Xext Xrender)
     add_autotools_project(lib${_lib}
         SOURCE_DIR "${_x11_dir}/lib${_lib}" BINARY_DIR "${X11_BUILD_DIR}/lib${_lib}" INSTALL_DIR "${X11_SYSROOT}"
         DEPENDS libX11 CONFIGURE_ARGS --enable-shared --enable-static --enable-malloc0returnsnull "CFLAGS=${NDK_CFLAGS_STR} -I${X11_SYSROOT}/include" "LDFLAGS=-L${X11_SYSROOT}/lib"
-        EXTERNAL_PROJECT_ARGS BUILD_BYPRODUCTS "${X11_SYSROOT}/lib/lib${_lib}.so"
+        EXTERNAL_PROJECT_ARGS INSTALL_BYPRODUCTS "${X11_SYSROOT}/lib/lib${_lib}.so"
     )
     ExternalProject_Add_Step(lib${_lib} autoreconf COMMAND bash "${_ensure_autotools_script}" <SOURCE_DIR> DEPENDEES download DEPENDERS configure)
 endforeach()
@@ -134,12 +134,12 @@ endforeach()
 # fetch-x11-libs.sh). Pinned to the versions wine was built against. Staged
 # into jniLibs with libX11/libxcb so the wine subprocess resolves them.
 set(_x11ext_args --enable-shared --disable-static --enable-malloc0returnsnull "CFLAGS=${NDK_CFLAGS_STR} -I${X11_SYSROOT}/include" "LDFLAGS=-L${X11_SYSROOT}/lib")
-add_autotools_project(libXdmcp   SOURCE_DIR "${_x11_dir}/libXdmcp"   BINARY_DIR "${X11_BUILD_DIR}/libXdmcp"   INSTALL_DIR "${X11_SYSROOT}" DEPENDS xorgproto                  CONFIGURE_ARGS ${_x11ext_args} EXTERNAL_PROJECT_ARGS BUILD_BYPRODUCTS "${X11_SYSROOT}/lib/libXdmcp.so")
-add_autotools_project(libXfixes  SOURCE_DIR "${_x11_dir}/libXfixes"  BINARY_DIR "${X11_BUILD_DIR}/libXfixes"  INSTALL_DIR "${X11_SYSROOT}" DEPENDS libX11                     CONFIGURE_ARGS ${_x11ext_args} EXTERNAL_PROJECT_ARGS BUILD_BYPRODUCTS "${X11_SYSROOT}/lib/libXfixes.so")
-add_autotools_project(libXi      SOURCE_DIR "${_x11_dir}/libXi"      BINARY_DIR "${X11_BUILD_DIR}/libXi"      INSTALL_DIR "${X11_SYSROOT}" DEPENDS libX11 libXext            CONFIGURE_ARGS ${_x11ext_args} EXTERNAL_PROJECT_ARGS BUILD_BYPRODUCTS "${X11_SYSROOT}/lib/libXi.so")
-add_autotools_project(libXrandr  SOURCE_DIR "${_x11_dir}/libXrandr"  BINARY_DIR "${X11_BUILD_DIR}/libXrandr"  INSTALL_DIR "${X11_SYSROOT}" DEPENDS libX11 libXext libXrender  CONFIGURE_ARGS ${_x11ext_args} EXTERNAL_PROJECT_ARGS BUILD_BYPRODUCTS "${X11_SYSROOT}/lib/libXrandr.so")
-add_autotools_project(libXcursor SOURCE_DIR "${_x11_dir}/libXcursor" BINARY_DIR "${X11_BUILD_DIR}/libXcursor" INSTALL_DIR "${X11_SYSROOT}" DEPENDS libX11 libXfixes libXrender CONFIGURE_ARGS ${_x11ext_args} EXTERNAL_PROJECT_ARGS BUILD_BYPRODUCTS "${X11_SYSROOT}/lib/libXcursor.so")
-add_autotools_project(libXxf86vm SOURCE_DIR "${_x11_dir}/libXxf86vm" BINARY_DIR "${X11_BUILD_DIR}/libXxf86vm" INSTALL_DIR "${X11_SYSROOT}" DEPENDS libX11 libXext            CONFIGURE_ARGS ${_x11ext_args} EXTERNAL_PROJECT_ARGS BUILD_BYPRODUCTS "${X11_SYSROOT}/lib/libXxf86vm.so")
+add_autotools_project(libXdmcp   SOURCE_DIR "${_x11_dir}/libXdmcp"   BINARY_DIR "${X11_BUILD_DIR}/libXdmcp"   INSTALL_DIR "${X11_SYSROOT}" DEPENDS xorgproto                  CONFIGURE_ARGS ${_x11ext_args} EXTERNAL_PROJECT_ARGS INSTALL_BYPRODUCTS "${X11_SYSROOT}/lib/libXdmcp.so")
+add_autotools_project(libXfixes  SOURCE_DIR "${_x11_dir}/libXfixes"  BINARY_DIR "${X11_BUILD_DIR}/libXfixes"  INSTALL_DIR "${X11_SYSROOT}" DEPENDS libX11                     CONFIGURE_ARGS ${_x11ext_args} EXTERNAL_PROJECT_ARGS INSTALL_BYPRODUCTS "${X11_SYSROOT}/lib/libXfixes.so")
+add_autotools_project(libXi      SOURCE_DIR "${_x11_dir}/libXi"      BINARY_DIR "${X11_BUILD_DIR}/libXi"      INSTALL_DIR "${X11_SYSROOT}" DEPENDS libX11 libXext            CONFIGURE_ARGS ${_x11ext_args} EXTERNAL_PROJECT_ARGS INSTALL_BYPRODUCTS "${X11_SYSROOT}/lib/libXi.so")
+add_autotools_project(libXrandr  SOURCE_DIR "${_x11_dir}/libXrandr"  BINARY_DIR "${X11_BUILD_DIR}/libXrandr"  INSTALL_DIR "${X11_SYSROOT}" DEPENDS libX11 libXext libXrender  CONFIGURE_ARGS ${_x11ext_args} EXTERNAL_PROJECT_ARGS INSTALL_BYPRODUCTS "${X11_SYSROOT}/lib/libXrandr.so")
+add_autotools_project(libXcursor SOURCE_DIR "${_x11_dir}/libXcursor" BINARY_DIR "${X11_BUILD_DIR}/libXcursor" INSTALL_DIR "${X11_SYSROOT}" DEPENDS libX11 libXfixes libXrender CONFIGURE_ARGS ${_x11ext_args} EXTERNAL_PROJECT_ARGS INSTALL_BYPRODUCTS "${X11_SYSROOT}/lib/libXcursor.so")
+add_autotools_project(libXxf86vm SOURCE_DIR "${_x11_dir}/libXxf86vm" BINARY_DIR "${X11_BUILD_DIR}/libXxf86vm" INSTALL_DIR "${X11_SYSROOT}" DEPENDS libX11 libXext            CONFIGURE_ARGS ${_x11ext_args} EXTERNAL_PROJECT_ARGS INSTALL_BYPRODUCTS "${X11_SYSROOT}/lib/libXxf86vm.so")
 foreach(_x11ext libXdmcp libXfixes libXi libXrandr libXcursor libXxf86vm)
     ExternalProject_Add_Step(${_x11ext} autoreconf COMMAND bash "${_ensure_autotools_script}" <SOURCE_DIR> DEPENDEES download DEPENDERS configure)
 endforeach()
@@ -148,14 +148,14 @@ endforeach()
 add_meson_project(pixman
     SOURCE_DIR "${_x11_dir}/pixman" BINARY_DIR "${X11_BUILD_DIR}/pixman" INSTALL_DIR "${X11_SYSROOT}"
     CROSS_FILE ${_x11_cross} MESON_ARGS -Dgtk=disabled -Dlibpng=disabled -Dtests=disabled -Da64-neon=disabled
-    EXTERNAL_PROJECT_ARGS BUILD_BYPRODUCTS "${X11_SYSROOT}/lib/libpixman-1.a"
+    EXTERNAL_PROJECT_ARGS INSTALL_BYPRODUCTS "${X11_SYSROOT}/lib/libpixman-1.a"
 )
 
 # ─── 6. libpng ──────────────────────────────────────────────────────────────
 add_autotools_project(libpng
     SOURCE_DIR "${_x11_dir}/libpng" BINARY_DIR "${X11_BUILD_DIR}/libpng" INSTALL_DIR "${X11_SYSROOT}"
     CONFIGURE_ARGS --enable-static --disable-shared "CPPFLAGS=-I${X11_SYSROOT}/include" "CFLAGS=${NDK_CFLAGS_STR}" "LDFLAGS=-L${X11_SYSROOT}/lib"
-    EXTERNAL_PROJECT_ARGS BUILD_BYPRODUCTS "${X11_SYSROOT}/lib/libpng.a"
+    EXTERNAL_PROJECT_ARGS INSTALL_BYPRODUCTS "${X11_SYSROOT}/lib/libpng.a"
 )
 ExternalProject_Add_Step(libpng autoreconf COMMAND bash "${_ensure_autotools_script}" <SOURCE_DIR> DEPENDEES download DEPENDERS configure)
 
@@ -205,7 +205,7 @@ ExternalProject_Add(cairo
     BUILD_COMMAND ninja -C <BINARY_DIR> -j${NJOBS}
     INSTALL_COMMAND ninja -C <BINARY_DIR> install
     DEPENDS libX11 libXext libXrender pixman libpng
-    BUILD_BYPRODUCTS "${X11_SYSROOT}/lib/libcairo.a"
+    INSTALL_BYPRODUCTS "${X11_SYSROOT}/lib/libcairo.a"
     LOG_CONFIGURE TRUE LOG_BUILD TRUE
 )
 
@@ -214,7 +214,7 @@ set(EXPAT_SRC "${THIRD_PARTY}/expat/expat")
 ExternalProject_Add(expat
     SOURCE_DIR "${EXPAT_SRC}" BINARY_DIR "${X11_BUILD_DIR}/expat" INSTALL_DIR "${X11_SYSROOT}"
     CMAKE_ARGS -DCMAKE_TOOLCHAIN_FILE=${CMAKE_TOOLCHAIN_FILE} -DANDROID_ABI=${ANDROID_ABI} -DANDROID_PLATFORM=${ANDROID_PLATFORM} -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=<INSTALL_DIR> -DBUILD_SHARED_LIBS=OFF -DEXPAT_BUILD_TOOLS=OFF -DEXPAT_BUILD_EXAMPLES=OFF -DEXPAT_BUILD_TESTS=OFF -DEXPAT_BUILD_DOCS=OFF -DEXPAT_SHARED_LIBS=OFF ${NDK_CCACHE_CMAKE_ARGS}
-    BUILD_BYPRODUCTS "${X11_SYSROOT}/lib/libexpat.a"
+    INSTALL_BYPRODUCTS "${X11_SYSROOT}/lib/libexpat.a"
     LOG_CONFIGURE TRUE LOG_BUILD TRUE
 )
 
@@ -241,7 +241,7 @@ ExternalProject_Add(mesa
     BUILD_COMMAND ninja -C <BINARY_DIR> -j${NJOBS}
     INSTALL_COMMAND ninja -C <BINARY_DIR> install
     DEPENDS libX11 libXext expat zlib_sysroot
-    BUILD_BYPRODUCTS "${X11_SYSROOT}/lib/libGL.so" "${X11_SYSROOT}/lib/libglapi.so"
+    INSTALL_BYPRODUCTS "${X11_SYSROOT}/lib/libGL.so" "${X11_SYSROOT}/lib/libglapi.so"
     LOG_CONFIGURE TRUE LOG_BUILD TRUE
 )
 

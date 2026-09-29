@@ -36,6 +36,6 @@ endif()
 add_autotools_project(fftw3
     SOURCE_DIR "${FFTW_SRC}" BINARY_DIR "${FFTW3_BUILD_DIR}" INSTALL_DIR "${FFTW3_PREFIX}"
     CONFIGURE_ARGS --host=${NDK_HOST} --enable-float --enable-static --disable-shared --with-pic --disable-fortran --disable-mpi --disable-threads --disable-openmp --disable-doc "CC=${NDK_CC}" "CFLAGS=${NDK_CFLAGS_STR}" "LDFLAGS="
-    EXTERNAL_PROJECT_ARGS BUILD_BYPRODUCTS "${FFTW3_PREFIX}/lib/libfftw3f.a"
+    EXTERNAL_PROJECT_ARGS INSTALL_BYPRODUCTS "${FFTW3_PREFIX}/lib/libfftw3f.a"
 )
 watch_external_sources(fftw3 DIRECTORIES "${FFTW_SRC}/kernel" "${FFTW_SRC}/dft" "${FFTW_SRC}/rdft" "${FFTW_SRC}/api")

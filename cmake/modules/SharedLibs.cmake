@@ -47,7 +47,7 @@ function(add_shared_libsndfile TARGET BUILD_DIR INSTALL_PREFIX)
             -DINSTALL_MANPAGES=OFF
         BUILD_COMMAND   ${CMAKE_COMMAND} --build <BINARY_DIR> -j${NJOBS}
         INSTALL_COMMAND ${CMAKE_COMMAND} --install <BINARY_DIR>
-        BUILD_BYPRODUCTS "${INSTALL_PREFIX}/lib/libsndfile.a"
+        INSTALL_BYPRODUCTS "${INSTALL_PREFIX}/lib/libsndfile.a"
     )
     watch_external_sources(${TARGET} DIRECTORIES "${_sndfile_src}/src")
 endfunction()

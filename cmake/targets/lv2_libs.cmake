@@ -133,7 +133,7 @@ ExternalProject_Add(lilv
     INSTALL_COMMAND ${NDK_ENV_CMD} python3 waf install
     BUILD_IN_SOURCE TRUE
     DEPENDS         serd zix sord sratom
-    BUILD_BYPRODUCTS "${LV2_PREFIX}/lib/liblilv-0.a"
+    INSTALL_BYPRODUCTS "${LV2_PREFIX}/lib/liblilv-0.a"
     LOG_CONFIGURE TRUE
     LOG_BUILD TRUE
 )

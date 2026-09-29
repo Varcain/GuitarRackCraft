@@ -25,7 +25,10 @@
 #   cmake --preset android-arm64 -S cmake
 #   cmake --build --preset android-arm64
 # =============================================================================
-cmake_minimum_required(VERSION 3.22)
+# 3.26: ExternalProject INSTALL_BYPRODUCTS. The sysroot/prefix libraries are
+# written by each project's install step, and only declaring them on that step
+# makes their consumers re-run in the same build.
+cmake_minimum_required(VERSION 3.26)
 
 # ─── Android NDK: the version pinned in config/toolchain.properties ──────────
 # ndk.version - the Gradle builds use it too, and everything here links
