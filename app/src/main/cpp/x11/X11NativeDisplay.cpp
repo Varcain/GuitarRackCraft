@@ -60,6 +60,7 @@
 #include <cstdio>
 #include <string>
 #include <algorithm>
+#include <array>
 #include <climits>
 
 #define LOG_TAG "X11NativeDisplay"
@@ -1378,20 +1379,41 @@ struct X11NativeDisplay::Impl {
         return true;
     }
 
+    /* Resource-id bases of this display's live connections. A client makes
+     * its ids as base | (0 .. 0xFFFFF), so every live connection needs its
+     * own base - wine spawns several processes (explorer, services, vst_host,
+     * ...), each with its own connection, and colliding ids deadlock it.
+     * Bases are 0x00100000 .. 0x1FF00000 (511 of them): below is the
+     * server's own ids (root, colormap, visual), above would set the top
+     * three id bits, which the protocol reserves. A base is reused once its
+     * connection has gone and releaseClientResources() freed what it made. */
+    static constexpr int kResourceBaseCount = 511;
+    std::mutex resourceBaseMutex_;
+    std::array<bool, kResourceBaseCount> resourceBaseInUse_{};
+
+    // Lowest free base, or 0 if all are taken.
+    uint32_t allocResourceBase() {
+        std::lock_guard<std::mutex> lk(resourceBaseMutex_);
+        for (int i = 0; i < kResourceBaseCount; ++i) {
+            if (!resourceBaseInUse_[i]) {
+                resourceBaseInUse_[i] = true;
+                return (uint32_t)(i + 1) << 20;
+            }
+        }
+        return 0;
+    }
+
+    void releaseResourceBase(uint32_t base) {
+        const int i = (int)(base >> 20) - 1;
+        if (base == 0 || i < 0 || i >= kResourceBaseCount) return;
+        std::lock_guard<std::mutex> lk(resourceBaseMutex_);
+        resourceBaseInUse_[i] = false;
+    }
+
     // X11 Connection Setup reply (success). Layout must match libX11/XCB parsing.
     // See X11 Protocol "Connection Setup" and libX11 OpenDis.c.
-    //
-    // CRITICAL: resource_id_base must be UNIQUE per connection. Wine spawns
-    // multiple processes (explorer.exe, wineserver, vst_host.exe), each
-    // opens its own X connection. If they all share the same base, their
-    // resource ID allocations collide and wine deadlocks waiting for the
-    // server to disambiguate. Java X server increments by 0x100000 per
-    // connection — we match that here.
-    void sendConnectionReply() {
-        // Atomic so concurrent accept threads don't both grab 0x100000.
-        static std::atomic<uint32_t> sNextResourceIdBase{0x00100000};
-        uint32_t myBase = sNextResourceIdBase.fetch_add(0x00100000,
-                                                        std::memory_order_relaxed);
+    // Gives the connection the resource-id base `myBase` (allocResourceBase).
+    void sendConnectionReply(uint32_t myBase) {
         // Installer-mode quirk: when fbSizeFrozen is set, the caller pinned
         // the framebuffer to a known size (e.g. 640x480) and expects wine to
         // place its wizard window inside that. The plain width/height fields
@@ -2749,7 +2771,20 @@ struct X11NativeDisplay::Impl {
                     recvAll(clientFd, skip.data(), authDataPadded);
                 }
             }
-            sendConnectionReply();
+            const uint32_t resourceBase = allocResourceBase();
+            if (resourceBase == 0) {
+                LOGE("X11 accept: all %d resource-id bases in use, refusing fd=%d",
+                     kResourceBaseCount, clientFd);
+                int fdToClose = clientFd;
+                close(fdToClose);
+                clientFd = -1;
+                std::lock_guard<std::mutex> lk(activeClientsMutex);
+                activeClientFds.erase(
+                    std::remove(activeClientFds.begin(), activeClientFds.end(), fdToClose),
+                    activeClientFds.end());
+                return;  // exit this connection's thread
+            }
+            sendConnectionReply(resourceBase);
 
             /* Make client socket non-blocking AFTER handshake completes.
              * The initial recv of 12-byte connection request uses blocking recvAll,
@@ -5975,6 +6010,7 @@ struct X11NativeDisplay::Impl {
                 int expectedOwner = fdToClose;
                 editorOwnerFd.compare_exchange_strong(expectedOwner, -1);
                 releaseClientResources(fdToClose, ownedPixmaps, ownedGcs);
+                releaseResourceBase(resourceBase);  // its resources are gone
                 close(fdToClose);
                 clientFd = -1;
                 std::lock_guard<std::mutex> lk(activeClientsMutex);
