@@ -27,37 +27,42 @@
 # =============================================================================
 cmake_minimum_required(VERSION 3.22)
 
-# ─── Auto-detect Android NDK toolchain ────────────────────────────────────────
+# ─── Android NDK: the version pinned in config/toolchain.properties ──────────
+# ndk.version - the Gradle builds use it too, and everything here links
+# against the APK's single libc++_shared.so. ANDROID_NDK, if set, and a
+# toolchain cached in an existing build dir must be that same version.
+file(STRINGS "${CMAKE_CURRENT_LIST_DIR}/../config/toolchain.properties" _ndk_pin
+     REGEX "^ndk\\.version=")
+string(REGEX REPLACE "^ndk\\.version=" "" GRC_NDK_VERSION "${_ndk_pin}")
+if(NOT GRC_NDK_VERSION)
+    message(FATAL_ERROR "config/toolchain.properties has no ndk.version")
+endif()
 if(NOT CMAKE_TOOLCHAIN_FILE)
-    # Try ANDROID_NDK env var
-    if(DEFINED ENV{ANDROID_NDK} AND EXISTS "$ENV{ANDROID_NDK}/build/cmake/android.toolchain.cmake")
-        set(CMAKE_TOOLCHAIN_FILE "$ENV{ANDROID_NDK}/build/cmake/android.toolchain.cmake"
-            CACHE FILEPATH "Android NDK toolchain")
+    if(DEFINED ENV{ANDROID_NDK})
+        set(_ndk "$ENV{ANDROID_NDK}")
     else()
-        # Auto-detect from ANDROID_HOME or ~/Android/Sdk
         set(_android_home "$ENV{ANDROID_HOME}")
         if(NOT _android_home)
             set(_android_home "$ENV{HOME}/Android/Sdk")
         endif()
-        if(EXISTS "${_android_home}/ndk")
-            file(GLOB _ndks "${_android_home}/ndk/*")
-            if(_ndks)
-                list(SORT _ndks COMPARE NATURAL ORDER DESCENDING)
-                list(GET _ndks 0 _ndk)
-                if(EXISTS "${_ndk}/build/cmake/android.toolchain.cmake")
-                    set(CMAKE_TOOLCHAIN_FILE "${_ndk}/build/cmake/android.toolchain.cmake"
-                        CACHE FILEPATH "Android NDK toolchain")
-                endif()
-            endif()
-        endif()
+        set(_ndk "${_android_home}/ndk/${GRC_NDK_VERSION}")
     endif()
-    if(NOT CMAKE_TOOLCHAIN_FILE)
+    if(NOT EXISTS "${_ndk}/build/cmake/android.toolchain.cmake")
         message(FATAL_ERROR
-            "Cannot find Android NDK. Either:\n"
-            "  - Set ANDROID_NDK env var to NDK root\n"
-            "  - Set ANDROID_HOME env var (will find latest NDK)\n"
-            "  - Pass -DCMAKE_TOOLCHAIN_FILE=<ndk>/build/cmake/android.toolchain.cmake")
+            "Android NDK ${GRC_NDK_VERSION} (config/toolchain.properties) not found at ${_ndk}.\n"
+            "Install it (sdkmanager \"ndk;${GRC_NDK_VERSION}\"), or set ANDROID_NDK / ANDROID_HOME.")
     endif()
+    set(CMAKE_TOOLCHAIN_FILE "${_ndk}/build/cmake/android.toolchain.cmake"
+        CACHE FILEPATH "Android NDK toolchain")
+endif()
+get_filename_component(_ndk_root "${CMAKE_TOOLCHAIN_FILE}/../../.." ABSOLUTE)
+file(STRINGS "${_ndk_root}/source.properties" _ndk_rev REGEX "^Pkg\\.Revision")
+string(REGEX REPLACE "^Pkg\\.Revision *= *" "" _ndk_rev "${_ndk_rev}")
+if(NOT _ndk_rev STREQUAL GRC_NDK_VERSION)
+    message(FATAL_ERROR
+        "The native prebuild would use NDK '${_ndk_rev}' (${_ndk_root}), but "
+        "config/toolchain.properties pins ${GRC_NDK_VERSION}. Point ANDROID_NDK at "
+        "NDK ${GRC_NDK_VERSION}, or delete build/prebuild if its cache names another NDK.")
 endif()
 
 if(NOT ANDROID_ABI)

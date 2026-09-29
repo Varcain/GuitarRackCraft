@@ -22,10 +22,17 @@ import java.util.Date
 import java.net.InetAddress
 import java.nio.file.FileSystems
 import java.nio.file.Paths
+import java.util.Properties
 
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
+}
+
+// Pinned toolchain versions (NDK, ...), shared with :vsthost_lib and the
+// native prebuild.
+val toolchain = Properties().apply {
+    rootProject.file("config/toolchain.properties").inputStream().use { load(it) }
 }
 
 // UI-only work without a native prebuild: downgrade the native-input checks
@@ -36,6 +43,9 @@ val allowMissingNativeInputs = providers.gradleProperty("grc.allowMissingNativeI
 android {
     namespace = "com.varcain.guitarrackcraft"
     compileSdk = 35
+    // Same NDK as :vsthost_lib and the native prebuild: they all link against
+    // the one libc++_shared.so this module packages.
+    ndkVersion = toolchain.getProperty("ndk.version")
 
     defaultConfig {
         applicationId = "com.varcain.guitarrackcraft"

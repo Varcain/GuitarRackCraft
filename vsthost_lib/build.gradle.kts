@@ -17,15 +17,24 @@
  * along with Guitar RackCraft. If not, see <https://www.gnu.org/licenses/>.
  */
 
+import java.util.Properties
+
 plugins {
     id("com.android.library")
     id("org.jetbrains.kotlin.android")
 }
 
+// Pinned toolchain versions, shared with :app and the native prebuild.
+val toolchain = Properties().apply {
+    rootProject.file("config/toolchain.properties").inputStream().use { load(it) }
+}
+
 android {
     namespace = "com.varcain.vsthost"
     compileSdk = 35
-    ndkVersion = "26.1.10909125"
+    // :app's NDK: libvsthost.so runs on the libc++_shared.so :app packages
+    // (and hands it a std::unique_ptr, VstFactory.h).
+    ndkVersion = toolchain.getProperty("ndk.version")
 
     defaultConfig {
         // Matches GuitarRackCraft :app minSdk. vstpoc historically used 27;
