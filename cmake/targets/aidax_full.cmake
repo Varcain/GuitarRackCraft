@@ -72,10 +72,19 @@ configure_file(
     @ONLY
 )
 
+# pkg-config must only see the X11 sysroot - on every step, not just configure:
+# `cmake --build` re-runs CMake by itself (e.g. after a CMake upgrade), and
+# without this env DPF's pkg_check_modules(dbus-1) finds the host's libdbus,
+# which then fails to link.
+set(_aidax_pkg_env ${CMAKE_COMMAND} -E env --unset=PKG_CONFIG_PATH
+    "PKG_CONFIG_LIBDIR=${X11_SYSROOT}/lib/pkgconfig:${X11_SYSROOT}/share/pkgconfig"
+    "PKG_CONFIG_SYSROOT_DIR=")
+
 ExternalProject_Add(aidax_full_cross
-    SOURCE_DIR "${_aidax_full_src}" BINARY_DIR "${_cross_build}" CONFIGURE_COMMAND bash "${_aidax_full_configure_script}"
-    BUILD_COMMAND bash -c "cmake --build '${_cross_build}' --target AIDA-X-lv2 -j${NJOBS} 2>&1 | grep -v lv2_ttl_generator || true"
-    INSTALL_COMMAND bash -c "cmake --build '${_cross_build}' --target AIDA-X-lv2-ui -j${NJOBS} 2>&1 | grep -v lv2_ttl_generator || true"
+    SOURCE_DIR "${_aidax_full_src}" BINARY_DIR "${_cross_build}"
+    CONFIGURE_COMMAND ${_aidax_pkg_env} bash "${_aidax_full_configure_script}"
+    BUILD_COMMAND ${_aidax_pkg_env} ${CMAKE_COMMAND} --build <BINARY_DIR> --target AIDA-X-lv2 -j${NJOBS}
+    INSTALL_COMMAND ${_aidax_pkg_env} ${CMAKE_COMMAND} --build <BINARY_DIR> --target AIDA-X-lv2-ui -j${NJOBS}
     DEPENDS aidax_full_native x11_sysroot lv2_libs
 )
 

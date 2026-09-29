@@ -6,7 +6,6 @@ set -e
 
 X11_SYSROOT="@X11_SYSROOT@"
 AIDAX_SRC="@_aidax_full_src@"
-DSP_ONLY_CMAKE="@_dsp_only_cmake@"
 CROSS_BUILD="@_cross_build@"
 CMAKE_TOOLCHAIN_FILE="@CMAKE_TOOLCHAIN_FILE@"
 ANDROID_ABI="@ANDROID_ABI@"
@@ -22,45 +21,38 @@ if [ -n "$CCACHE_PROGRAM" ]; then
     CCACHE_ARGS="-DCMAKE_C_COMPILER_LAUNCHER=$CCACHE_PROGRAM -DCMAKE_CXX_COMPILER_LAUNCHER=$CCACHE_PROGRAM"
 fi
 
-if [ -f "${X11_SYSROOT}/lib/libX11.so" ] && [ -f "${X11_SYSROOT}/include/X11/Xlib.h" ]; then
-    echo 'Building with EGL+GLES2 UI'
-    PKG_CONFIG_LIBDIR="${X11_SYSROOT}/lib/pkgconfig:${X11_SYSROOT}/share/pkgconfig" \
-    PKG_CONFIG_SYSROOT_DIR='' \
-    cmake "${AIDAX_SRC}" -B "${CROSS_BUILD}" \
-        -DCMAKE_TOOLCHAIN_FILE="${CMAKE_TOOLCHAIN_FILE}" \
-        -DANDROID_ABI=${ANDROID_ABI} \
-        -DANDROID_PLATFORM=${ANDROID_PLATFORM} \
-        -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
-        -DCMAKE_BUILD_TYPE=Release \
-        -DCMAKE_CROSSCOMPILING_EMULATOR=true \
-        -DRTNEURAL_XSIMD=ON \
-        "-DCMAKE_C_FLAGS_RELEASE=-O3 -DNDEBUG -DDGL_USE_GLES2 -I${GL_SHIM_DIR}" \
-        "-DCMAKE_CXX_FLAGS_RELEASE=-O3 -DNDEBUG -funroll-loops -DDGL_USE_GLES2 -I${GL_SHIM_DIR}" \
-        "-DCMAKE_SHARED_LINKER_FLAGS_RELEASE=-Wl,--as-needed -Wl,--strip-all" \
-        -DCMAKE_PREFIX_PATH="${X11_SYSROOT}" \
-        "-DCMAKE_FIND_ROOT_PATH=${X11_SYSROOT};${NDK_SYSROOT}" \
-        -DCMAKE_FIND_ROOT_PATH_MODE_INCLUDE=BOTH \
-        -DCMAKE_FIND_ROOT_PATH_MODE_LIBRARY=BOTH \
-        -DCMAKE_FIND_ROOT_PATH_MODE_PACKAGE=BOTH \
-        -DX11_X11_LIB="${X11_SYSROOT}/lib/libX11.so" \
-        -DX11_X11_INCLUDE_PATH="${X11_SYSROOT}/include" \
-        -DX11_INCLUDE_DIR="${X11_SYSROOT}/include" \
-        -DOPENGL_INCLUDE_DIR="${NDK_SYSROOT}/usr/include" \
-        "-DOPENGL_gl_LIBRARY=${NDK_LIBDIR}/libGLESv2.so;${NDK_LIBDIR}/libEGL.so;${NDK_LIBDIR}/liblog.so" \
-        -DOPENGL_FOUND=TRUE \
-        $CCACHE_ARGS
-else
-    echo 'Building DSP-only'
-    cmake -S "${DSP_ONLY_CMAKE}" -B "${CROSS_BUILD}" \
-        -DCMAKE_TOOLCHAIN_FILE="${CMAKE_TOOLCHAIN_FILE}" \
-        -DANDROID_ABI=${ANDROID_ABI} \
-        -DANDROID_PLATFORM=${ANDROID_PLATFORM} \
-        -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
-        -DCMAKE_BUILD_TYPE=Release \
-        -DCMAKE_CROSSCOMPILING_EMULATOR=true \
-        -DAIDAX_SRC="${AIDAX_SRC}" \
-        -DRTNEURAL_XSIMD=ON \
-        "-DCMAKE_CXX_FLAGS_RELEASE=-O3 -DNDEBUG -funroll-loops" \
-        "-DCMAKE_SHARED_LINKER_FLAGS_RELEASE=-Wl,--as-needed -Wl,--strip-all" \
-        $CCACHE_ARGS
+# The UI links the X11 sysroot; x11_sysroot is a dependency, so it must exist.
+if [ ! -f "${X11_SYSROOT}/lib/libX11.so" ] || [ ! -f "${X11_SYSROOT}/include/X11/Xlib.h" ]; then
+    echo "error: X11 sysroot incomplete at ${X11_SYSROOT} (libX11.so / X11/Xlib.h)" >&2
+    exit 1
 fi
+
+# pkg-config is pinned to the X11 sysroot by the caller (aidax_full.cmake).
+# --fresh: the cache is derived from this script alone, so a value an
+# automatic re-run cached in between (a host library, say) doesn't stick.
+# DPF runs its lv2_ttl_generator (an ARM64 binary) after linking the DSP;
+# CMAKE_CROSSCOMPILING_EMULATOR=true makes that a no-op - the TTLs come from
+# the native host build (aidax_full_native).
+cmake --fresh "${AIDAX_SRC}" -B "${CROSS_BUILD}" \
+    -DCMAKE_TOOLCHAIN_FILE="${CMAKE_TOOLCHAIN_FILE}" \
+    -DANDROID_ABI=${ANDROID_ABI} \
+    -DANDROID_PLATFORM=${ANDROID_PLATFORM} \
+    -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_CROSSCOMPILING_EMULATOR=true \
+    -DRTNEURAL_XSIMD=ON \
+    "-DCMAKE_C_FLAGS_RELEASE=-O3 -DNDEBUG -DDGL_USE_GLES2 -I${GL_SHIM_DIR}" \
+    "-DCMAKE_CXX_FLAGS_RELEASE=-O3 -DNDEBUG -funroll-loops -DDGL_USE_GLES2 -I${GL_SHIM_DIR}" \
+    "-DCMAKE_SHARED_LINKER_FLAGS_RELEASE=-Wl,--as-needed -Wl,--strip-all" \
+    -DCMAKE_PREFIX_PATH="${X11_SYSROOT}" \
+    "-DCMAKE_FIND_ROOT_PATH=${X11_SYSROOT};${NDK_SYSROOT}" \
+    -DCMAKE_FIND_ROOT_PATH_MODE_INCLUDE=BOTH \
+    -DCMAKE_FIND_ROOT_PATH_MODE_LIBRARY=BOTH \
+    -DCMAKE_FIND_ROOT_PATH_MODE_PACKAGE=BOTH \
+    -DX11_X11_LIB="${X11_SYSROOT}/lib/libX11.so" \
+    -DX11_X11_INCLUDE_PATH="${X11_SYSROOT}/include" \
+    -DX11_INCLUDE_DIR="${X11_SYSROOT}/include" \
+    -DOPENGL_INCLUDE_DIR="${NDK_SYSROOT}/usr/include" \
+    "-DOPENGL_gl_LIBRARY=${NDK_LIBDIR}/libGLESv2.so;${NDK_LIBDIR}/libEGL.so;${NDK_LIBDIR}/liblog.so" \
+    -DOPENGL_FOUND=TRUE \
+    $CCACHE_ARGS
