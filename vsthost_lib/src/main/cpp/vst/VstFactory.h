@@ -1,7 +1,7 @@
 #ifndef VSTHOST_VST_FACTORY_H
 #define VSTHOST_VST_FACTORY_H
 
-#include "../../../../../app/src/main/cpp/plugin/IPluginFactory.h"
+#include "plugin/IPluginFactory.h"
 #include <string>
 #include <vector>
 #include <mutex>

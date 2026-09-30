@@ -16,7 +16,7 @@
 #include "util/log.h"
 
 extern "C" {
-#include "../../../external/shared_layout.h"
+#include "shared_layout.h"
 }
 
 #include <jni.h>

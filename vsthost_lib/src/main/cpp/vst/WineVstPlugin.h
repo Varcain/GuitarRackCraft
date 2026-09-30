@@ -1,7 +1,7 @@
 #ifndef VSTHOST_WINE_VST_PLUGIN_H
 #define VSTHOST_WINE_VST_PLUGIN_H
 
-#include "../../../../../app/src/main/cpp/plugin/IPlugin.h"
+#include "plugin/IPlugin.h"
 #include "VstFactory.h"
 #include "../ipc/SharedRing.h"
 #include "../ipc/PickerChannel.h"

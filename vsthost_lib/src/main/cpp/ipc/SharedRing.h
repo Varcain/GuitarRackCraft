@@ -4,7 +4,7 @@
 #include <string>
 
 extern "C" {
-#include "../../../../external/shared_layout.h"
+#include "shared_layout.h"
 }
 
 // Host-side accessor for the mmap'd VstpocShared region exchanged with the

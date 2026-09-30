@@ -5,8 +5,11 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+# The repository root (this file is vsthost_lib/src/main/cpp/CMakeLists.txt).
+get_filename_component(GRC_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../../../.." ABSOLUTE)
+
 # Oboe — shared with :app via GuitarRackCraft's 3rd_party/oboe submodule.
-set(OBOE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../../../3rd_party/oboe")
+set(OBOE_DIR "${GRC_ROOT}/3rd_party/oboe")
 if(NOT EXISTS "${OBOE_DIR}/CMakeLists.txt")
     message(FATAL_ERROR
         "Oboe sources not found at ${OBOE_DIR}. "
@@ -17,7 +20,7 @@ add_subdirectory("${OBOE_DIR}" "${CMAKE_BINARY_DIR}/oboe-build" EXCLUDE_FROM_ALL
 # In-process X11 server (renders to ANativeWindow via EGL/GLES2). The source
 # tree is :app's - one server for LV2 UIs and wine editors; see its
 # CMakeLists.txt.
-set(GRC_APP_CPP_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../../../app/src/main/cpp")
+set(GRC_APP_CPP_DIR "${GRC_ROOT}/app/src/main/cpp")
 add_subdirectory("${GRC_APP_CPP_DIR}/x11" "${CMAKE_BINARY_DIR}/x11-build")
 
 add_library(vsthost SHARED
@@ -37,6 +40,8 @@ add_library(vsthost SHARED
 
 target_include_directories(vsthost PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}"
+    "${GRC_APP_CPP_DIR}"               # plugin/IPlugin.h, plugin/IPluginFactory.h
+    "${GRC_ROOT}/vsthost_lib/external" # shared_layout.h, shared with the wine-side hosts
 )
 
 target_link_libraries(vsthost

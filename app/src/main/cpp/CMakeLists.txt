@@ -22,8 +22,11 @@ project("guitarrackcraft")
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-# Oboe library (3rd_party submodule only; 4 levels up from app/src/main/cpp to project root)
-set(OBOE_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../../../../3rd_party/oboe")
+# The repository root (this file is app/src/main/cpp/CMakeLists.txt).
+get_filename_component(GRC_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../../../.." ABSOLUTE)
+
+# Oboe library (3rd_party submodule)
+set(OBOE_ROOT "${GRC_ROOT}/3rd_party/oboe")
 if(EXISTS "${OBOE_ROOT}/CMakeLists.txt")
     add_subdirectory(${OBOE_ROOT} oboe_build)
 else()
