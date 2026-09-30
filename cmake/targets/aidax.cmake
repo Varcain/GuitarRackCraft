@@ -24,27 +24,14 @@ set(_aidax_build  "${PROJECT_ROOT}/build/aidadsp")
 set(_aidax_assets "${ASSETS_DIR}/aidadsp.lv2")
 
 # ─── Phase 1: Copy TTL + modgui + rename to "headless" ──────────────────────
-file(MAKE_DIRECTORY "${_aidax_assets}")
+set(_aidax_ttl_dir "${_aidax_src}/rt-neural-generic/ttl")
+lv2_stage_bundle("${_aidax_assets}" TTL_DIR "${_aidax_ttl_dir}" MOD_DIR "${_aidax_ttl_dir}")
 
-if(EXISTS "${_aidax_src}/rt-neural-generic/ttl/manifest.ttl")
-    configure_file("${_aidax_src}/rt-neural-generic/ttl/manifest.ttl"
-                   "${_aidax_assets}/manifest.ttl" COPYONLY)
-endif()
-
-if(EXISTS "${_aidax_src}/rt-neural-generic/ttl/rt-neural-generic.ttl")
-    file(READ "${_aidax_src}/rt-neural-generic/ttl/rt-neural-generic.ttl" _aidax_ttl)
-    string(REPLACE "doap:name \"AIDA-X\"" "doap:name \"AIDA-X (headless)\"" _aidax_ttl "${_aidax_ttl}")
-    string(REPLACE "mod:label \"AIDA-X\"" "mod:label \"AIDA-X (headless)\"" _aidax_ttl "${_aidax_ttl}")
-    file(WRITE "${_aidax_assets}/rt-neural-generic.ttl" "${_aidax_ttl}")
-endif()
-
-if(EXISTS "${_aidax_src}/rt-neural-generic/ttl/modgui.ttl")
-    configure_file("${_aidax_src}/rt-neural-generic/ttl/modgui.ttl"
-                   "${_aidax_assets}/modgui.ttl" COPYONLY)
-endif()
-if(IS_DIRECTORY "${_aidax_src}/rt-neural-generic/ttl/modgui")
-    file(COPY "${_aidax_src}/rt-neural-generic/ttl/modgui/" DESTINATION "${_aidax_assets}/modgui/")
-endif()
+# The plugin TTL, with its name marked "headless" (the full AIDA-X is separate).
+file(READ "${_aidax_ttl_dir}/rt-neural-generic.ttl" _aidax_ttl)
+string(REPLACE "doap:name \"AIDA-X\"" "doap:name \"AIDA-X (headless)\"" _aidax_ttl "${_aidax_ttl}")
+string(REPLACE "mod:label \"AIDA-X\"" "mod:label \"AIDA-X (headless)\"" _aidax_ttl "${_aidax_ttl}")
+file(WRITE "${_aidax_assets}/rt-neural-generic.ttl" "${_aidax_ttl}")
 
 # ─── Phase 2: CMake cross-compile ────────────────────────────────────────────
 set(_aidax_so_output "${_aidax_build}/rt-neural-generic/rt-neural-generic.so")

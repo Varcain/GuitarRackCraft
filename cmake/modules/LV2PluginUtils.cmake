@@ -88,6 +88,45 @@ function(lv2_sync_to_jnilibs TARGET_NAME SOURCE_DIR DEPENDS_LIST)
     add_custom_target(${TARGET_NAME} DEPENDS "${_stamp}")
 endfunction()
 
+# ─── Stage an LV2 bundle's TTLs into the assets (configure time) ─────────────
+# Usage: lv2_stage_bundle(<bundle_dir>
+#     TTL_DIR <dir>        # holds manifest.ttl and the plugin TTLs
+#     [TTLS <file>...]     # the plugin TTLs besides manifest.ttl
+#     [MOD_DIR <dir>]      # MOD extras: its manifest.ttl (which adds
+#                          # rdfs:seeAlso <modgui.ttl>) replaces TTL_DIR's,
+#                          # plus modgui.ttl and modgui/
+# )
+# manifest.ttl and TTLS must exist - a bundle without them would ship as a
+# plugin lilv can't load; the MOD_DIR files are copied when present.
+function(lv2_stage_bundle BUNDLE_DIR)
+    cmake_parse_arguments(ARG "" "TTL_DIR;MOD_DIR" "TTLS" ${ARGN})
+    set(_manifest "${ARG_TTL_DIR}/manifest.ttl")
+    if(ARG_MOD_DIR AND EXISTS "${ARG_MOD_DIR}/manifest.ttl")
+        set(_manifest "${ARG_MOD_DIR}/manifest.ttl")
+    endif()
+    set(_required "${_manifest}")
+    foreach(_ttl IN LISTS ARG_TTLS)
+        list(APPEND _required "${ARG_TTL_DIR}/${_ttl}")
+    endforeach()
+
+    file(MAKE_DIRECTORY "${BUNDLE_DIR}")
+    foreach(_src IN LISTS _required)
+        if(NOT EXISTS "${_src}")
+            message(FATAL_ERROR "lv2_stage_bundle: ${_src} not found (for ${BUNDLE_DIR})")
+        endif()
+        get_filename_component(_name "${_src}" NAME)
+        configure_file("${_src}" "${BUNDLE_DIR}/${_name}" COPYONLY)
+    endforeach()
+    if(ARG_MOD_DIR)
+        if(EXISTS "${ARG_MOD_DIR}/modgui.ttl")
+            configure_file("${ARG_MOD_DIR}/modgui.ttl" "${BUNDLE_DIR}/modgui.ttl" COPYONLY)
+        endif()
+        if(IS_DIRECTORY "${ARG_MOD_DIR}/modgui")
+            file(COPY "${ARG_MOD_DIR}/modgui/" DESTINATION "${BUNDLE_DIR}/modgui/")
+        endif()
+    endif()
+endfunction()
+
 # ─── Sync DSP + UI .so to jniLibs (stamp-based) ─────────────────────────────
 # .so files go ONLY to jniLibs (not duplicated into assets/lv2).
 #

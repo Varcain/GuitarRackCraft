@@ -24,22 +24,7 @@ set(_cd_plugin    "${_cd_src}/CollisionDrive")
 set(_cd_assets    "${ASSETS_DIR}/CollisionDrive.lv2")
 
 # ─── Phase 1: Copy TTL + modgui ──────────────────────────────────────────
-file(MAKE_DIRECTORY "${_cd_assets}")
-# Prefer MOD/manifest.ttl because it includes rdfs:seeAlso <modgui.ttl>.
-if(EXISTS "${_cd_plugin}/MOD/manifest.ttl")
-    configure_file("${_cd_plugin}/MOD/manifest.ttl" "${_cd_assets}/manifest.ttl" COPYONLY)
-elseif(EXISTS "${_cd_plugin}/manifest.ttl")
-    configure_file("${_cd_plugin}/manifest.ttl" "${_cd_assets}/manifest.ttl" COPYONLY)
-endif()
-if(EXISTS "${_cd_plugin}/CollisionDrive.ttl")
-    configure_file("${_cd_plugin}/CollisionDrive.ttl" "${_cd_assets}/CollisionDrive.ttl" COPYONLY)
-endif()
-if(EXISTS "${_cd_plugin}/MOD/modgui.ttl")
-    configure_file("${_cd_plugin}/MOD/modgui.ttl" "${_cd_assets}/modgui.ttl" COPYONLY)
-endif()
-if(IS_DIRECTORY "${_cd_plugin}/MOD/modgui")
-    file(COPY "${_cd_plugin}/MOD/modgui/" DESTINATION "${_cd_assets}/modgui/")
-endif()
+lv2_stage_bundle("${_cd_assets}" TTL_DIR "${_cd_plugin}" TTLS CollisionDrive.ttl MOD_DIR "${_cd_plugin}/MOD")
 
 # ─── Phase 2 & 3: Build & Sync ──────────────────────────────────────────
 brummer_add_plugin(

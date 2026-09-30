@@ -24,13 +24,7 @@ set(_xtt_plugin    "${_xtt_src}/XTinyTerror")
 set(_xtt_assets    "${ASSETS_DIR}/XTinyTerror.lv2")
 
 # ─── Phase 1: Copy TTL ──────────────────────────────────────────────────
-file(MAKE_DIRECTORY "${_xtt_assets}")
-if(EXISTS "${_xtt_plugin}/plugin/manifest.ttl")
-    configure_file("${_xtt_plugin}/plugin/manifest.ttl" "${_xtt_assets}/manifest.ttl" COPYONLY)
-endif()
-if(EXISTS "${_xtt_plugin}/plugin/XTinyTerror.ttl")
-    configure_file("${_xtt_plugin}/plugin/XTinyTerror.ttl" "${_xtt_assets}/XTinyTerror.ttl" COPYONLY)
-endif()
+lv2_stage_bundle("${_xtt_assets}" TTL_DIR "${_xtt_plugin}/plugin" TTLS XTinyTerror.ttl)
 
 # ─── Phase 2 & 3: Build & Sync ──────────────────────────────────────────
 brummer_add_plugin(

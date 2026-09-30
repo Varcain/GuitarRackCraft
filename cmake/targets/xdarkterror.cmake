@@ -24,13 +24,7 @@ set(_xdt_plugin    "${_xdt_src}/XDarkTerror")
 set(_xdt_assets    "${ASSETS_DIR}/XDarkTerror.lv2")
 
 # ─── Phase 1: Copy TTL ──────────────────────────────────────────────────
-file(MAKE_DIRECTORY "${_xdt_assets}")
-if(EXISTS "${_xdt_plugin}/plugin/manifest.ttl")
-    configure_file("${_xdt_plugin}/plugin/manifest.ttl" "${_xdt_assets}/manifest.ttl" COPYONLY)
-endif()
-if(EXISTS "${_xdt_plugin}/plugin/XDarkTerror.ttl")
-    configure_file("${_xdt_plugin}/plugin/XDarkTerror.ttl" "${_xdt_assets}/XDarkTerror.ttl" COPYONLY)
-endif()
+lv2_stage_bundle("${_xdt_assets}" TTL_DIR "${_xdt_plugin}/plugin" TTLS XDarkTerror.ttl)
 
 # ─── Phase 2 & 3: Build & Sync ──────────────────────────────────────────
 brummer_add_plugin(

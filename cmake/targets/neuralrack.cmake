@@ -28,13 +28,7 @@ set(_nr_na_dir    "${_nr_src}/NeuralAudio/NeuralAudio")
 set(_nr_dep_dir   "${_nr_src}/NeuralAudio/deps")
 
 # ─── Phase 1: Copy TTL ──────────────────────────────────────────────────────
-file(MAKE_DIRECTORY "${_nr_assets}")
-if(EXISTS "${_nr_plugin}/lv2/manifest.ttl")
-    configure_file("${_nr_plugin}/lv2/manifest.ttl" "${_nr_assets}/manifest.ttl" COPYONLY)
-endif()
-if(EXISTS "${_nr_plugin}/lv2/NeuralRack.ttl")
-    configure_file("${_nr_plugin}/lv2/NeuralRack.ttl" "${_nr_assets}/NeuralRack.ttl" COPYONLY)
-endif()
+lv2_stage_bundle("${_nr_assets}" TTL_DIR "${_nr_plugin}/lv2" TTLS NeuralRack.ttl)
 
 # ─── Phase 2a: libneuralaudio.a ──────────────────────────────────────────────
 add_library(neuralaudio STATIC

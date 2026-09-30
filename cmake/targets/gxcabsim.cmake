@@ -24,13 +24,7 @@ set(_gcs_build     "${PROJECT_ROOT}/build/gxcabsim")
 set(_gcs_assets    "${ASSETS_DIR}/GxCabSim.lv2")
 
 # ─── Phase 1: Copy TTL ──────────────────────────────────────────────────
-file(MAKE_DIRECTORY "${_gcs_assets}")
-if(EXISTS "${_gcs_src}/plugin/manifest.ttl")
-    configure_file("${_gcs_src}/plugin/manifest.ttl" "${_gcs_assets}/manifest.ttl" COPYONLY)
-endif()
-if(EXISTS "${_gcs_src}/plugin/gx_cabsim.ttl")
-    configure_file("${_gcs_src}/plugin/gx_cabsim.ttl" "${_gcs_assets}/gx_cabsim.ttl" COPYONLY)
-endif()
+lv2_stage_bundle("${_gcs_assets}" TTL_DIR "${_gcs_src}/plugin" TTLS gx_cabsim.ttl)
 
 # ─── Phase 2a: DSP plugin (gx_cabsim.so) ────────────────────────────────
 set(_gcs_lv2_compat "${_gcs_build}/lv2_compat")

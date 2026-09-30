@@ -24,13 +24,7 @@ set(_ff_plugin    "${_ff_src}/FatFrog")
 set(_ff_assets    "${ASSETS_DIR}/FatFrog.lv2")
 
 # ─── Phase 1: Copy TTL ──────────────────────────────────────────────────
-file(MAKE_DIRECTORY "${_ff_assets}")
-if(EXISTS "${_ff_plugin}/plugin/manifest.ttl")
-    configure_file("${_ff_plugin}/plugin/manifest.ttl" "${_ff_assets}/manifest.ttl" COPYONLY)
-endif()
-if(EXISTS "${_ff_plugin}/plugin/FatFrog.ttl")
-    configure_file("${_ff_plugin}/plugin/FatFrog.ttl" "${_ff_assets}/FatFrog.ttl" COPYONLY)
-endif()
+lv2_stage_bundle("${_ff_assets}" TTL_DIR "${_ff_plugin}/plugin" TTLS FatFrog.ttl)
 
 # ─── Phase 2 & 3: Build & Sync ──────────────────────────────────────────
 brummer_add_plugin(

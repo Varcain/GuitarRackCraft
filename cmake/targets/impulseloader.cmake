@@ -26,13 +26,7 @@ set(_il_assets    "${ASSETS_DIR}/ImpulseLoader.lv2")
 set(_il_xputty    "${_il_src}/libxputty/xputty")
 
 # ─── Phase 1: Copy TTL ──────────────────────────────────────────────────────
-file(MAKE_DIRECTORY "${_il_assets}")
-if(EXISTS "${_il_plugin}/lv2/manifest.ttl")
-    configure_file("${_il_plugin}/lv2/manifest.ttl" "${_il_assets}/manifest.ttl" COPYONLY)
-endif()
-if(EXISTS "${_il_plugin}/lv2/ImpulseLoader.ttl")
-    configure_file("${_il_plugin}/lv2/ImpulseLoader.ttl" "${_il_assets}/ImpulseLoader.ttl" COPYONLY)
-endif()
+lv2_stage_bundle("${_il_assets}" TTL_DIR "${_il_plugin}/lv2" TTLS ImpulseLoader.ttl)
 
 # ─── Phase 2a: libfftconvolver.a (shared function) ──────────────────────────
 add_fftconvolver_library(il_fftconvolver "${_il_src}" "${_il_plugin}" "${SNDFILE_PREFIX}/include" shared_libsndfile)

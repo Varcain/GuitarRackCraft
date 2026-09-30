@@ -24,22 +24,7 @@ set(_mt_plugin    "${_mt_src}/MetalTone")
 set(_mt_assets    "${ASSETS_DIR}/MetalTone.lv2")
 
 # ─── Phase 1: Copy TTL + modgui ──────────────────────────────────────────
-file(MAKE_DIRECTORY "${_mt_assets}")
-# Prefer MOD/manifest.ttl because it includes rdfs:seeAlso <modgui.ttl>.
-if(EXISTS "${_mt_plugin}/MOD/manifest.ttl")
-    configure_file("${_mt_plugin}/MOD/manifest.ttl" "${_mt_assets}/manifest.ttl" COPYONLY)
-elseif(EXISTS "${_mt_plugin}/manifest.ttl")
-    configure_file("${_mt_plugin}/manifest.ttl" "${_mt_assets}/manifest.ttl" COPYONLY)
-endif()
-if(EXISTS "${_mt_plugin}/MetalTone.ttl")
-    configure_file("${_mt_plugin}/MetalTone.ttl" "${_mt_assets}/MetalTone.ttl" COPYONLY)
-endif()
-if(EXISTS "${_mt_plugin}/MOD/modgui.ttl")
-    configure_file("${_mt_plugin}/MOD/modgui.ttl" "${_mt_assets}/modgui.ttl" COPYONLY)
-endif()
-if(IS_DIRECTORY "${_mt_plugin}/MOD/modgui")
-    file(COPY "${_mt_plugin}/MOD/modgui/" DESTINATION "${_mt_assets}/modgui/")
-endif()
+lv2_stage_bundle("${_mt_assets}" TTL_DIR "${_mt_plugin}" TTLS MetalTone.ttl MOD_DIR "${_mt_plugin}/MOD")
 
 # ─── Phase 2 & 3: Build & Sync ──────────────────────────────────────────
 brummer_add_plugin(
