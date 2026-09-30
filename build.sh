@@ -34,8 +34,8 @@ Usage: ./build.sh [<command>]
                         given targets, e.g. neuralrack_done - then stage
   stage                 mirror what the native build staged into app/src/ and
                         the asset packs, and write the asset manifests
-  patch                 init submodules, apply 3rd_party/patches, generate the
-                        FFTW codelets
+  patch                 init the native build's submodules, apply
+                        3rd_party/patches, generate the FFTW codelets
   vst [<phase>...]      the VST host stack (vsthost_lib/scripts/build-all.sh)
   check                 host tools, the pinned NDK, Meson build dirs
   clean                 remove build outputs and reset the submodules
@@ -43,7 +43,7 @@ Usage: ./build.sh [<command>]
 
 The plugins are listed in cmake/plugins.cmake; each has a <name>_done target.
 BUILD_VST=0 skips the VST host stack in full/all (the default in CI), and
-BUILD_VST=1 forces it.
+BUILD_VST=1 forces it. SUBMODULE_DEPTH=<n> initialises submodules shallow.
 USAGE
 }
 
@@ -153,8 +153,11 @@ do_clean() {
 }
 
 do_patch() {
-    # Initialize submodules (no-op if already inited)
-    git -C "$PROJECT_ROOT" submodule update --init --recursive
+    # The native build's submodules: everything under 3rd_party but Mesa, which
+    # only the VST host stack builds (do_vst). No-op for the ones already
+    # initialised.
+    git -C "$PROJECT_ROOT" submodule update --init --recursive \
+        ${SUBMODULE_DEPTH:+--depth "$SUBMODULE_DEPTH"} -- 3rd_party ':(exclude)3rd_party/mesa'
 
     # Apply 3rd_party/patches: patches already in a tree are skipped, and one
     # that neither applies nor is applied stops the build (scripts/apply-patches.sh).
@@ -210,6 +213,10 @@ do_patch() {
 # there — it would rebuild everything from scratch and defeat the cache. That's
 # detected via $CI, and the CI steps also pass BUILD_VST=0 explicitly.
 do_vst() {
+    # The VST host stack's submodules: vsthost_lib's, and Mesa (Turnip, Zink,
+    # lavapipe). No-op for the ones already initialised.
+    git -C "$PROJECT_ROOT" submodule update --init --recursive \
+        ${SUBMODULE_DEPTH:+--depth "$SUBMODULE_DEPTH"} -- vsthost_lib 3rd_party/mesa
     echo ""
     echo "=== Building Windows-VST host stack (vsthost_lib/scripts/build-all.sh) ==="
     "$PROJECT_ROOT/vsthost_lib/scripts/build-all.sh" "$@"
