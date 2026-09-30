@@ -2,7 +2,7 @@
 #define VSTHOST_WINE_VST_PLUGIN_H
 
 #include "plugin/IPlugin.h"
-#include "VstFactory.h"
+#include "vst/VstFactory.h"
 #include "../ipc/SharedRing.h"
 #include "../ipc/PickerChannel.h"
 #include "../launcher/WineHostProcess.h"

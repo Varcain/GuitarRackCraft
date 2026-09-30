@@ -39,6 +39,7 @@ add_library(vsthost SHARED
 
 target_include_directories(vsthost PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/include"  # the public header :app gets via prefab
     "${GRC_APP_CPP_DIR}"               # plugin/IPlugin.h, plugin/IPluginFactory.h
     "${GRC_ROOT}/vsthost_lib/external" # shared_layout.h, shared with the wine-side hosts
 )

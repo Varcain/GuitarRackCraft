@@ -41,10 +41,9 @@
 #include "../plugin/lv2/LV2PluginFactory.h"
 
 // VST hosting (full flavor only — gated by CMake -DHAS_VST_HOST from
-// productFlavors.full.externalNativeBuild). Header comes from :vsthost_lib's
-// prefab package (vsthost_lib::vsthost target → -I<prefab>/include/vsthost/).
+// productFlavors.full.externalNativeBuild). The header is :vsthost_lib's
+// prefab export (vsthost_lib/src/main/cpp/include, via vsthost_lib::vsthost).
 #if HAS_VST_HOST
-// Prefab adds vsthost_lib/src/main/cpp to the include path as -isystem.
 #include <vst/VstFactory.h>
 #endif
 #include "../plugin/StateSerializer.h"

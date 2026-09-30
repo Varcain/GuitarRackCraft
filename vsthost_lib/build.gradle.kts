@@ -81,7 +81,8 @@ android {
 
     prefab {
         create("vsthost") {
-            headers = "src/main/cpp"
+            // Only the public interface: include/vst/VstFactory.h.
+            headers = "src/main/cpp/include"
         }
     }
 

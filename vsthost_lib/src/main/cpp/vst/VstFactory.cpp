@@ -1,4 +1,4 @@
-#include "VstFactory.h"
+#include "vst/VstFactory.h"
 #include "WineVstPlugin.h"
 #include "../util/log.h"
 #include <fstream>
