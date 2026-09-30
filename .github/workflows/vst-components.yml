@@ -42,6 +42,12 @@ on:
         value: ${{ jobs.keys.outputs.dxvk }}
       mesa:
         value: ${{ jobs.keys.outputs.mesa }}
+      turnip:
+        value: ${{ jobs.keys.outputs.turnip }}
+      adrenotools:
+        value: ${{ jobs.keys.outputs.adrenotools }}
+      hosts:
+        value: ${{ jobs.keys.outputs.hosts }}
 
 permissions:
   contents: read
@@ -74,6 +80,9 @@ jobs:
       fex: ${{ steps.k.outputs.fex }}
       dxvk: ${{ steps.k.outputs.dxvk }}
       mesa: ${{ steps.k.outputs.mesa }}
+      turnip: ${{ steps.k.outputs.turnip }}
+      adrenotools: ${{ steps.k.outputs.adrenotools }}
+      hosts: ${{ steps.k.outputs.hosts }}
       ndk_vst: ${{ steps.k.outputs.ndk_vst }}
       ndk_native: ${{ steps.k.outputs.ndk_native }}
     steps:
@@ -420,3 +429,130 @@ jobs:
         with:
           path: vsthost_lib/src/main/assets/mesa-zink-libs.tar.gz
           key: ${{ needs.keys.outputs.mesa }}
+
+  turnip:
+    needs: [keys, llvm-android]
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      NDK_VSTHOST: ${{ needs.keys.outputs.ndk_vst }}
+    steps:
+      - name: Look up the Turnip asset
+        id: cache
+        uses: actions/cache/restore@v4
+        with:
+          path: vsthost_lib/src/main/assets/turnip-libs.tar.gz
+          key: ${{ needs.keys.outputs.turnip }}
+          lookup-only: true
+      - if: steps.cache.outputs.cache-hit != 'true'
+        uses: actions/checkout@v4
+      - name: Free disk space
+        if: steps.cache.outputs.cache-hit != 'true'
+        uses: jlumbroso/free-disk-space@ceedf095f4ec1a097402bc6bd80831f2e1a6fde6  # v2.0.0
+        with: { android: false, preinstalled-runtimes: false, dotnet: true, haskell: true, large-packages: true, docker-images: true, swap-storage: true }
+      # lavapipe, the software-Vulkan fallback, links it.
+      - name: Restore android LLVM install
+        if: steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache/restore@v4
+        with:
+          path: vsthost_lib/external/llvm-android/install-android-arm64
+          key: ${{ needs.keys.outputs.llvm_android }}
+          fail-on-cache-miss: true
+      - name: Build Turnip, the Vulkan loader and lavapipe
+        if: steps.cache.outputs.cache-hit != 'true'
+        env:
+          ANDROID_NDK: ${{ env.ANDROID_SDK_ROOT }}/ndk/${{ env.NDK_VSTHOST }}
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends $COMMON_APT python3-venv
+          yes | "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
+          "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" "ndk;${NDK_VSTHOST}"
+          # lavapipe links LLVM 18 through meson's cmake method, which needs
+          # meson >= 1.4 (apt has 1.3.2); build-lavapipe-android.sh uses the
+          # meson in this venv.
+          python3 -m venv vsthost_lib/.cache/meson-venv
+          vsthost_lib/.cache/meson-venv/bin/pip install --quiet 'meson==1.7.2'
+          git submodule update --init 3rd_party/mesa \
+            vsthost_lib/external/Vulkan-Loader vsthost_lib/external/Vulkan-Headers
+          cd vsthost_lib && bash scripts/build-all.sh turnip
+      - name: Save the Turnip asset
+        if: steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: vsthost_lib/src/main/assets/turnip-libs.tar.gz
+          key: ${{ needs.keys.outputs.turnip }}
+
+  adrenotools:
+    needs: keys
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      NDK_VSTHOST: ${{ needs.keys.outputs.ndk_vst }}
+    steps:
+      - name: Look up the adrenotools libs
+        id: cache
+        uses: actions/cache/restore@v4
+        with:
+          path: vsthost_lib/toolchain/adrenotools-libs
+          key: ${{ needs.keys.outputs.adrenotools }}
+          lookup-only: true
+      - if: steps.cache.outputs.cache-hit != 'true'
+        uses: actions/checkout@v4
+      - name: Build libadrenotools
+        if: steps.cache.outputs.cache-hit != 'true'
+        env:
+          ANDROID_NDK: ${{ env.ANDROID_SDK_ROOT }}/ndk/${{ env.NDK_VSTHOST }}
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends $COMMON_APT
+          yes | "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
+          "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" "ndk;${NDK_VSTHOST}"
+          git submodule update --init --recursive vsthost_lib/external/libadrenotools
+          cd vsthost_lib && bash scripts/build-all.sh adrenotools
+      - name: Save the adrenotools libs
+        if: steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: vsthost_lib/toolchain/adrenotools-libs
+          key: ${{ needs.keys.outputs.adrenotools }}
+
+  hosts:
+    needs: keys
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Look up the host executables
+        id: cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            vsthost_lib/src/main/assets/vst_host.exe
+            vsthost_lib/src/main/assets/vst_host_x86.exe
+            vsthost_lib/src/main/assets/vst3_host.exe
+            vsthost_lib/src/main/assets/uihost_stub_x64.dll
+            vsthost_lib/src/main/assets/uihost_stub_x86.dll
+          key: ${{ needs.keys.outputs.hosts }}
+          lookup-only: true
+      - if: steps.cache.outputs.cache-hit != 'true'
+        uses: actions/checkout@v4
+      - name: Build vst_host, vst3_host and the uihost stubs
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            gcc-mingw-w64-x86-64 gcc-mingw-w64-i686 g++-mingw-w64-x86-64
+          git submodule update --init --recursive vsthost_lib/external/vst3sdk
+          cd vsthost_lib && bash scripts/build-all.sh hosts
+          # build-all.sh skips vst3_host.exe when the SDK is missing; the pack needs it.
+          test -f src/main/assets/vst3_host.exe
+      - name: Save the host executables
+        if: steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            vsthost_lib/src/main/assets/vst_host.exe
+            vsthost_lib/src/main/assets/vst_host_x86.exe
+            vsthost_lib/src/main/assets/vst3_host.exe
+            vsthost_lib/src/main/assets/uihost_stub_x64.dll
+            vsthost_lib/src/main/assets/uihost_stub_x86.dll
+          key: ${{ needs.keys.outputs.hosts }}

@@ -152,22 +152,15 @@ jobs:
           restore-keys: |
             ccache-${{ runner.os }}-
 
-      - name: Set up meson >= 1.4 for lavapipe
-        run: |
-          sudo apt-get install -y --no-install-recommends python3-venv
-          python3 -m venv vsthost_lib/.cache/meson-venv
-          vsthost_lib/.cache/meson-venv/bin/pip install --quiet --upgrade pip
-          vsthost_lib/.cache/meson-venv/bin/pip install --quiet 'meson==1.7.2'
-          vsthost_lib/.cache/meson-venv/bin/meson --version
-
-      - name: Stage vsthost (turnip + adrenotools + hosts + pack)
+      # pack-wine-fex.py -> vsthost_lib/src/main/{jniLibs,assets}
+      - name: Pack the VST host stack
         env:
           ANDROID_NDK: ${{ env.ANDROID_SDK_ROOT }}/ndk/${{ env.NDK_VSTHOST }}
-        run: cd vsthost_lib && bash scripts/build-all.sh turnip adrenotools hosts pack
+        run: cd vsthost_lib && bash scripts/build-all.sh pack
 
       # ── 7. Native build (Ninja handles incrementality) ──────────────────
       - name: Build native libraries
-        # BUILD_VST=0: VST stack already staged from the cached components above.
+        # BUILD_VST=0: VST stack already packed from the cached components above.
         run: BUILD_VST=0 ./build.sh full
         env:
           ANDROID_NDK: ${{ env.ANDROID_SDK_ROOT }}/ndk/${{ env.NDK_NATIVE }}

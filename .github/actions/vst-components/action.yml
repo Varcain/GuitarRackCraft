@@ -92,12 +92,30 @@ runs:
         key: ${{ fromJSON(inputs.keys).llvm }}
         fail-on-cache-miss: true
 
-    # build-all.sh turnip builds lavapipe (step 8c5) when it's present.
-    - name: Restore android LLVM install
+    - name: Restore the Turnip asset
       uses: actions/cache/restore@v4
       with:
-        path: vsthost_lib/external/llvm-android/install-android-arm64
-        key: ${{ fromJSON(inputs.keys).llvm_android }}
+        path: vsthost_lib/src/main/assets/turnip-libs.tar.gz
+        key: ${{ fromJSON(inputs.keys).turnip }}
+        fail-on-cache-miss: true
+
+    - name: Restore the adrenotools libs
+      uses: actions/cache/restore@v4
+      with:
+        path: vsthost_lib/toolchain/adrenotools-libs
+        key: ${{ fromJSON(inputs.keys).adrenotools }}
+        fail-on-cache-miss: true
+
+    - name: Restore the host executables
+      uses: actions/cache/restore@v4
+      with:
+        path: |
+          vsthost_lib/src/main/assets/vst_host.exe
+          vsthost_lib/src/main/assets/vst_host_x86.exe
+          vsthost_lib/src/main/assets/vst3_host.exe
+          vsthost_lib/src/main/assets/uihost_stub_x64.dll
+          vsthost_lib/src/main/assets/uihost_stub_x86.dll
+        key: ${{ fromJSON(inputs.keys).hosts }}
         fail-on-cache-miss: true
 
     - name: Unpack wine output into its build dir

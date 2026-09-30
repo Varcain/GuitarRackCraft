@@ -55,6 +55,24 @@ key[dxvk]="dxvk-$os-$(commit vsthost_lib/external/dxvk)-$(commit vsthost_lib/ext
 # pack-wine-fex.py, whose strip_symbol_versions() it runs on libEGL.
 key[mesa]="mesa-$os-$(commit 3rd_party/mesa)-$(hash vsthost_lib/patches/mesa vsthost_lib/src/main/cpp/mesashim \
     $S/build-mesa-zink.sh $S/build-libdrm-android.sh $S/pack-wine-fex.py)-ndk$ndk_vst"
+# Turnip (the HAL and the ICD, against a source libdrm), the Khronos Vulkan
+# loader and lavapipe (linked against llvm_android), which build-all.sh's
+# turnip phase packs into turnip-libs.tar.gz.
+key[turnip]="turnip-$os-$(
+    { echo "$(commit 3rd_party/mesa) $(commit vsthost_lib/external/Vulkan-Loader)"
+      echo "$(commit vsthost_lib/external/Vulkan-Headers) ${key[llvm_android]} ndk$ndk_vst"
+      hash vsthost_lib/patches/mesa vsthost_lib/patches/vulkan-loader $S/build-all.sh $S/lib \
+          $S/build-turnip-hal.sh $S/build-turnip-icd.sh $S/build-libdrm-android.sh \
+          $S/build-vulkan-loader.sh $S/build-lavapipe-android.sh; } | h16)"
+key[adrenotools]="adrenotools-$os-$(
+    { commit vsthost_lib/external/libadrenotools; echo "ndk$ndk_vst"
+      hash $S/build-adrenotools.sh $S/lib; } | h16)"
+# The wine-side host executables (mingw-w64; the VST3 one against vst3sdk).
+key[hosts]="hosts-$os-$(
+    { commit vsthost_lib/external/vst3sdk
+      hash vsthost_lib/external/vst2 vsthost_lib/external/vst_host vsthost_lib/external/vst_host_vst3 \
+          vsthost_lib/external/uihost_stub vsthost_lib/external/shared_layout.h \
+          $S/build-vst-host.sh $S/build-vst3-host.sh $S/build-uihost-stub.sh; } | h16)"
 # The native prebuild (build.sh full/playstore build the same targets):
 # everything it reads, and every 3rd_party submodule commit HEAD pins (from the
 # tree, so it doesn't matter which are initialised).
@@ -62,7 +80,7 @@ key[native]="native-$os-$(hash build.sh cmake 3rd_party/patches config scripts/a
     plugin_descriptions.json)-$(git ls-tree -r HEAD 3rd_party | awk '$2 == "commit"' | h16)"
 
 names=("$@")
-[ ${#names[@]} -gt 0 ] || names=(llvm llvm_android winedeps x11 wine fex dxvk mesa native)
+[ ${#names[@]} -gt 0 ] || names=(llvm llvm_android winedeps x11 wine fex dxvk mesa turnip adrenotools hosts native)
 for name in "${names[@]}"; do
     [ -n "${key[$name]:-}" ] || { echo "cache-keys.sh: unknown key '$name'" >&2; exit 2; }
     echo "$name=${key[$name]}"
