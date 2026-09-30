@@ -82,7 +82,7 @@ def iter_build_outputs(build_root: Path, fex_arm64ec: Path, fex_wow64: Path) -> 
     # direct re-exec of wineloader itself. The preloader binary is linked at
     # a fixed virtual address (`-Wl,-Ttext=0x7d400000`) and exits silently
     # under Android's strict ASLR, leaving wine as a zombie with no output.
-    # Wine 10.10 runs fine without the preloader; we lose some memory-layout
+    # Wine runs fine without the preloader; we lose some memory-layout
     # optimisations the preloader was supposed to set up.
     yield build_root / "server/wineserver",      f"{WINE_ROOT_DEVICE}/bin/wineserver"
 

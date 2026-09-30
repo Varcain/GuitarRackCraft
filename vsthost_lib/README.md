@@ -58,7 +58,7 @@ git submodule update --init --recursive vsthost_lib/external/wine-upstream \
 ```
 
 This pulls:
-- **wine** at tag `wine-10.10` (~150 MB)
+- **wine** at tag `wine-11.9` (~150 MB)
 - **FEX-Emu** at commit `07f7aa3c8` (~50 MB)
 - **llvm-mingw** at tag `20250730` (~13 MB)
 
@@ -85,8 +85,8 @@ output in `src/main/{jniLibs,assets}/`.
 | `toolchain/x11-libs/libpng16.so` | libpng upstream | build-android-libs |
 | `toolchain/x11-libs/libfreetype.so` | freetype upstream | build-android-libs |
 | `toolchain/gnutls-android-arm64/lib/libgnutls.so` | gnutls upstream | build-gnutls-android |
-| `external/wine-upstream/build-arm64ec/dlls/**/*.dll` | wine 10.10 + patches | build-wine-pe |
-| `external/wine-upstream/build-android-arm64/{loader,server}/*` | wine 10.10 + patches | build-wine-android |
+| `external/wine-upstream/build-arm64ec/dlls/**/*.dll` | wine 11.9 + patches | build-wine-pe |
+| `external/wine-upstream/build-android-arm64/{loader,server}/*` | wine 11.9 + patches | build-wine-android |
 | `external/fex-upstream/build-{arm64ec,wow64}/Bin/lib*.dll` | FEX-Emu | build-fex-pe |
 | `src/main/assets/vst_host.exe` | external/vst_host/vst_host.c | build-vst-host |
 | `src/main/assets/vst_host_x86.exe` | same | build-vst-host |
@@ -96,8 +96,8 @@ output in `src/main/{jniLibs,assets}/`.
 
 ## Wine patch workflow
 
-`patches/wine/0001..0007*.patch` apply on top of the clean
-`wine-10.10` tag. They're applied by `scripts/apply-wine-patches.sh`
+The numbered `patches/wine/NNNN-*.patch` apply on top of the clean
+`wine-11.9` tag. They're applied by `scripts/apply-wine-patches.sh`
 (called by both `build-wine-android.sh` and `build-wine-pe.sh` before
 configure). The helper resets the wine submodule, runs `git apply` for
 each numbered patch in order, and aborts on first conflict.

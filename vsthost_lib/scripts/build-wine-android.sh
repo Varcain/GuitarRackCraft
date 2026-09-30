@@ -14,7 +14,7 @@ repo_root="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$repo_root"
 
 # --- apply Bionic adaptation patches to clean upstream wine -----------------
-# wine-upstream is a submodule pinned at the wine-10.10 tag (clean upstream).
+# wine-upstream is a submodule pinned at the wine-11.9 tag (clean upstream).
 # Our Bionic / FEX-pivot adaptations live as files in patches/wine/ and are
 # applied here before configure. Re-running this script resets wine and
 # re-applies — see apply-wine-patches.sh for details.

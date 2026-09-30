@@ -2,7 +2,7 @@
 # Bootstraps the vsthost_lib FEX-pivot build tree.
 #
 # Sources are managed as git submodules in the parent GuitarRackCraft repo:
-#   - wine          external/wine-upstream      (github.com/wine-mirror/wine @ wine-10.10)
+#   - wine          external/wine-upstream      (github.com/wine-mirror/wine @ wine-11.9)
 #   - FEX-Emu       external/fex-upstream       (github.com/FEX-Emu/FEX     @ 07f7aa3c8)
 #   - llvm-mingw    external/llvm-mingw         (github.com/mstorsjo/llvm-mingw @ 20250730)
 #
