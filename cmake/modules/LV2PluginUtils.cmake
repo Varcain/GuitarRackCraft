@@ -88,6 +88,24 @@ function(lv2_sync_to_jnilibs TARGET_NAME SOURCE_DIR DEPENDS_LIST)
     add_custom_target(${TARGET_NAME} DEPENDS "${_stamp}")
 endfunction()
 
+# ─── Configure-time inputs ───────────────────────────────────────────────────
+# grc_configure_inputs(<file-or-dir>...)
+#   Makes files that configure reads or copies (file(READ), file(STRINGS),
+#   file(COPY)) re-run CMake when they change, as configure_file() inputs
+#   already do. A directory counts with everything under it, including files
+#   added or removed later. Re-running configure is cheap: it only rewrites
+#   what changed.
+function(grc_configure_inputs)
+    foreach(_path IN LISTS ARGN)
+        if(IS_DIRECTORY "${_path}")
+            file(GLOB_RECURSE _files CONFIGURE_DEPENDS "${_path}/*")
+        else()
+            set(_files "${_path}")
+        endif()
+        set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${_files})
+    endforeach()
+endfunction()
+
 # ─── Stage an LV2 bundle's TTLs into the assets (configure time) ─────────────
 # Usage: lv2_stage_bundle(<bundle_dir>
 #     TTL_DIR <dir>        # holds manifest.ttl and the plugin TTLs
@@ -122,6 +140,7 @@ function(lv2_stage_bundle BUNDLE_DIR)
             configure_file("${ARG_MOD_DIR}/modgui.ttl" "${BUNDLE_DIR}/modgui.ttl" COPYONLY)
         endif()
         if(IS_DIRECTORY "${ARG_MOD_DIR}/modgui")
+            grc_configure_inputs("${ARG_MOD_DIR}/modgui")
             file(COPY "${ARG_MOD_DIR}/modgui/" DESTINATION "${BUNDLE_DIR}/modgui/")
         endif()
     endif()

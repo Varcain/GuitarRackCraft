@@ -83,7 +83,7 @@ print(json.dumps({'base': base, 'sources': sources, 'uses': uses, 'includes': in
 ]=])
 
 # ─── Phase 1: Copy TTL + modgui ──────────────────────────────────────────────
-file(GLOB _trunk_bundles "${_trunk_src}/*.lv2")
+file(GLOB _trunk_bundles CONFIGURE_DEPENDS "${_trunk_src}/*.lv2")
 foreach(_bundle IN LISTS _trunk_bundles)
     if(NOT IS_DIRECTORY "${_bundle}")
         continue()
@@ -102,6 +102,7 @@ foreach(_bundle IN LISTS _trunk_bundles)
 
     # Process manifest.ttl.in → manifest.ttl
     if(EXISTS "${_bundle}/manifest.ttl.in")
+        grc_configure_inputs("${_bundle}/manifest.ttl.in")
         file(READ "${_bundle}/manifest.ttl.in" _manifest_content)
         string(REPLACE "@LIB_EXT@" ".so" _manifest_content "${_manifest_content}")
         grc_write_if_changed("${_target_dir}/manifest.ttl" "${_manifest_content}")
@@ -110,7 +111,7 @@ foreach(_bundle IN LISTS _trunk_bundles)
     endif()
 
     # Find UI cpp name for TTL rewriting
-    file(GLOB _ui_cpps "${_bundle}/*_ui.cpp")
+    file(GLOB _ui_cpps CONFIGURE_DEPENDS "${_bundle}/*_ui.cpp")
     set(_ui_so_name "")
     if(_ui_cpps)
         list(GET _ui_cpps 0 _ui_cpp)
@@ -119,13 +120,14 @@ foreach(_bundle IN LISTS _trunk_bundles)
     endif()
 
     # Copy other TTL files, rewriting guiext:binary if needed
-    file(GLOB _ttls "${_bundle}/*.ttl")
+    file(GLOB _ttls CONFIGURE_DEPENDS "${_bundle}/*.ttl")
     foreach(_ttl IN LISTS _ttls)
         get_filename_component(_ttl_name "${_ttl}" NAME)
         if(_ttl_name STREQUAL "manifest.ttl")
             continue()  # Already handled above
         endif()
         if(_ui_so_name)
+            grc_configure_inputs("${_ttl}")
             file(READ "${_ttl}" _ttl_content)
             string(REGEX REPLACE
                 "guiext:binary <[^>]*_gui\\.so>"
@@ -139,6 +141,7 @@ foreach(_bundle IN LISTS _trunk_bundles)
 
     # Copy modgui
     if(IS_DIRECTORY "${_bundle}/modgui")
+        grc_configure_inputs("${_bundle}/modgui")
         file(COPY "${_bundle}/modgui/" DESTINATION "${_target_dir}/modgui/")
     endif()
 endforeach()
@@ -250,7 +253,7 @@ foreach(_bundle IN LISTS _trunk_bundles)
     endforeach()
 
     # Check for try/catch in source and all included .cc files (e.g. gx_detune)
-    file(GLOB _all_bundle_srcs "${_bundle}/*.cc" "${_bundle}/*.cpp")
+    file(GLOB _all_bundle_srcs CONFIGURE_DEPENDS "${_bundle}/*.cc" "${_bundle}/*.cpp")
     foreach(_src IN LISTS _all_bundle_srcs)
         if(EXISTS "${_src}")
             file(STRINGS "${_src}" _try_lines REGEX "try \\{")
@@ -285,7 +288,7 @@ foreach(_bundle IN LISTS _trunk_bundles)
     if(_needs_convolver)
         # Check if gx_convolver.cc is #included inline
         set(_inline_conv FALSE)
-        file(GLOB _bundle_ccs "${_bundle}/*.cc" "${_bundle}/*.cpp")
+        file(GLOB _bundle_ccs CONFIGURE_DEPENDS "${_bundle}/*.cc" "${_bundle}/*.cpp")
         foreach(_cc IN LISTS _bundle_ccs)
             file(STRINGS "${_cc}" _conv_inc REGEX "#include.*gx_convolver\\.cc")
             if(_conv_inc)

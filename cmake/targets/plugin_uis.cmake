@@ -34,17 +34,17 @@ set(_lv2_headers "${APP_ROOT}/cpp/libs/lv2/include")
 # ─── 1. Build xputty (libxcairo.a) ───────────────────────────────────────────
 
 # Collect source files (skip mswin)
-file(GLOB _xputty_cpp "${_xputty_src}/*.cpp")
-file(GLOB _xputty_widgets "${_xputty_src}/widgets/*.cpp")
-file(GLOB _xputty_dialogs "${_xputty_src}/dialogs/*.cpp")
-file(GLOB _xputty_xdgmime "${_xputty_src}/xdgmime/*.c")
+file(GLOB _xputty_cpp CONFIGURE_DEPENDS "${_xputty_src}/*.cpp")
+file(GLOB _xputty_widgets CONFIGURE_DEPENDS "${_xputty_src}/widgets/*.cpp")
+file(GLOB _xputty_dialogs CONFIGURE_DEPENDS "${_xputty_src}/dialogs/*.cpp")
+file(GLOB _xputty_xdgmime CONFIGURE_DEPENDS "${_xputty_src}/xdgmime/*.c")
 
 set(_xputty_sources ${_xputty_cpp} ${_xputty_widgets} ${_xputty_dialogs} ${_xputty_xdgmime})
 # Remove mswin files
 list(FILTER _xputty_sources EXCLUDE REGEX "mswin")
 
 # PNG resource embedding via ld -r -b binary
-file(GLOB _xputty_pngs "${_xputty_src}/resources/*.png")
+file(GLOB _xputty_pngs CONFIGURE_DEPENDS "${_xputty_src}/resources/*.png")
 set(_xputty_res_objs "")
 foreach(_png IN LISTS _xputty_pngs)
     get_filename_component(_png_name "${_png}" NAME_WE)
@@ -95,7 +95,7 @@ set(_ui_includes
 
 set(_trunk_ui_targets "")
 
-file(GLOB _trunk_plugin_dirs "${_trunk_lv2}/gx*.lv2" "${_trunk_lv2}/Gx*.lv2")
+file(GLOB _trunk_plugin_dirs CONFIGURE_DEPENDS "${_trunk_lv2}/gx*.lv2" "${_trunk_lv2}/Gx*.lv2")
 foreach(_pdir IN LISTS _trunk_plugin_dirs)
     if(NOT IS_DIRECTORY "${_pdir}")
         continue()
@@ -103,7 +103,7 @@ foreach(_pdir IN LISTS _trunk_plugin_dirs)
     get_filename_component(_pname "${_pdir}" NAME)
 
     # Find *_ui.cpp
-    file(GLOB _ui_cpps "${_pdir}/*_ui.cpp")
+    file(GLOB _ui_cpps CONFIGURE_DEPENDS "${_pdir}/*_ui.cpp")
     if(NOT _ui_cpps)
         continue()
     endif()
@@ -173,7 +173,7 @@ endforeach()
 set(_gx_ui_targets "")
 
 if(IS_DIRECTORY "${_gx_plugins_src}")
-    file(GLOB _gx_bundles_ui "${_gx_plugins_src}/*.lv2")
+    file(GLOB _gx_bundles_ui CONFIGURE_DEPENDS "${_gx_plugins_src}/*.lv2")
     foreach(_bundle IN LISTS _gx_bundles_ui)
         if(NOT IS_DIRECTORY "${_bundle}")
             continue()
@@ -181,7 +181,7 @@ if(IS_DIRECTORY "${_gx_plugins_src}")
         get_filename_component(_bundle_name "${_bundle}" NAME)
 
         # Find gui/*x11ui.c
-        file(GLOB _ui_cs "${_bundle}/gui/*x11ui.c")
+        file(GLOB _ui_cs CONFIGURE_DEPENDS "${_bundle}/gui/*x11ui.c")
         if(NOT _ui_cs)
             continue()
         endif()
@@ -189,7 +189,7 @@ if(IS_DIRECTORY "${_gx_plugins_src}")
 
         # Get .so name from TTL
         set(_so_name "")
-        file(GLOB _plugin_ttls "${_bundle}/plugin/*.ttl")
+        file(GLOB _plugin_ttls CONFIGURE_DEPENDS "${_bundle}/plugin/*.ttl")
         foreach(_ttl IN LISTS _plugin_ttls)
             file(STRINGS "${_ttl}" _binary_lines REGEX "guiext:binary")
             foreach(_line IN LISTS _binary_lines)
@@ -217,7 +217,7 @@ if(IS_DIRECTORY "${_gx_plugins_src}")
         endif()
 
         # PNG resource embedding
-        file(GLOB _gui_pngs "${_bundle}/gui/*.png")
+        file(GLOB _gui_pngs CONFIGURE_DEPENDS "${_bundle}/gui/*.png")
         set(_gx_res_objs "")
         foreach(_png IN LISTS _gui_pngs)
             get_filename_component(_png_name "${_png}" NAME_WE)

@@ -28,6 +28,7 @@ set(_aidax_ttl_dir "${_aidax_src}/rt-neural-generic/ttl")
 lv2_stage_bundle("${_aidax_assets}" TTL_DIR "${_aidax_ttl_dir}" MOD_DIR "${_aidax_ttl_dir}")
 
 # The plugin TTL, with its name marked "headless" (the full AIDA-X is separate).
+grc_configure_inputs("${_aidax_ttl_dir}/rt-neural-generic.ttl")
 file(READ "${_aidax_ttl_dir}/rt-neural-generic.ttl" _aidax_ttl)
 string(REPLACE "doap:name \"AIDA-X\"" "doap:name \"AIDA-X (headless)\"" _aidax_ttl "${_aidax_ttl}")
 string(REPLACE "mod:label \"AIDA-X\"" "mod:label \"AIDA-X (headless)\"" _aidax_ttl "${_aidax_ttl}")

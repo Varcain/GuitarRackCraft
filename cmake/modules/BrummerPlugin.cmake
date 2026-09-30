@@ -39,7 +39,7 @@ function(brummer_setup_xputty TARGET_NAME XPUTTY_SRC BUILD_DIR PNG_DIR)
 
     # Copy PNGs to xputty/resources
     if(PNG_DIR)
-        file(GLOB _pngs "${PNG_DIR}/*.png")
+        file(GLOB _pngs CONFIGURE_DEPENDS "${PNG_DIR}/*.png")
         foreach(_png IN LISTS _pngs)
             get_filename_component(_png_name "${_png}" NAME)
             configure_file("${_png}" "${_xputty_res}/${_png_name}" COPYONLY)
@@ -47,7 +47,7 @@ function(brummer_setup_xputty TARGET_NAME XPUTTY_SRC BUILD_DIR PNG_DIR)
     endif()
 
     # Generate xresources.h
-    file(GLOB _all_res_pngs "${_xputty_res}/*.png")
+    file(GLOB _all_res_pngs CONFIGURE_DEPENDS "${_xputty_res}/*.png")
     set(_xres_content "")
     foreach(_png IN LISTS _all_res_pngs)
         get_filename_component(_png_name_we "${_png}" NAME_WE)
@@ -72,10 +72,10 @@ function(brummer_setup_xputty TARGET_NAME XPUTTY_SRC BUILD_DIR PNG_DIR)
     endforeach()
 
     # Collect xputty sources
-    file(GLOB _xp_srcs "${XPUTTY_SRC}/*.c")
-    file(GLOB _xp_widgets "${XPUTTY_SRC}/widgets/*.c")
-    file(GLOB _xp_dialogs "${XPUTTY_SRC}/dialogs/*.c")
-    file(GLOB _xp_xdg "${XPUTTY_SRC}/xdgmime/*.c")
+    file(GLOB _xp_srcs CONFIGURE_DEPENDS "${XPUTTY_SRC}/*.c")
+    file(GLOB _xp_widgets CONFIGURE_DEPENDS "${XPUTTY_SRC}/widgets/*.c")
+    file(GLOB _xp_dialogs CONFIGURE_DEPENDS "${XPUTTY_SRC}/dialogs/*.c")
+    file(GLOB _xp_xdg CONFIGURE_DEPENDS "${XPUTTY_SRC}/xdgmime/*.c")
     set(_xp_all ${_xp_srcs} ${_xp_widgets} ${_xp_dialogs} ${_xp_xdg})
     list(FILTER _xp_all EXCLUDE REGEX "mswin")
 

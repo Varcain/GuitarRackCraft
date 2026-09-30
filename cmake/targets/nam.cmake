@@ -32,6 +32,7 @@ file(MAKE_DIRECTORY "${_nam_assets}")
 # project minor/patch to lv2:minorVersion/lv2:microVersion.
 set(_nam_ver_minor 0)
 set(_nam_ver_patch 0)
+grc_configure_inputs("${_nam_src}/CMakeLists.txt")
 file(STRINGS "${_nam_src}/CMakeLists.txt" _nam_proj_line REGEX "project\\(.*VERSION[ \t]+[0-9]+\\.[0-9]+\\.[0-9]+")
 if(_nam_proj_line MATCHES "VERSION[ \t]+([0-9]+)\\.([0-9]+)\\.([0-9]+)")
     set(_nam_ver_minor "${CMAKE_MATCH_2}")
@@ -42,6 +43,7 @@ endif()
 
 # manifest.ttl
 if(EXISTS "${_nam_src}/resources/manifest.ttl.in")
+    grc_configure_inputs("${_nam_src}/resources/manifest.ttl.in")
     file(READ "${_nam_src}/resources/manifest.ttl.in" _manifest)
     string(REPLACE "@NAM_LV2_ID@" "${_nam_lv2_id}" _manifest "${_manifest}")
     string(REPLACE "@CMAKE_SHARED_MODULE_SUFFIX@" ".so" _manifest "${_manifest}")
@@ -50,6 +52,7 @@ endif()
 
 # neural_amp_modeler.ttl
 if(EXISTS "${_nam_src}/resources/neural_amp_modeler.ttl.in")
+    grc_configure_inputs("${_nam_src}/resources/neural_amp_modeler.ttl.in")
     file(READ "${_nam_src}/resources/neural_amp_modeler.ttl.in" _nam_ttl)
     string(REPLACE "@NAM_LV2_ID@" "${_nam_lv2_id}" _nam_ttl "${_nam_ttl}")
     string(REPLACE "@PROJECT_VERSION_MINOR@" "${_nam_ver_minor}" _nam_ttl "${_nam_ttl}")
@@ -62,6 +65,7 @@ if(EXISTS "${_nam_src}/resources/modgui.ttl")
     configure_file("${_nam_src}/resources/modgui.ttl" "${_nam_assets}/modgui.ttl" COPYONLY)
 endif()
 if(IS_DIRECTORY "${_nam_src}/resources/modgui")
+    grc_configure_inputs("${_nam_src}/resources/modgui")
     file(COPY "${_nam_src}/resources/modgui/" DESTINATION "${_nam_assets}/modgui/")
 endif()
 
