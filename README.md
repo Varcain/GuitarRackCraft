@@ -32,7 +32,8 @@ It also includes **experimental** support for hosting Windows VST2/VST3 plugins 
 # Initialize submodules
 git submodule update --init --recursive
 
-# Build native libraries
+# Build native libraries (./build.sh help lists the steps, e.g.
+# ./build.sh native neuralrack_done to rebuild and restage one plugin)
 ./build.sh
 
 # Build and install debug APK
