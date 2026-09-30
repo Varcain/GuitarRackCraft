@@ -24,6 +24,11 @@ plugins {
     id("org.jetbrains.kotlin.android") version "1.9.20" apply false
 }
 
+// <root>/build holds the native prebuild (build.sh: build/prebuild, x11_ui,
+// lv2, the plugin builds...), which is not Gradle's to delete. Keep the root
+// project's own output in a subdirectory so `clean` only removes that.
+layout.buildDirectory.set(layout.projectDirectory.dir("build/gradle"))
+
 tasks.register("clean", Delete::class) {
     delete(rootProject.layout.buildDirectory)
 }
