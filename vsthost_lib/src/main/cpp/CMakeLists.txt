@@ -50,9 +50,17 @@ target_link_libraries(vsthost
 
 # Developer diagnostics, driven by marker files from the fullDebug hooks and
 # PluginSurface: the Phase 0 GPU-upgrade spike (cross-driver AHB + fence) and
-# the Phase 2 AHB side-channel synthetic client. Only debug builds turn this on
-# (vsthost_lib/build.gradle.kts); without it their JNI entry points return false.
-option(VSTHOST_DEBUG_DIAGNOSTICS "Build the AhbSpike/AhbChannelTest diagnostics" OFF)
+# the Phase 2 AHB side-channel synthetic client. On by default in Debug builds
+# only; without it their JNI entry points return false. (Chosen here rather than
+# with a debug-only Gradle CMake argument: that makes AGP configure :app against
+# vsthost_lib's header-only prefab publication, so :app fails to link.)
+if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+    set(_vsthost_diagnostics_default ON)
+else()
+    set(_vsthost_diagnostics_default OFF)
+endif()
+option(VSTHOST_DEBUG_DIAGNOSTICS "Build the AhbSpike/AhbChannelTest diagnostics"
+       ${_vsthost_diagnostics_default})
 if(VSTHOST_DEBUG_DIAGNOSTICS)
     target_sources(vsthost PRIVATE
         ahbspike/AhbSpike.cpp
