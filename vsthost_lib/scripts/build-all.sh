@@ -105,11 +105,15 @@ phase_x11() {
     echo ""
     echo "=== build source X11 sysroot (native cmake target x11_runtime_libs) ==="
     proj_root="$(cd "$REPO/.." && pwd)"
-    # -DX11_ONLY=ON: configure ONLY the X11/Cairo/Mesa sysroot, skipping the
-    # LV2/fftw/plugin targets (those need build.sh's OCaml codelet-gen and are
-    # unrelated to wine's X11 client libs). build.sh full reconfigures without it.
-    ( cd "$proj_root" && cmake --preset android-arm64 -S cmake -DX11_ONLY=ON >/dev/null && \
-      cmake --build build/prebuild --target x11_runtime_libs )
+    # A fresh build dir (CI's x11 job) is configured with -DX11_ONLY=ON: only
+    # the X11/Cairo sysroot, skipping the LV2/fftw/plugin targets (those need
+    # build.sh's OCaml codelet-gen and submodules that job doesn't init). A dir
+    # build.sh already configured has x11_runtime_libs too - reconfiguring it
+    # X11_ONLY would only make the next build.sh reconfigure it back.
+    if [ ! -f "$proj_root/build/prebuild/CMakeCache.txt" ]; then
+        ( cd "$proj_root" && cmake --preset android-arm64 -S cmake -DX11_ONLY=ON >/dev/null )
+    fi
+    ( cd "$proj_root" && cmake --build build/prebuild --target x11_runtime_libs )
 }
 
 phase_winedeps() {
