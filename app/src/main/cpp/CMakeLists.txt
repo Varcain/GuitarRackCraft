@@ -123,7 +123,6 @@ include_directories(
 add_library(plugin_abstraction STATIC
     plugin/PluginChain.cpp
     plugin/PluginRegistry.cpp
-    plugin/PluginUIGuard.cpp
     plugin/PluginUIManager.cpp
     plugin/StateSerializer.cpp
 )

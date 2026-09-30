@@ -22,8 +22,6 @@
 # In the full flavor both libraries are loaded into one process, each with
 # its own copy of this code (and its own display registry). Hidden
 # visibility keeps either copy from binding to the other's symbols.
-#
-# Consumers also provide plugin/PluginUIGuard.cpp, which this code calls.
 
 add_library(x11_native_display STATIC
     X11NativeDisplay.cpp
@@ -35,6 +33,9 @@ add_library(x11_native_display STATIC
     X11Framebuffer.cpp
     X11PropertyStore.cpp
     AhbTexture.cpp
+    # The "is a plugin UI being created" guard this server consults; built
+    # here so each consumer gets it with the server.
+    ../plugin/PluginUIGuard.cpp
 )
 # Consumers include the headers as "x11/X11NativeDisplay.h".
 target_include_directories(x11_native_display PUBLIC

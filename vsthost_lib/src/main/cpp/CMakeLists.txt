@@ -31,7 +31,6 @@ add_library(vsthost SHARED
     launcher/WineHostProcess.cpp
     ipc/SharedRing.cpp
     ipc/PickerChannel.cpp
-    "${GRC_APP_CPP_DIR}/plugin/PluginUIGuard.cpp"  # called by the X11 server
     util/PeExports.cpp
     # GuitarRackCraft IPlugin bridge (consumed by :app via prefab)
     vst/VstFactory.cpp
