@@ -57,15 +57,6 @@ android {
         versionCode = providers.gradleProperty("grcVersionCode").map { it.toInt() }.getOrElse(100)  // 0.1
         versionName = providers.gradleProperty("grcVersionName").getOrElse("0.1-main")
 
-        val buildDate = SimpleDateFormat("yyyy-MM-dd").format(Date())
-        val buildTime = SimpleDateFormat("HH:mm").format(Date())
-        val buildHost = System.getenv("HOSTNAME")
-            ?: System.getenv("COMPUTERNAME")
-            ?: try { InetAddress.getLocalHost().hostName } catch (_: Exception) { "unknown" }
-        buildConfigField("String", "BUILD_DATE", "\"$buildDate\"")
-        buildConfigField("String", "BUILD_TIME", "\"$buildTime\"")
-        buildConfigField("String", "BUILD_HOST", "\"$buildHost\"")
-
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
             useSupportLibrary = true
@@ -101,7 +92,18 @@ android {
     }
 
     buildTypes {
+        debug {
+            // Fixed: a per-minute timestamp would regenerate BuildConfig, and
+            // recompile the Kotlin sources, on every debug build.
+            buildConfigField("String", "BUILD_STAMP", "\"dev\"")
+        }
         release {
+            val buildHost = System.getenv("HOSTNAME")
+                ?: System.getenv("COMPUTERNAME")
+                ?: try { InetAddress.getLocalHost().hostName } catch (_: Exception) { "unknown" }
+            val buildStamp = "${SimpleDateFormat("yyyy-MM-dd HH:mm").format(Date())} · $buildHost"
+            buildConfigField("String", "BUILD_STAMP", "\"$buildStamp\"")
+
             isMinifyEnabled = false
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),

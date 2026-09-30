@@ -3566,7 +3566,7 @@ fun AboutDialog(
                     fontWeight = FontWeight.SemiBold
                 )
                 Text(
-                    text = "Build: ${BuildConfig.BUILD_DATE} ${BuildConfig.BUILD_TIME} · ${BuildConfig.BUILD_HOST}",
+                    text = "Build: ${BuildConfig.BUILD_STAMP}",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
