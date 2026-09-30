@@ -9,7 +9,7 @@
 # fault is in. With this map, the triage script can report
 # "ntdll.so::RtlpWaitForCriticalSection +0x84" instead of "<base>+FE7784".
 #
-# Output: src/main/assets/wine-symbol-map.txt
+# Output: build/wine-symbol-map.txt (host-side only - it is not shipped)
 #   Format (one line per FUNC/TEXT symbol):
 #     <module> <offset_hex> <symbol_name>
 #   Sorted by (module, offset) so the triage script can bisect.
@@ -34,7 +34,10 @@ if [ -z "$NM" ] || [ ! -x "$NM" ]; then
     exit 0
 fi
 
-out="$repo_root/src/main/assets/wine-symbol-map.txt"
+out="$repo_root/build/wine-symbol-map.txt"
+mkdir -p "${out%/*}"
+# Earlier builds wrote it into the APK assets (~40 MB nobody on the device reads).
+rm -f "$repo_root/src/main/assets/wine-symbol-map.txt"
 tmp="$(mktemp)"
 
 wine_build="$repo_root/external/wine-upstream/build-android-arm64"

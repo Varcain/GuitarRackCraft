@@ -307,7 +307,8 @@ def parse_line(state: TriageState, line: str, lineno: int) -> None:
 # Diagnosis heuristics
 # ---------------------------------------------------------------------------
 
-SYMBOL_MAP = Path(__file__).resolve().parent.parent / "src/main/assets/wine-symbol-map.txt"
+# Written by scripts/build-symbol-map.sh.
+SYMBOL_MAP = Path(__file__).resolve().parent.parent / "build/wine-symbol-map.txt"
 
 
 def max_module_offset(module: str) -> int:
