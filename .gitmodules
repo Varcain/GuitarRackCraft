@@ -77,9 +77,6 @@
 [submodule "3rd_party/NeuralRack"]
 	path = 3rd_party/NeuralRack
 	url = https://github.com/brummer10/NeuralRack.git
-[submodule "3rd_party/expat"]
-	path = 3rd_party/expat
-	url = https://github.com/libexpat/libexpat.git
 [submodule "3rd_party/libsndfile"]
 	path = 3rd_party/libsndfile
 	url = https://github.com/libsndfile/libsndfile.git

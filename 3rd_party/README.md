@@ -65,13 +65,12 @@ Local modifications are stored as numbered patch files in `patches/<submodule>/`
 | **oboe** | Android audio I/O (Google) |
 | **fftw3** | FFT library (codelets generated via OCaml genfft) |
 | **libsndfile** | Audio file I/O |
-| **expat** | XML parser |
 
 ## Graphics - X11/Cairo
 
 | Submodule | Description |
 |-----------|-------------|
-| **mesa** | OpenGL (software rasterizer for LV2 UIs) |
+| **mesa** | Turnip, Zink and lavapipe for the VST host (`vsthost_lib/scripts`) |
 | **x11/util-macros** | X.Org autotools macros |
 | **x11/xorgproto** | X11 protocol headers |
 | **x11/xtrans** | X11 transport layer |
