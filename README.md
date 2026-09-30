@@ -53,13 +53,17 @@ git submodule update --init --recursive
 | **full** | All plugins bundled in a single APK |
 | **playstore** | Plugins split into asset packs (gxplugins, neural, brummer) for Play Store delivery |
 
+### Adding a plugin
+
+See [docs/adding-a-plugin.md](docs/adding-a-plugin.md).
+
 ## Architecture
 
 - **Kotlin/Compose** - Android UI layer
 - **C++17** - Audio engine, LV2 host, X11 server
 - **Oboe** - Low-latency audio I/O
 - **lilv** - LV2 plugin loading and management
-- **Cairo/Mesa** - 2D/3D rendering for plugin UIs
+- **Cairo, EGL/GLES2** - rendering for plugin UIs
 - **X11 emulation** - Custom minimal X11 server bridging native plugin UIs to Android surfaces
 
 See [3rd_party/README.md](3rd_party/README.md) for the full list of dependencies.
