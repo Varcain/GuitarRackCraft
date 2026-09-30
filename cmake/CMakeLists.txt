@@ -85,9 +85,13 @@ set(PROJECT_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/.." CACHE PATH "Project root" FORC
 set(THIRD_PARTY  "${PROJECT_ROOT}/3rd_party")
 set(APP_ROOT     "${PROJECT_ROOT}/app/src/main" CACHE PATH "App root")
 set(ASSETS_DIR   "${APP_ROOT}/assets/lv2" CACHE PATH "Assets dir")
-# Every library the APK ships is staged here, in the build dir. build.sh mirrors
-# it into app/src/main/jniLibs (core), app/src/full/jniLibs and the asset packs.
-set(JNILIBS_DIR  "${CMAKE_BINARY_DIR}/jniLibs/arm64-v8a")
+# Every library the APK ships is staged under GRC_STAGE_DIR, in the build dir:
+# core/ for the base APK's libraries, and one directory per Play asset pack for
+# the plugins' (the plugin loop below points JNILIBS_DIR at its plugin's pack).
+# build.sh mirrors them into app/src/main/jniLibs, app/src/full/jniLibs and the
+# asset packs.
+set(GRC_STAGE_DIR "${CMAKE_BINARY_DIR}/stage")
+set(JNILIBS_DIR   "${GRC_STAGE_DIR}/core")
 
 # ─── Include helper modules ──────────────────────────────────────────────────
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/modules")
@@ -172,11 +176,14 @@ include(${CMAKE_CURRENT_SOURCE_DIR}/targets/fftw3.cmake)
 include(${CMAKE_CURRENT_SOURCE_DIR}/plugins.cmake)
 get_property(GRC_PLUGINS GLOBAL PROPERTY GRC_PLUGINS)
 foreach(_grc_plugin IN LISTS GRC_PLUGINS)
+    get_property(_grc_pack GLOBAL PROPERTY GRC_PLUGIN_${_grc_plugin}_PACK)
+    set(JNILIBS_DIR "${GRC_STAGE_DIR}/${_grc_pack}")
     include(${CMAKE_CURRENT_SOURCE_DIR}/targets/${_grc_plugin}.cmake)
     if(NOT TARGET ${_grc_plugin}_done)
         message(FATAL_ERROR "targets/${_grc_plugin}.cmake does not define ${_grc_plugin}_done")
     endif()
 endforeach()
+set(JNILIBS_DIR "${GRC_STAGE_DIR}/core")
 list(TRANSFORM GRC_PLUGINS APPEND _done OUTPUT_VARIABLE GRC_PLUGIN_DONE_TARGETS)
 
 # ─── Phase 3: Metadata + modgui ──────────────────────────────────────────────

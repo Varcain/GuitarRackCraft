@@ -1,9 +1,9 @@
-# Libraries that ship in the base APK, i.e. that may stay in
-# app/src/main/jniLibs/arm64-v8a. Everything else build.sh finds there is a
-# plugin library: it moves those to the full-flavor overlay
-# (app/src/full/jniLibs) and/or a Play asset pack. The app's
-# verifyNativeInputs Gradle check fails the build if anything outside this
-# list is left there.
+# Libraries allowed in the base APK, i.e. in app/src/main/jniLibs/arm64-v8a:
+# the app's verifyNativeInputs Gradle check fails the build on anything else
+# there. What build.sh puts there is what the native build staged as core
+# (x11_sysroot.cmake, into build/prebuild/stage/core); plugin libraries are
+# staged by pack (cmake/plugins.cmake) and go to the full-flavor overlay and
+# the Play asset packs.
 #
 # One shell glob per line, matched against the file name. '#' starts a comment.
 

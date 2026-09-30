@@ -24,11 +24,12 @@
 # <name>_done. The rest is derived from this list: what CMakeLists.txt
 # includes and all_plugins depends on, what the metadata step waits for and
 # which bundles it describes (GeneratePluginMetadata.cmake reads this file
-# too), and the Play asset pack the libraries ship in.
+# too), and where the libraries are staged: the Play asset pack they ship in.
 #
 # grc_plugin(<name> PACK <gx|neural|brummer> [AUTHOR <author> BUNDLES <bundle>...])
 #   PACK     the asset pack its libraries go to (playstore flavor; the full
-#            flavor ships them all in its jniLibs)
+#            flavor ships them all in its jniLibs). Its target file sees
+#            JNILIBS_DIR = <build>/stage/<PACK>.
 #   BUNDLES  its LV2 bundles, assets/lv2/<bundle>.lv2, listed in
 #            plugin_metadata.json with AUTHOR as their author. The bundles of
 #            the GxPlugins.lv2 collection are scanned separately.

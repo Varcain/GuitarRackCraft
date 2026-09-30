@@ -173,60 +173,18 @@ else
     echo "=== Build complete ==="
 fi
 
-# ─── Core vs plugin libraries ────────────────────────────────────────────────
-
-# Core libs that stay in main jniLibs (base module): the globs in
-# config/core-libs.txt, which the app's verifyNativeInputs Gradle check reads too.
-CORE_LIB_PATTERNS=()
-while IFS= read -r line || [ -n "$line" ]; do
-    line="${line%%#*}"
-    line="${line//[[:space:]]/}"
-    [ -n "$line" ] && CORE_LIB_PATTERNS+=("$line")
-done < "$PROJECT_ROOT/config/core-libs.txt"
-
-is_core_lib() {
-    local name="$1" pat
-    for pat in "${CORE_LIB_PATTERNS[@]}"; do
-        # Unquoted on purpose: $pat is a glob.
-        [[ "$name" == $pat ]] && return 0
-    done
-    return 1
-}
-
-# Classify plugin .so into asset packs
-classify_plugin() {
-    local name="$1"
-    case "$name" in
-        libgx_*)                          echo "gx" ;;
-        libneural_amp_modeler.so)         echo "neural" ;;
-        libAIDA-X*.so)                    echo "neural" ;;
-        librt-neural-generic.so)          echo "neural" ;;
-        libNeuralrack*.so|libNeuralRack*) echo "neural" ;;
-        libCollisionDrive*.so)            echo "brummer" ;;
-        libFatFrog*.so)                   echo "brummer" ;;
-        libMetalTone*.so)                 echo "brummer" ;;
-        libXDarkTerror*.so)               echo "brummer" ;;
-        libXTinyTerror*.so)               echo "brummer" ;;
-        libImpulseLoader*.so)             echo "brummer" ;;
-        libPowerAmp*.so)                  echo "brummer" ;;
-        libPreAmp*.so)                    echo "brummer" ;;
-        libGxCabSim*.so)                  echo "brummer" ;;
-        libgx_cabinet*.so)               echo "brummer" ;;
-        libpoweramps*.so)                 echo "brummer" ;;
-        *)                                echo "gx" ;;  # Default: other plugins go to gxplugins
-    esac
-}
-
 # ─── Mirror the staged libraries into the source sets ───────────────────────
-# CMake stages every library the APK ships into $STAGE. Each destination is
-# made to hold exactly its share of it - changed files are copied, files no
+# CMake stages every library the APK ships into $STAGE/<dir>: core/ for the
+# base APK's X11 client libs, and gx/, neural/, brummer/ for the plugins, by
+# the Play asset pack cmake/plugins.cmake assigns them. Each destination is made
+# to hold exactly its share of the stage - changed files are copied, files no
 # longer staged are deleted - on every run, whatever the flavor, so a Gradle
 # build of either flavor packages what was just built:
-#   app/src/main/jniLibs         core libs (config/core-libs.txt)
+#   app/src/main/jniLibs         core/
 #   app/src/full/jniLibs         every plugin lib (full flavor)
-#   <pack>/src/main/assets       plugin libs by Play asset pack (playstore)
+#   <pack>/src/main/assets       gx/, neural/, brummer/ (playstore flavor)
 #   app/src/playstore/assets/plugin_libs.txt   the packs' file list
-STAGE="$BUILD_DIR/jniLibs/arm64-v8a"
+STAGE="$BUILD_DIR/stage"
 MAIN_JNILIBS="$PROJECT_ROOT/app/src/main/jniLibs/arm64-v8a"
 FULL_JNILIBS="$PROJECT_ROOT/app/src/full/jniLibs/arm64-v8a"
 GX_PACK="$PROJECT_ROOT/gxplugins_pack/src/main/assets/plugins/arm64-v8a"
@@ -243,6 +201,10 @@ mirror_dir() {
     mkdir -p "$dest"
     for f in "$@"; do
         name="${f##*/}"
+        if [ -n "${keep["$name"]:-}" ]; then
+            echo "error: two staged libraries are named $name" >&2
+            exit 1
+        fi
         keep["$name"]=1
         cmp -s "$f" "$dest/$name" || cp -f "$f" "$dest/$name"
     done
@@ -253,23 +215,15 @@ mirror_dir() {
 }
 
 echo "=== Staging libraries from $STAGE ==="
-core=() plugins=() gx=() neural=() brummer=()
-for so_file in "$STAGE"/lib*.so*; do
-    [ -f "$so_file" ] || continue
-    name="${so_file##*/}"
-    if is_core_lib "$name"; then
-        core+=("$so_file")
-        continue
-    fi
-    plugins+=("$so_file")
-    case "$(classify_plugin "$name")" in
-        gx)      gx+=("$so_file") ;;
-        neural)  neural+=("$so_file") ;;
-        brummer) brummer+=("$so_file") ;;
-    esac
-done
+shopt -s nullglob
+core=("$STAGE"/core/lib*.so*)
+gx=("$STAGE"/gx/lib*.so*)
+neural=("$STAGE"/neural/lib*.so*)
+brummer=("$STAGE"/brummer/lib*.so*)
+shopt -u nullglob
+plugins=("${gx[@]}" "${neural[@]}" "${brummer[@]}")
 if [ "${#core[@]}" -eq 0 ]; then
-    echo "error: no core libraries in $STAGE - nothing has been built" >&2
+    echo "error: no core libraries in $STAGE/core - nothing has been built" >&2
     exit 1
 fi
 
