@@ -35,23 +35,12 @@ cache=.cache/sources
 install_root="$repo_root/toolchain/android-libs"
 mkdir -p "$install_root" "$cache"
 
-fetch_tarball() {
-    local name="$1" url="$2"
-    if [ ! -f "$cache/$name" ]; then
-        echo "[+] fetch $name"
-        # Temp file + atomic rename so an interrupted transfer (curl 18) never
-        # leaves a corrupt cached tarball; --retry-all-errors retries partial
-        # transfers that plain --retry ignores.
-        curl -fSL --retry 5 --retry-delay 2 --retry-all-errors \
-             --connect-timeout 30 -o "$cache/$name.part" "$url"
-        mv -f "$cache/$name.part" "$cache/$name"
-    fi
-}
 
 # --- libpng ----------------------------------------------------------------
 png_ver=1.6.43
-fetch_tarball "libpng-${png_ver}.tar.xz" \
-    "https://download.sourceforge.net/libpng/libpng-${png_ver}.tar.xz"
+fetch_verified "https://download.sourceforge.net/libpng/libpng-${png_ver}.tar.xz" \
+    6a5ca0652392a2d7c9db2ae5b40210843c0bbc081cbd410825ab00cc59f14a6c \
+    "$cache/libpng-${png_ver}.tar.xz"
 png_src="$cache/libpng-${png_ver}"
 if [ ! -d "$png_src" ]; then
     tar xJf "$cache/libpng-${png_ver}.tar.xz" -C "$cache"
@@ -70,8 +59,9 @@ popd >/dev/null
 
 # --- freetype --------------------------------------------------------------
 ft_ver=2.13.3
-fetch_tarball "freetype-${ft_ver}.tar.xz" \
-    "https://download.savannah.gnu.org/releases/freetype/freetype-${ft_ver}.tar.xz"
+fetch_verified "https://download.savannah.gnu.org/releases/freetype/freetype-${ft_ver}.tar.xz" \
+    0550350666d427c74daeb85d5ac7bb353acba5f76956395995311a9c6f063289 \
+    "$cache/freetype-${ft_ver}.tar.xz"
 ft_src="$cache/freetype-${ft_ver}"
 if [ ! -d "$ft_src" ]; then
     tar xJf "$cache/freetype-${ft_ver}.tar.xz" -C "$cache"

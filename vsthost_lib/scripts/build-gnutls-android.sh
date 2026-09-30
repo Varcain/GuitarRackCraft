@@ -40,28 +40,19 @@ deps_dir="$repo_root/external/gnutls-deps"
 mkdir -p "$deps_dir"
 cd "$deps_dir"
 
-# Fetch upstream tarballs if not already cached. Versions pinned for
-# reproducibility; bump when upstream releases.
-fetch_tarball() {
-    local name="$1" url="$2"
-    if [ ! -f "$name" ]; then
-        echo "[+] fetch $name"
-        # Download to a temp file + atomic rename: an interrupted transfer
-        # (curl 18 "partial file" — seen on CI) must never leave a corrupt
-        # cached tarball that the [ ! -f ] guard would then trust on re-run.
-        # --retry-all-errors retries partial transfers, which plain --retry does not.
-        curl -fSL --retry 5 --retry-delay 2 --retry-all-errors \
-             --connect-timeout 30 -o "$name.part" "$url"
-        mv -f "$name.part" "$name"
-    fi
-}
+# Upstream tarballs, pinned by version and sha256; bump both together.
 # gmp from ftp.gnu.org (GNU mirror), not gmplib.org — the latter intermittently
 # times out / blocks CI runners (curl 28). Same host as the other deps below.
-fetch_tarball gmp-6.3.0.tar.xz         "https://ftp.gnu.org/gnu/gmp/gmp-6.3.0.tar.xz"
-fetch_tarball nettle-3.10.tar.gz       "https://ftp.gnu.org/gnu/nettle/nettle-3.10.tar.gz"
-fetch_tarball libtasn1-4.20.0.tar.gz   "https://ftp.gnu.org/gnu/libtasn1/libtasn1-4.20.0.tar.gz"
-fetch_tarball libunistring-1.2.tar.xz  "https://ftp.gnu.org/gnu/libunistring/libunistring-1.2.tar.xz"
-fetch_tarball gnutls-3.8.6.tar.xz      "https://www.gnupg.org/ftp/gcrypt/gnutls/v3.8/gnutls-3.8.6.tar.xz"
+fetch_verified "https://ftp.gnu.org/gnu/gmp/gmp-6.3.0.tar.xz" \
+    a3c2b80201b89e68616f4ad30bc66aee4927c3ce50e33929ca819d5c43538898 gmp-6.3.0.tar.xz
+fetch_verified "https://ftp.gnu.org/gnu/nettle/nettle-3.10.tar.gz" \
+    b4c518adb174e484cb4acea54118f02380c7133771e7e9beb98a0787194ee47c nettle-3.10.tar.gz
+fetch_verified "https://ftp.gnu.org/gnu/libtasn1/libtasn1-4.20.0.tar.gz" \
+    92e0e3bd4c02d4aeee76036b2ddd83f0c732ba4cda5cb71d583272b23587a76c libtasn1-4.20.0.tar.gz
+fetch_verified "https://ftp.gnu.org/gnu/libunistring/libunistring-1.2.tar.xz" \
+    632bd65ed74a881ca8a0309a1001c428bd1cbd5cd7ddbf8cedcd2e65f4dcdc44 libunistring-1.2.tar.xz
+fetch_verified "https://www.gnupg.org/ftp/gcrypt/gnutls/v3.8/gnutls-3.8.6.tar.xz" \
+    2e1588aae53cb32d43937f1f4eca28febd9c0c7aa1734fc5dd61a7e81e0ebcdd gnutls-3.8.6.tar.xz
 
 build_pkg() {
     local archive=$1; local dir=$2; local extra_conf="${3:-}"

@@ -7,7 +7,7 @@
 # the official LLVM 18.1.3 GitHub release and lays them out as
 #   external/llvm-android/{llvm,cmake,third-party}/
 # which is the layout LLVM's CMake expects (cmake/ and third-party/ are siblings
-# of llvm/). The component tarballs (~130 MB total, vs the full monorepo) carry
+# of llvm/). The component tarballs (~60 MB total, vs the full monorepo) carry
 # exactly what the minimal AArch64 build needs.
 #
 # Idempotent: a component already present is left untouched. Run once before
@@ -20,6 +20,14 @@ set -euo pipefail
 
 VER="${LLVM_VERSION:-18.1.3}"
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"          # vsthost_lib/
+. "$repo_root/scripts/lib/common.sh"                    # fetch_verified
+
+# sha256 of each component tarball, per version.
+declare -A SHA256=(
+    [llvm-18.1.3]=fa6db8951f5ef576ac6bad43d5e1ed83962754538c998fbfa0397cd4521abc00
+    [cmake-18.1.3]=acfecb615d41c5b1a0a31e15324994ca06f7a3f37d8958d719b20de0d217b71b
+    [third-party-18.1.3]=ba1de46e740133d361c0d5d1387befa309f0b60f81bc2bf003252bebdcf9eada
+)
 L="$repo_root/external/llvm-android"
 BASE="https://github.com/llvm/llvm-project/releases/download/llvmorg-$VER"
 
@@ -36,14 +44,14 @@ fetch() {
         return
     fi
     local tarball="$comp-$VER.src.tar.xz"
-    local tmp; tmp="$L/.$tarball.part"
-    echo "[+] downloading $tarball"
-    curl -fL --retry 3 --retry-delay 2 -o "$tmp" "$BASE/$tarball"
+    local sha256="${SHA256[$comp-$VER]:-}"
+    [ -n "$sha256" ] || { echo "error: no sha256 pinned for $tarball (add it to SHA256)" >&2; exit 1; }
+    fetch_verified "$BASE/$tarball" "$sha256" "$L/.$tarball"
     echo "[+] extracting → external/llvm-android/$comp/"
     rm -rf "$L/$comp-$VER.src"
-    tar -C "$L" -xf "$tmp"
+    tar -C "$L" -xf "$L/.$tarball"
     mv "$L/$comp-$VER.src" "$dest"
-    rm -f "$tmp"
+    rm -f "$L/.$tarball"
 }
 
 echo "=== fetch LLVM $VER source → $L ==="

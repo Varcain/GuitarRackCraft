@@ -25,6 +25,7 @@ cd "$repo_root"
 NDKBIN="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin"
 API=28
 DRM_VER="${DRM_VER:-2.4.125}"
+DRM_SHA256="${DRM_SHA256:-d4bae92797a50f81a93524762e0410a49cd84cfa0f997795bc0172ac8fb1d96a}"  # of 2.4.125
 
 cache="$repo_root/.cache/sources"
 SYSROOT="$repo_root/toolchain/drm-android"               # install prefix (build-time sysroot)
@@ -36,12 +37,7 @@ for t in meson ninja; do command -v "$t" >/dev/null || { echo "error: $t not on 
 mkdir -p "$cache"
 tarball="$cache/libdrm-$DRM_VER.tar.xz"
 src="$cache/libdrm-$DRM_VER"
-if [ ! -f "$tarball" ]; then
-    echo "[+] fetch libdrm-$DRM_VER"
-    curl -fSL --retry 5 --retry-delay 2 --retry-all-errors --connect-timeout 30 \
-        -o "$tarball.part" "https://dri.freedesktop.org/libdrm/libdrm-$DRM_VER.tar.xz"
-    mv -f "$tarball.part" "$tarball"
-fi
+fetch_verified "https://dri.freedesktop.org/libdrm/libdrm-$DRM_VER.tar.xz" "$DRM_SHA256" "$tarball"
 [ -d "$src" ] || tar xJf "$tarball" -C "$cache"
 
 echo "=== libdrm $DRM_VER (freedreno-only, arm64 Bionic) ==="
