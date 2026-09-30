@@ -26,6 +26,8 @@ It also includes **experimental** support for hosting Windows VST2/VST3 plugins 
 - Android SDK (API 35, NDK 27.2.12479018, CMake 3.22.1)
 - System packages: `ninja-build meson python3 python3-mako pkg-config autoconf automake libtool gettext patch cmake flex bison ocaml ocamlbuild ocaml-findlib libnum-ocaml-dev`
 
+`./build.sh check` verifies the host tools and the pinned NDK.
+
 ## Build
 
 ```bash

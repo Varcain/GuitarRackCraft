@@ -37,6 +37,7 @@ Usage: ./build.sh [<command>]
   patch                 init submodules, apply 3rd_party/patches, generate the
                         FFTW codelets
   vst [<phase>...]      the VST host stack (vsthost_lib/scripts/build-all.sh)
+  check                 host tools, the pinned NDK, Meson build dirs
   clean                 remove build outputs and reset the submodules
   help                  this text
 
@@ -44,6 +45,77 @@ The plugins are listed in cmake/plugins.cmake; each has a <name>_done target.
 BUILD_VST=0 skips the VST host stack in full/all (the default in CI), and
 BUILD_VST=1 forces it.
 USAGE
+}
+
+# do_check: what the native build needs from the host. Missing tools or the
+# wrong NDK fail it; Meson build dirs from another Meson version are only
+# listed - they regenerate from scratch on their next change.
+do_check() {
+    local problems=0 tool ver need
+
+    for tool in cmake ninja meson pkg-config python3 git patch make autoreconf libtoolize; do
+        command -v "$tool" > /dev/null || { echo "missing: $tool" >&2; problems=1; }
+    done
+    for tool in ocaml ocamlbuild; do
+        if ! command -v "$tool" > /dev/null; then
+            if [ -f "$PROJECT_ROOT/build/fftw3-codelets/generated.tar" ]; then
+                echo "note: no $tool (fine while build/fftw3-codelets/generated.tar exists)"
+            else
+                echo "missing: $tool (generates the FFTW codelets)" >&2
+                problems=1
+            fi
+        fi
+    done
+
+    # cmake >= 3.26: ExternalProject INSTALL_BYPRODUCTS (cmake/CMakeLists.txt)
+    if command -v cmake > /dev/null; then
+        ver="$(cmake --version | awk 'NR == 1 { print $3 }')"
+        if [ "$(printf '%s\n' 3.26 "$ver" | sort -V | head -n 1)" != 3.26 ]; then
+            echo "cmake $ver is too old: the native build needs 3.26 or newer" >&2
+            problems=1
+        fi
+    fi
+
+    # The pinned NDKs, found the way the builds look for them
+    local props="$PROJECT_ROOT/config/toolchain.properties" key ndk rev
+    for key in ndk.version ndk.version.vst; do
+        need="$(sed -n "s/^$key=//p" "$props")"
+        if [ "$key" = ndk.version ]; then
+            ndk="${ANDROID_NDK:-${ANDROID_HOME:-$HOME/Android/Sdk}/ndk/$need}"
+        else
+            ndk="${ANDROID_HOME:-$HOME/Android/Sdk}/ndk/$need"
+        fi
+        rev=""
+        if [ -f "$ndk/source.properties" ]; then
+            rev="$(sed -n 's/^Pkg\.Revision *= *//p' "$ndk/source.properties")"
+        fi
+        if [ "$rev" = "$need" ]; then
+            echo "$key $need: $ndk"
+        elif [ "$key" = ndk.version ]; then
+            echo "$key $need: not at $ndk (found '${rev:-nothing}'); set ANDROID_NDK or ANDROID_HOME" >&2
+            problems=1
+        else
+            echo "note: $key $need (for ./build.sh vst) not at $ndk"
+        fi
+    done
+
+    # Meson build dirs configured by another Meson version
+    if command -v meson > /dev/null && [ -d "$PROJECT_ROOT/build" ]; then
+        ver="$(meson --version)"
+        local info configured
+        while IFS= read -r info; do
+            configured="$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["meson_version"]["full"])' "$info" 2>/dev/null)" ||
+                configured="unknown"
+            [ "$configured" = "$ver" ] ||
+                echo "note: ${info%/meson-info/meson-info.json} was configured by Meson $configured (now $ver); it regenerates from scratch on its next change"
+        done < <(find "$PROJECT_ROOT/build" -maxdepth 4 -path '*/meson-info/meson-info.json')
+    fi
+
+    if [ "$problems" -ne 0 ]; then
+        echo "check: problems found" >&2
+        return 1
+    fi
+    echo "check: OK"
 }
 
 do_clean() {
@@ -302,6 +374,7 @@ case "$command" in
     stage)          no_args "$@"; do_stage ;;
     patch)          no_args "$@"; do_patch ;;
     vst)            do_vst "$@" ;;
+    check)          no_args "$@"; do_check ;;
     clean)          no_args "$@"; do_clean ;;
     help|-h|--help) usage ;;
     *)              usage >&2; exit 2 ;;
