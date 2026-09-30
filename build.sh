@@ -27,26 +27,12 @@ FLAVOR="${1:-full}"
 
 if [ "$FLAVOR" = "clean" ]; then
     echo "Cleaning build directories..."
-    rm -rf "$BUILD_DIR"
-    rm -rf "$PROJECT_ROOT/build/aidadsp"
-    rm -rf "$PROJECT_ROOT/build/aidax_full"
-    rm -rf "$PROJECT_ROOT/build/nam"
-    rm -rf "$PROJECT_ROOT/build/lv2"
-    rm -rf "$PROJECT_ROOT/build/x11_ui"
-    rm -rf "$PROJECT_ROOT/build/mesa"
-    rm -rf "$PROJECT_ROOT/build/fftw3"
-    rm -rf "$PROJECT_ROOT/build/fftw3-codelets"
-    rm -rf "$PROJECT_ROOT/build/neuralrack"
-    rm -rf "$PROJECT_ROOT/build/impulseloader"
-    rm -rf "$PROJECT_ROOT/build/xdarkterror"
-    rm -rf "$PROJECT_ROOT/build/xtinyterror"
-    rm -rf "$PROJECT_ROOT/build/collisiondrive"
-    rm -rf "$PROJECT_ROOT/build/metaltone"
-    rm -rf "$PROJECT_ROOT/build/gxcabsim"
-    rm -rf "$PROJECT_ROOT/build/modamptk"
-    rm -rf "$PROJECT_ROOT/build/fatfrog"
-    rm -rf "$PROJECT_ROOT/build/doubletracker"
-    rm -rf "$PROJECT_ROOT/build/lv2_wrapper"
+    # Everything under build/ belongs to the native build (build/prebuild, the
+    # ExternalProject build dirs, x11_ui, ...) except build/gradle, the root
+    # Gradle project's own output.
+    if [ -d "$PROJECT_ROOT/build" ]; then
+        find "$PROJECT_ROOT/build" -mindepth 1 -maxdepth 1 ! -name gradle -exec rm -rf {} +
+    fi
 
     echo "Restoring 3rd_party to pristine state..."
     # Reset all submodules (undoes patches, waf modifications, generated codelets, etc.)
