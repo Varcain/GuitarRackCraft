@@ -3,7 +3,7 @@
 # backend only. Replaces the Termux libdrm prebuilt — both the .deb the former
 # fetch-turnip-libs.sh fetched (libdrm.so, the Turnip ICD's only real runtime dep on the
 # msm/DRM path) AND the checked-in Termux blob at
-# patches/mesa/build-files/android-deps-data/lib/ that build-mesa-zink.sh links.
+# patches/mesa/build-files/android-deps-data/lib/ that build-mesa-zink.sh linked.
 # Phase 2 of the prebuilt→source migration.
 #
 # mesa 24.2.8 requires libdrm >= 2.4.109 (freedreno needs only the base min).

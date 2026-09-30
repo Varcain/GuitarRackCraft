@@ -7,8 +7,8 @@
 # so -I"$XTEST/stubinc" comes FIRST. SDL2 is the only real external dep.
 set -euo pipefail
 
-XTEST=/home/varcain/projects/private/GuitarRackCraft/vsthost_lib/tools/xtest
-X11SRC=/home/varcain/projects/private/GuitarRackCraft/app/src/main/cpp/x11
+XTEST="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+X11SRC="$(cd "$XTEST/../../.." && pwd)/app/src/main/cpp/x11"
 
 g++ -std=c++17 -O0 -g -pthread \
     -I"$XTEST/stubinc" \

@@ -11,9 +11,7 @@
 # Self-contained + machine-portable: applies patches/mesa/0001, drops the
 # captured header stubs (cutils/log) into the submodule, links the SOURCE libdrm
 # (toolchain/drm-android, built by build-libdrm-android.sh — no checked-in blob), and
-# GENERATES the meson cross-file with this machine's NDK + repo paths (the
-# committed build-files/android-aarch64.ini has hardcoded paths, used only as a
-# reference). Run after `git submodule update --init --recursive 3rd_party/mesa`.
+# GENERATES the meson cross-file with this machine's NDK + repo paths. Run after `git submodule update --init --recursive 3rd_party/mesa`.
 #
 # Called by scripts/build-all.sh (step "build-mesa-zink"); also runnable alone.
 # See patches/mesa/README.md for the full history.
