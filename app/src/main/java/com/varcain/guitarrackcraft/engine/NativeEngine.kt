@@ -57,14 +57,6 @@ class NativeEngine private constructor() {
             System.loadLibrary("c++_shared")
         } catch (_: UnsatisfiedLinkError) {}
 
-        // Preload lilv shared library when using shared LV2 build (liblilv-0.so.0 in jniLibs).
-        // With the default static LV2 build (build_all_lv2.sh), lilv is linked into libguitarrackcraft.so
-        // and no .so is packaged — preload will fail; that is expected and not an error.
-        try {
-            System.loadLibrary("lilv-0")
-        } catch (e: UnsatisfiedLinkError) {
-            android.util.Log.d("NativeEngine", "Lilv preload skipped (static build or no liblilv-0.so): ${e.message}")
-        }
         System.loadLibrary("guitarrackcraft")
     }
 

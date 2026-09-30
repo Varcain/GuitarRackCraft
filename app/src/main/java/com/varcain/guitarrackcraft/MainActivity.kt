@@ -237,7 +237,6 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun prepareLv2AndInitEngine() {
-        EngineInitHelper.preloadLilv(applicationInfo.nativeLibraryDir)
         extractLV2Assets()
         EngineInitHelper.initEngine(this) { extracted, total ->
             extractedCount = extracted

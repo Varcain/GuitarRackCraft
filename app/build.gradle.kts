@@ -173,40 +173,6 @@ android {
         }
         jniLibs {
             useLegacyPackaging = true
-            // build.sh renames SONAME-versioned libs (libxcb.so.1 -> libxcb.so) so Android
-            // extracts them to nativeLibDir. Only liblilv-0.so.0 keeps its versioned name.
-            pickFirsts += listOf("**/liblilv-0.so.0")
-        }
-    }
-
-    // Copy liblilv-0.so.0 (versioned SONAME) to merged/stripped native libs
-    afterEvaluate {
-        val jniDir = file("src/main/jniLibs/arm64-v8a")
-        val lv2LibDir = file("src/main/cpp/libs/lv2/lib")
-
-        fun copyExtraNativeLibs(targetDir: java.io.File) {
-            if (!targetDir.exists()) return
-            // liblilv-0.so.0 needs special handling: versioned SONAME file + unversioned alias
-            var liblilvSo0 = file("$jniDir/liblilv-0.so.0")
-            if (!liblilvSo0.exists()) liblilvSo0 = file("$lv2LibDir/liblilv-0.so.0")
-            if (liblilvSo0.exists()) {
-                copy { from(liblilvSo0); into(targetDir) }
-                copy { from(liblilvSo0); into(targetDir); rename { "liblilv-0.so" } }
-                println("Copied liblilv-0.so.0 (+ alias liblilv-0.so) to ${targetDir.absolutePath}")
-            }
-        }
-
-        for (flavor in listOf("Full", "Playstore")) {
-            for (buildType in listOf("Debug", "Release")) {
-                val variant = "$flavor$buildType"
-                val varLower = variant.replaceFirstChar { it.lowercase() }
-                tasks.findByName("merge${variant}NativeLibs")?.doLast {
-                    copyExtraNativeLibs(file("build/intermediates/merged_native_libs/$varLower/out/lib/arm64-v8a"))
-                }
-                tasks.findByName("strip${variant}DebugSymbols")?.doLast {
-                    copyExtraNativeLibs(file("build/intermediates/stripped_native_libs/$varLower/out/lib/arm64-v8a"))
-                }
-            }
         }
     }
 

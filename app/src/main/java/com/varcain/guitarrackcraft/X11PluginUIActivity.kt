@@ -119,7 +119,6 @@ class X11PluginUIActivity : ComponentActivity() {
     }
 
     private fun initNativeInThisProcess() {
-        EngineInitHelper.preloadLilv(applicationInfo.nativeLibraryDir)
         if (!EngineInitHelper.initEngine(this)) {
             Log.e(TAG, "nativeInit failed")
             finish()

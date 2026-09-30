@@ -9,7 +9,6 @@
 
 libguitarrackcraft.so
 libc++_shared.so
-liblilv-0.so*
 
 # X11 client libraries (plugin UIs, wine's winex11.drv)
 libX11.so*

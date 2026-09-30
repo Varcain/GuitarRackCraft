@@ -32,26 +32,6 @@ object EngineInitHelper {
     private const val TAG = "EngineInitHelper"
 
     /**
-     * Preload lilv shared library by absolute path so that when libguitarrackcraft.so
-     * is loaded the linker finds it (DT_NEEDED liblilv-0.so.0).
-     */
-    fun preloadLilv(nativeLibDir: String?) {
-        if (nativeLibDir == null) return
-        for (name in listOf("liblilv-0.so.0", "liblilv-0.so")) {
-            val f = File(nativeLibDir, name)
-            if (f.canRead()) {
-                try {
-                    System.load(f.absolutePath)
-                    Log.d(TAG, "Preloaded $name")
-                    break
-                } catch (e: Throwable) {
-                    Log.w(TAG, "Preload $name failed: ${e.message}")
-                }
-            }
-        }
-    }
-
-    /**
      * Initialize the native engine with LV2 path, native lib dir, and files dir.
      * For playstore flavor, extracts plugin .so from PAD packs first.
      * Returns true if initialization succeeded.
