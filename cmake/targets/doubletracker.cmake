@@ -31,7 +31,7 @@ file(MAKE_DIRECTORY "${_dt_assets}" "${_dt_build}" "${_dt_gen}")
 
 # ─── Phase 1: Generate manifest.ttl (configure-time) ──────────────────
 # Static manifest matching faust2lv2's template (no dynamic manifest).
-file(WRITE "${_dt_assets}/manifest.ttl"
+grc_write_if_changed("${_dt_assets}/manifest.ttl"
 "########## https://faustlv2.bitbucket.io/doubletracker ##########
 
 @prefix doap: <http://usefulinc.com/ns/doap#> .
@@ -81,7 +81,7 @@ set(_dt_ttl_gen "${_dt_build}/doubletracker_ttlgen")
 set(_dt_ttl     "${_dt_assets}/doubletracker.ttl")
 
 # Write defines to a header file to avoid cmake/ninja/shell quoting hell.
-file(WRITE "${_dt_gen}/doubletracker_defines.h"
+grc_write_if_changed("${_dt_gen}/doubletracker_defines.h"
     "#define PLUGIN_URI \"https://faustlv2.bitbucket.io/doubletracker\"\n"
     "#define FAUST_META 1\n"
     "#define FAUST_MIDICC 1\n"

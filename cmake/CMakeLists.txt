@@ -96,6 +96,7 @@ set(JNILIBS_DIR   "${GRC_STAGE_DIR}/core")
 # ─── Include helper modules ──────────────────────────────────────────────────
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/modules")
 include(AndroidNDK)
+include(WriteIfChanged)
 include(MesonCrossFile)
 include(LV2Compat)
 include(WatchSources)

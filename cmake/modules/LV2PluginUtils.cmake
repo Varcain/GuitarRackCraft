@@ -57,7 +57,7 @@ function(lv2_sync_to_jnilibs TARGET_NAME SOURCE_DIR DEPENDS_LIST)
 
     file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/scripts" "${CMAKE_BINARY_DIR}/stamps")
 
-    file(WRITE "${_sync_script}"
+    grc_write_if_changed("${_sync_script}"
     "
         file(MAKE_DIRECTORY \"\${JNILIBS_DIR}\")
         file(GLOB_RECURSE _sos \"\${SOURCE_DIR}/*.so\")
@@ -82,7 +82,7 @@ function(lv2_sync_to_jnilibs TARGET_NAME SOURCE_DIR DEPENDS_LIST)
     add_custom_command(
         OUTPUT "${_stamp}"
         COMMAND ${CMAKE_COMMAND} ${_cmd_args} -P "${_sync_script}"
-        DEPENDS ${DEPENDS_LIST}
+        DEPENDS ${DEPENDS_LIST} "${_sync_script}"
         COMMENT "Syncing ${TARGET_NAME} DSP .so to jniLibs"
     )
     add_custom_target(${TARGET_NAME} DEPENDS "${_stamp}")

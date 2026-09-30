@@ -35,7 +35,7 @@ function(brummer_setup_xputty TARGET_NAME XPUTTY_SRC BUILD_DIR PNG_DIR)
     set(_xputty_build "${BUILD_DIR}/xputty")
     set(_xputty_res "${XPUTTY_SRC}/resources")
     file(MAKE_DIRECTORY "${_xputty_build}")
-    file(WRITE "${_xputty_build}/config.h" "#ifndef USE_LD\n#define USE_LD 1\n#endif\n")
+    grc_write_if_changed("${_xputty_build}/config.h" "#ifndef USE_LD\n#define USE_LD 1\n#endif\n")
 
     # Copy PNGs to xputty/resources
     if(PNG_DIR)
@@ -53,7 +53,7 @@ function(brummer_setup_xputty TARGET_NAME XPUTTY_SRC BUILD_DIR PNG_DIR)
         get_filename_component(_png_name_we "${_png}" NAME_WE)
         string(APPEND _xres_content "EXTLD(${_png_name_we}_png)\n")
     endforeach()
-    file(WRITE "${_xputty_res}/xresources.h" "${_xres_content}")
+    grc_write_if_changed("${_xputty_res}/xresources.h" "${_xres_content}")
 
     # PNG resource objects
     set(_res_objs "")

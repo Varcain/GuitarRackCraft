@@ -23,18 +23,18 @@
 function(generate_lv2_compat_headers DIR)
     # Bare <lv2.h> → lv2/core/lv2.h
     file(MAKE_DIRECTORY "${DIR}")
-    file(WRITE "${DIR}/lv2.h"
+    grc_write_if_changed("${DIR}/lv2.h"
         "/* compat: redirect bare <lv2.h> to lv2/core/lv2.h */\n"
         "#include \"lv2/core/lv2.h\"\n")
 
     # Old lv2plug.in paths
     file(MAKE_DIRECTORY "${DIR}/lv2/lv2plug.in/ns/lv2core")
-    file(WRITE "${DIR}/lv2/lv2plug.in/ns/lv2core/lv2.h"
+    grc_write_if_changed("${DIR}/lv2/lv2plug.in/ns/lv2core/lv2.h"
         "/* compat: redirect lv2plug.in path to lv2/core */\n"
         "#include \"lv2/core/lv2.h\"\n")
 
     file(MAKE_DIRECTORY "${DIR}/lv2/lv2plug.in/ns/extensions/ui")
-    file(WRITE "${DIR}/lv2/lv2plug.in/ns/extensions/ui/ui.h"
+    grc_write_if_changed("${DIR}/lv2/lv2plug.in/ns/extensions/ui/ui.h"
         "/* compat: redirect lv2plug.in path to lv2/ui */\n"
         "#include \"lv2/ui/ui.h\"\n")
 
@@ -51,7 +51,7 @@ function(generate_lv2_compat_headers DIR)
     foreach(_ext IN LISTS _ext_pairs)
         get_filename_component(_ext_dir "${_ext}" DIRECTORY)
         file(MAKE_DIRECTORY "${DIR}/lv2/lv2plug.in/ns/ext/${_ext_dir}")
-        file(WRITE "${DIR}/lv2/lv2plug.in/ns/ext/${_ext}.h"
+        grc_write_if_changed("${DIR}/lv2/lv2plug.in/ns/ext/${_ext}.h"
             "/* compat */ #include \"lv2/${_ext}.h\"\n")
     endforeach()
 
@@ -61,7 +61,7 @@ endfunction()
 # generate_faust_compat_header(<output_path>)
 #   Creates the min/max using-declaration header for Faust-generated code.
 function(generate_faust_compat_header OUTPUT_PATH)
-    file(WRITE "${OUTPUT_PATH}"
+    grc_write_if_changed("${OUTPUT_PATH}"
         "#include <algorithm>\n"
         "#include <cmath>\n"
         "using std::min;\n"
@@ -73,10 +73,10 @@ endfunction()
 function(generate_sigcpp_shim DIR)
     file(MAKE_DIRECTORY "${DIR}/sigc++/sigc++")
 
-    file(WRITE "${DIR}/sigc++/sigc++.h"
+    grc_write_if_changed("${DIR}/sigc++/sigc++.h"
         "#include \"sigc++/sigc++.h\"\n")
 
-    file(WRITE "${DIR}/sigc++/sigc++/sigc++.h"
+    grc_write_if_changed("${DIR}/sigc++/sigc++/sigc++.h"
 [=[/* Minimal sigc++ shim for Android — only signal<void> + mem_fun */
 #pragma once
 #include <functional>
@@ -109,7 +109,7 @@ endfunction()
 
 # generate_sndfile_stub(<output_path>)
 function(generate_sndfile_stub OUTPUT_PATH)
-    file(WRITE "${OUTPUT_PATH}"
+    grc_write_if_changed("${OUTPUT_PATH}"
 [=[/* Stub sndfile for Android — looper works in-memory only */
 #pragma once
 #include <cstdio>

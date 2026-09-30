@@ -25,7 +25,7 @@ set(_x11_pkg    "${X11_SYSROOT}/lib/pkgconfig:${X11_SYSROOT}/share/pkgconfig")
 
 # Helper: ensure autoreconf
 set(_ensure_autotools_script "${X11_BUILD_DIR}/ensure_autotools.sh")
-file(WRITE "${_ensure_autotools_script}" "#!/bin/bash\ndir=\"$1\"\nif [ ! -f \"$dir/configure\" ]; then cd \"$dir\" && ACLOCAL_PATH=\"${X11_SYSROOT}/share/aclocal\" autoreconf -fi; fi\n")
+grc_write_if_changed("${_ensure_autotools_script}" "#!/bin/bash\ndir=\"$1\"\nif [ ! -f \"$dir/configure\" ]; then cd \"$dir\" && ACLOCAL_PATH=\"${X11_SYSROOT}/share/aclocal\" autoreconf -fi; fi\n")
 
 # ─── 0. util-macros ─────────────────────────────────────────────────────────
 ExternalProject_Add(util_macros
@@ -75,7 +75,7 @@ ExternalProject_Add_Step(libxcb autoreconf COMMAND bash "${_ensure_autotools_scr
 
 # ─── 4. libX11 ──────────────────────────────────────────────────────────────
 set(_x11_strip_pthread_script "${X11_BUILD_DIR}/strip_pthread.sh")
-file(WRITE "${_x11_strip_pthread_script}" "#!/bin/bash\nfind \"$1\" -name Makefile -type f -exec sed -i 's/-lpthread//g;s/XTHREADLIB = -lpthread/XTHREADLIB = /g;s/USE_THREAD_LIBS = -lpthread/USE_THREAD_LIBS = /g' {} \\;\n")
+grc_write_if_changed("${_x11_strip_pthread_script}" "#!/bin/bash\nfind \"$1\" -name Makefile -type f -exec sed -i 's/-lpthread//g;s/XTHREADLIB = -lpthread/XTHREADLIB = /g;s/USE_THREAD_LIBS = -lpthread/USE_THREAD_LIBS = /g' {} \\;\n")
 
 add_autotools_project(libX11
     SOURCE_DIR "${_x11_dir}/libX11" BINARY_DIR "${X11_BUILD_DIR}/libX11" INSTALL_DIR "${X11_SYSROOT}"
@@ -162,7 +162,7 @@ ExternalProject_Add_Step(libpng autoreconf COMMAND bash "${_ensure_autotools_scr
 
 # ─── 7. Cairo ───────────────────────────────────────────────────────────────
 set(_cairo_configure_script "${X11_BUILD_DIR}/configure_cairo.sh")
-file(WRITE "${_cairo_configure_script}" "#!/bin/bash
+grc_write_if_changed("${_cairo_configure_script}" "#!/bin/bash
 set -euo pipefail
 builddir=\"$1\"
 srcdir=\"$2\"

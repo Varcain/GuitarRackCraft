@@ -31,7 +31,7 @@ lv2_stage_bundle("${_aidax_assets}" TTL_DIR "${_aidax_ttl_dir}" MOD_DIR "${_aida
 file(READ "${_aidax_ttl_dir}/rt-neural-generic.ttl" _aidax_ttl)
 string(REPLACE "doap:name \"AIDA-X\"" "doap:name \"AIDA-X (headless)\"" _aidax_ttl "${_aidax_ttl}")
 string(REPLACE "mod:label \"AIDA-X\"" "mod:label \"AIDA-X (headless)\"" _aidax_ttl "${_aidax_ttl}")
-file(WRITE "${_aidax_assets}/rt-neural-generic.ttl" "${_aidax_ttl}")
+grc_write_if_changed("${_aidax_assets}/rt-neural-generic.ttl" "${_aidax_ttl}")
 
 # ─── Phase 2: CMake cross-compile ────────────────────────────────────────────
 set(_aidax_so_output "${_aidax_build}/rt-neural-generic/rt-neural-generic.so")

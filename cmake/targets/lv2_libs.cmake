@@ -38,7 +38,7 @@ add_custom_target(lv2_headers_gen DEPENDS "${_lv2_headers_stamp}")
 
 # We use the existing script but could use write_pkg_config if we wanted to change it to a function call here.
 # Actually, let's use the function for consistency.
-file(WRITE "${CMAKE_BINARY_DIR}/scripts/WriteLV2PC.cmake" "
+grc_write_if_changed("${CMAKE_BINARY_DIR}/scripts/WriteLV2PC.cmake" "
 include(\"${PROJECT_ROOT}/cmake/modules/ExternalBuild.cmake\")
 write_pkg_config(OUTPUT \"\${OUTPUT}\" NAME LV2 DESCRIPTION \"LV2 plugin specification\" VERSION 1.18.4 PREFIX \"\${PREFIX}\")
 ")
@@ -65,7 +65,7 @@ add_meson_project(zix
 
 # ─── sord (RDF triple store, Meson — needs dependency patching) ──────────────
 set(_sord_patch_script "${LV2_BUILD_DIR}/patch_sord.py")
-file(WRITE "${_sord_patch_script}"
+grc_write_if_changed("${_sord_patch_script}"
 [=[
 import re, sys, os
 meson_file = os.path.join(sys.argv[1], 'meson.build')

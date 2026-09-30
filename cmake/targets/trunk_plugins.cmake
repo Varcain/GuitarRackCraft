@@ -38,7 +38,7 @@ set(_guitarix_root "${THIRD_PARTY}/guitarix/trunk")
 set(_skip_plugins "gx_livelooper")
 
 # Create config.h for convolver
-file(WRITE "${_guitarix_root}/config.h"
+grc_write_if_changed("${_guitarix_root}/config.h"
     "/* Minimal config.h for Android builds */\n"
     "#define ZITA_CONVOLVER_VERSION 3\n")
 
@@ -56,7 +56,7 @@ endif()
 
 # Write the wscript parser script
 set(_wscript_parser "${CMAKE_BINARY_DIR}/scripts/parse_wscript.py")
-file(WRITE "${_wscript_parser}"
+grc_write_if_changed("${_wscript_parser}"
 [=[
 """Parse a guitarix wscript to extract lv2_base, source, use, includes."""
 import re, sys, json
@@ -106,7 +106,7 @@ foreach(_bundle IN LISTS _trunk_bundles)
     if(EXISTS "${_bundle}/manifest.ttl.in")
         file(READ "${_bundle}/manifest.ttl.in" _manifest_content)
         string(REPLACE "@LIB_EXT@" ".so" _manifest_content "${_manifest_content}")
-        file(WRITE "${_target_dir}/manifest.ttl" "${_manifest_content}")
+        grc_write_if_changed("${_target_dir}/manifest.ttl" "${_manifest_content}")
     elseif(EXISTS "${_bundle}/manifest.ttl")
         configure_file("${_bundle}/manifest.ttl" "${_target_dir}/manifest.ttl" COPYONLY)
     endif()
@@ -133,7 +133,7 @@ foreach(_bundle IN LISTS _trunk_bundles)
                 "guiext:binary <[^>]*_gui\\.so>"
                 "guiext:binary <${_ui_so_name}>"
                 _ttl_content "${_ttl_content}")
-            file(WRITE "${_target_dir}/${_ttl_name}" "${_ttl_content}")
+            grc_write_if_changed("${_target_dir}/${_ttl_name}" "${_ttl_content}")
         else()
             configure_file("${_ttl}" "${_target_dir}/${_ttl_name}" COPYONLY)
         endif()

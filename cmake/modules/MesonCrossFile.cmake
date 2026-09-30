@@ -38,7 +38,7 @@ function(generate_meson_cross_file OUTPUT_PATH PREFIX)
         set(_cxx_line "cpp   = '${NDK_CXX}'")
     endif()
 
-    file(WRITE "${OUTPUT_PATH}"
+    grc_write_if_changed("${OUTPUT_PATH}"
 "[binaries]
 ${_c_line}
 ${_cxx_line}

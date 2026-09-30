@@ -45,7 +45,7 @@ if(EXISTS "${_nam_src}/resources/manifest.ttl.in")
     file(READ "${_nam_src}/resources/manifest.ttl.in" _manifest)
     string(REPLACE "@NAM_LV2_ID@" "${_nam_lv2_id}" _manifest "${_manifest}")
     string(REPLACE "@CMAKE_SHARED_MODULE_SUFFIX@" ".so" _manifest "${_manifest}")
-    file(WRITE "${_nam_assets}/manifest.ttl" "${_manifest}")
+    grc_write_if_changed("${_nam_assets}/manifest.ttl" "${_manifest}")
 endif()
 
 # neural_amp_modeler.ttl
@@ -54,7 +54,7 @@ if(EXISTS "${_nam_src}/resources/neural_amp_modeler.ttl.in")
     string(REPLACE "@NAM_LV2_ID@" "${_nam_lv2_id}" _nam_ttl "${_nam_ttl}")
     string(REPLACE "@PROJECT_VERSION_MINOR@" "${_nam_ver_minor}" _nam_ttl "${_nam_ttl}")
     string(REPLACE "@PROJECT_VERSION_PATCH@" "${_nam_ver_patch}" _nam_ttl "${_nam_ttl}")
-    file(WRITE "${_nam_assets}/neural_amp_modeler.ttl" "${_nam_ttl}")
+    grc_write_if_changed("${_nam_assets}/neural_amp_modeler.ttl" "${_nam_ttl}")
 endif()
 
 # Copy modgui
