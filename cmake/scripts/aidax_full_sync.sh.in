@@ -9,6 +9,7 @@ TTL_DIR="@_ttl_dir@"
 CROSS_BUILD="@_cross_build@"
 ASSETS_DIR="@_aidax_full_assets@"
 JNILIBS_DIR="@JNILIBS_DIR@"
+NDK_STRIP="@NDK_STRIP@"
 
 mkdir -p "${ASSETS_DIR}" "${JNILIBS_DIR}"
 
@@ -23,6 +24,7 @@ DSP_BASE=$(basename "$DSP_SO")
 
 # Copy DSP .so to jniLibs only (with lib prefix)
 cp "$DSP_SO" "${JNILIBS_DIR}/lib${DSP_BASE}"
+"$NDK_STRIP" --strip-unneeded "${JNILIBS_DIR}/lib${DSP_BASE}"
 
 # Handle UI .so if present
 UI_SO="${CROSS_BUILD}/bin/AIDA-X.lv2/AIDA-X_ui.so"
@@ -31,6 +33,7 @@ if [ -f "$UI_SO" ]; then
 
     # Copy UI .so to jniLibs only (with lib prefix)
     cp "$UI_SO" "${JNILIBS_DIR}/lib${UI_BASE}"
+    "$NDK_STRIP" --strip-unneeded "${JNILIBS_DIR}/lib${UI_BASE}"
 
     PLUGIN_URI='http://aidadsp.cc/plugins/aidadsp-bundle/rt-neural-loader'
     UI_URI="${PLUGIN_URI}#DPF_UI"

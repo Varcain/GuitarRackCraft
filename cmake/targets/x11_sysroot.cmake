@@ -86,33 +86,26 @@ ExternalProject_Add_Step(libX11 autoreconf COMMAND bash "${_ensure_autotools_scr
 ExternalProject_Add_Step(libX11 strip_pthread COMMAND bash "${_x11_strip_pthread_script}" <BINARY_DIR> DEPENDEES configure DEPENDERS build)
 
 # ─── 4a. Runtime libs ────────────────────────────────────────────────────────
+# The X11 client libraries the base APK ships: libXau/libxcb/libX11 and the
+# extensions wine's winex11.drv dlopens. Staged as lib*.so - the only names
+# Android extracts from an APK. Their SONAMEs are unversioned too;
+# config/core-libs.txt keeps them in the base.
+set(_x11_runtime_libs Xau xcb X11 Xext Xrender Xi Xfixes Xrandr Xcursor Xxf86vm Xdmcp)
 set(_x11_rt_stamp "${X11_BUILD_DIR}/x11_runtime_libs.stamp")
+set(_x11_rt_commands "")
+set(_x11_rt_inputs "")
+foreach(_lib IN LISTS _x11_runtime_libs)
+    list(APPEND _x11_rt_commands
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${X11_SYSROOT}/lib/lib${_lib}.so" "${JNILIBS_DIR}/lib${_lib}.so"
+        COMMAND ${NDK_STRIP} --strip-unneeded "${JNILIBS_DIR}/lib${_lib}.so")
+    list(APPEND _x11_rt_inputs "${X11_SYSROOT}/lib/lib${_lib}.so")
+endforeach()
 add_custom_command(
     OUTPUT "${_x11_rt_stamp}"
     COMMAND ${CMAKE_COMMAND} -E make_directory "${JNILIBS_DIR}"
-    # Staged as lib*.so - the only names Android extracts from an APK. Their
-    # SONAMEs are unversioned too; config/core-libs.txt keeps them in the base.
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${X11_SYSROOT}/lib/libXau.so" "${JNILIBS_DIR}/libXau.so"
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${X11_SYSROOT}/lib/libxcb.so" "${JNILIBS_DIR}/libxcb.so"
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${X11_SYSROOT}/lib/libX11.so" "${JNILIBS_DIR}/libX11.so"
-    COMMAND ${NDK_STRIP} --strip-unneeded "${JNILIBS_DIR}/libXau.so"
-    COMMAND ${NDK_STRIP} --strip-unneeded "${JNILIBS_DIR}/libxcb.so"
-    COMMAND ${NDK_STRIP} --strip-unneeded "${JNILIBS_DIR}/libX11.so"
-    # X11 extensions wine's winex11.drv dlopens
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${X11_SYSROOT}/lib/libXext.so"    "${JNILIBS_DIR}/libXext.so"
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${X11_SYSROOT}/lib/libXrender.so" "${JNILIBS_DIR}/libXrender.so"
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${X11_SYSROOT}/lib/libXi.so"      "${JNILIBS_DIR}/libXi.so"
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${X11_SYSROOT}/lib/libXfixes.so"  "${JNILIBS_DIR}/libXfixes.so"
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${X11_SYSROOT}/lib/libXrandr.so"  "${JNILIBS_DIR}/libXrandr.so"
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${X11_SYSROOT}/lib/libXcursor.so" "${JNILIBS_DIR}/libXcursor.so"
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${X11_SYSROOT}/lib/libXxf86vm.so" "${JNILIBS_DIR}/libXxf86vm.so"
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${X11_SYSROOT}/lib/libXdmcp.so"   "${JNILIBS_DIR}/libXdmcp.so"
-    COMMAND bash -c "${NDK_STRIP} --strip-unneeded '${JNILIBS_DIR}'/libX{ext,render,i,fixes,randr,cursor,xf86vm,dmcp}.so"
+    ${_x11_rt_commands}
     COMMAND ${CMAKE_COMMAND} -E touch "${_x11_rt_stamp}"
-    DEPENDS "${X11_SYSROOT}/lib/libXau.so" "${X11_SYSROOT}/lib/libxcb.so" "${X11_SYSROOT}/lib/libX11.so"
-            "${X11_SYSROOT}/lib/libXext.so" "${X11_SYSROOT}/lib/libXrender.so" "${X11_SYSROOT}/lib/libXi.so"
-            "${X11_SYSROOT}/lib/libXfixes.so" "${X11_SYSROOT}/lib/libXrandr.so" "${X11_SYSROOT}/lib/libXcursor.so"
-            "${X11_SYSROOT}/lib/libXxf86vm.so" "${X11_SYSROOT}/lib/libXdmcp.so"
+    DEPENDS ${_x11_rt_inputs}
 )
 add_custom_target(x11_runtime_libs DEPENDS "${_x11_rt_stamp}")
 add_dependencies(x11_runtime_libs libX11 libXext libXrender libXi libXfixes libXrandr libXcursor libXxf86vm libXdmcp)
