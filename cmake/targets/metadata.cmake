@@ -21,26 +21,6 @@
 # Must run last — scans all plugin assets for available binaries.
 # =============================================================================
 
-# ─── All plugin targets that metadata depends on ─────────────────────────────
-set(_all_plugin_deps
-    gx_plugins_done
-    trunk_plugins_done
-    plugin_uis_done
-    nam_done
-    aidax_done
-    aidax_full_done
-    neuralrack_done
-    impulseloader_done
-    xdarkterror_done
-    xtinyterror_done
-    collisiondrive_done
-    metaltone_done
-    gxcabsim_done
-    modamptk_done
-    fatfrog_done
-    doubletracker_done
-)
-
 # The three steps below read every staged bundle - a set only known once the
 # plugin targets have run - so they run on every build (well under a second
 # together) instead of behind a stamp that nothing would invalidate. They
@@ -55,7 +35,7 @@ add_custom_target(metadata_json
     WORKING_DIRECTORY "${PROJECT_ROOT}"
     COMMENT "Generating plugin_metadata.json"
 )
-add_dependencies(metadata_json ${_all_plugin_deps})
+add_dependencies(metadata_json ${GRC_PLUGIN_DONE_TARGETS})  # every plugin (plugins.cmake)
 
 # ─── Shared modgui resources ─────────────────────────────────────────────────
 add_custom_target(modgui_resources

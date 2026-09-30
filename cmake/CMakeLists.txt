@@ -166,81 +166,27 @@ include(${CMAKE_CURRENT_SOURCE_DIR}/targets/lv2_libs.cmake)
 # FFTW3 (single-precision, static)
 include(${CMAKE_CURRENT_SOURCE_DIR}/targets/fftw3.cmake)
 
-# ─── Phase 2: Plugin compilation (native CMake targets) ──────────────────────
-# GxPlugins DSP .so
-include(${CMAKE_CURRENT_SOURCE_DIR}/targets/gx_plugins.cmake)
+# ─── Phase 2: Plugins ────────────────────────────────────────────────────────
+# cmake/plugins.cmake lists them; each has a targets/<name>.cmake defining
+# <name>_done.
+include(${CMAKE_CURRENT_SOURCE_DIR}/plugins.cmake)
+get_property(GRC_PLUGINS GLOBAL PROPERTY GRC_PLUGINS)
+foreach(_grc_plugin IN LISTS GRC_PLUGINS)
+    include(${CMAKE_CURRENT_SOURCE_DIR}/targets/${_grc_plugin}.cmake)
+    if(NOT TARGET ${_grc_plugin}_done)
+        message(FATAL_ERROR "targets/${_grc_plugin}.cmake does not define ${_grc_plugin}_done")
+    endif()
+endforeach()
+list(TRANSFORM GRC_PLUGINS APPEND _done OUTPUT_VARIABLE GRC_PLUGIN_DONE_TARGETS)
 
-# Guitarix trunk plugins DSP .so
-include(${CMAKE_CURRENT_SOURCE_DIR}/targets/trunk_plugins.cmake)
-
-# Plugin UI .so (xputty + X11/Cairo)
-include(${CMAKE_CURRENT_SOURCE_DIR}/targets/plugin_uis.cmake)
-
-# ─── Phase 3: CMake-wrapped plugin builds ────────────────────────────────────
-# Neural Amp Modeler
-include(${CMAKE_CURRENT_SOURCE_DIR}/targets/nam.cmake)
-
-# AIDA-X (headless, DSP-only)
-include(${CMAKE_CURRENT_SOURCE_DIR}/targets/aidax.cmake)
-
-# AIDA-X (full, with EGL+GLES2 UI)
-include(${CMAKE_CURRENT_SOURCE_DIR}/targets/aidax_full.cmake)
-
-# NeuralRack (DSP + UI)
-include(${CMAKE_CURRENT_SOURCE_DIR}/targets/neuralrack.cmake)
-
-# ImpulseLoader (DSP + UI)
-include(${CMAKE_CURRENT_SOURCE_DIR}/targets/impulseloader.cmake)
-
-# XDarkTerror (DSP + UI)
-include(${CMAKE_CURRENT_SOURCE_DIR}/targets/xdarkterror.cmake)
-
-# XTinyTerror (DSP + UI)
-include(${CMAKE_CURRENT_SOURCE_DIR}/targets/xtinyterror.cmake)
-
-# CollisionDrive (DSP + UI)
-include(${CMAKE_CURRENT_SOURCE_DIR}/targets/collisiondrive.cmake)
-
-# MetalTone (DSP + UI)
-include(${CMAKE_CURRENT_SOURCE_DIR}/targets/metaltone.cmake)
-
-# GxCabSim (DSP + UI)
-include(${CMAKE_CURRENT_SOURCE_DIR}/targets/gxcabsim.cmake)
-
-# ModularAmpToolKit (4 plugins: PreAmps, PowerAmps, PreAmpImpulses, PowerAmpImpulses)
-include(${CMAKE_CURRENT_SOURCE_DIR}/targets/modamptk.cmake)
-
-# FatFrog (DSP + UI)
-include(${CMAKE_CURRENT_SOURCE_DIR}/targets/fatfrog.cmake)
-
-# DoubleTracker (DSP-only, Faust)
-include(${CMAKE_CURRENT_SOURCE_DIR}/targets/doubletracker.cmake)
-
-# ─── Phase 4: Metadata + modgui ──────────────────────────────────────────────
+# ─── Phase 3: Metadata + modgui ──────────────────────────────────────────────
 include(${CMAKE_CURRENT_SOURCE_DIR}/targets/metadata.cmake)
 
 # ─── Top-level targets ───────────────────────────────────────────────────────
 
 # Build everything
 add_custom_target(all_plugins
-    DEPENDS
-        gx_plugins_done
-        trunk_plugins_done
-        plugin_uis_done
-        nam_done
-        aidax_done
-        aidax_full_done
-        neuralrack_done
-        impulseloader_done
-        xdarkterror_done
-        xtinyterror_done
-        collisiondrive_done
-        metaltone_done
-        gxcabsim_done
-        modamptk_done
-        fatfrog_done
-        doubletracker_done
-        metadata_done
+    DEPENDS ${GRC_PLUGIN_DONE_TARGETS} metadata_done
     COMMENT "All plugins built"
 )
 
