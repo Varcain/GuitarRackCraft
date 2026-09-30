@@ -16,7 +16,7 @@
 # along with Guitar RackCraft. If not, see <https://www.gnu.org/licenses/>.
 
 # =============================================================================
-# cmake/modules/CopyModguiResources.cmake — Refactored from build_modgui.sh
+# cmake/modules/CopyModguiResources.cmake
 # =============================================================================
 
 # Inputs:

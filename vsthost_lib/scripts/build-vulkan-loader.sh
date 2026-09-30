@@ -24,7 +24,7 @@
 # win32u's dlopen + Turnip's NEEDED reference the bare SONAME). phase_turnip then
 # bundles it into src/main/assets/turnip-libs.tar.gz alongside the Turnip ICD/HAL.
 #
-# Called by scripts/build-all.sh (phase "turnip", after fetch-turnip-libs.sh);
+# Called by scripts/build-all.sh (phase "turnip");
 # also runnable standalone. Run after:
 #   git submodule update --init vsthost_lib/external/Vulkan-Loader vsthost_lib/external/Vulkan-Headers
 

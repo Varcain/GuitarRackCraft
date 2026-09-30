@@ -22,8 +22,6 @@
 #   1. Copy TTL + modgui to assets (configure time)
 #   2. Build DSP .so via add_library(SHARED) per plugin
 #   3. Sync .so to jniLibs with lib prefix
-#
-# Replaces: scripts/build_gxplugins.sh (~178 lines)
 # =============================================================================
 
 set(_gx_src  "${THIRD_PARTY}/GxPlugins.lv2.Android")

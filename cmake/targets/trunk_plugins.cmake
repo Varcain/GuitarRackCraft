@@ -20,8 +20,6 @@
 #
 # Parses wscript files at configure time to determine sources/deps,
 # then creates add_library(SHARED) targets for each plugin.
-#
-# Replaces: scripts/build_gx_trunk_plugins.sh (~416 lines)
 # =============================================================================
 
 set(_trunk_src   "${THIRD_PARTY}/guitarix/trunk/src/LV2")

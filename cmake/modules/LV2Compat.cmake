@@ -17,7 +17,6 @@
 
 # cmake/LV2Compat.cmake
 # Generates LV2 compatibility redirect headers for old-style include paths.
-# Replaces scripts/common/lv2_compat.sh.
 
 # generate_lv2_compat_headers(<output_dir>)
 function(generate_lv2_compat_headers DIR)

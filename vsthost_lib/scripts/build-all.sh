@@ -198,8 +198,8 @@ phase_turnip() {
         echo "  [skip 8c5] lavapipe: no android LLVM install — run build-llvm-android.sh to include the software-Vulkan fallback"
     fi
 
-    # fetch-turnip-libs only STAGES into toolchain/turnip-libs/ (it's a fetch script,
-    # like fetch-x11-libs). Bundle that into the runtime asset here, with bare SONAME
+    # The builds above only STAGE into toolchain/turnip-libs/. Bundle that into the
+    # runtime asset here, with bare SONAME
     # filenames (no leading dir) so WineSetup.extractTurnipLibs drops them straight
     # into <wine>/turnip/. Without this asset DXVK falls back to the proprietary
     # Adreno driver → D3D11 plugins (BIAS / AmpliTube) render blank.
@@ -209,7 +209,7 @@ phase_turnip() {
         ( cd "$turnip_out" && tar czf "$turnip_asset" * )
         echo "  → $turnip_asset ($(du -h "$turnip_asset" | cut -f1))"
     else
-        echo "build-all FAILED: fetch-turnip-libs produced no files in $turnip_out" >&2
+        echo "build-all FAILED: the turnip phase staged no files in $turnip_out" >&2
         exit 1
     fi
 }

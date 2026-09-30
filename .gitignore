@@ -106,14 +106,14 @@ lint/tmp/
 # Android Profiling
 *.hprof
 
-# Build-generated assets (rebuilt by scripts/build_all.sh)
+# Build-generated assets (staged by build.sh)
 app/src/main/assets/*
 !app/src/main/assets/modgui_runtime.js
 !app/src/main/assets/lv2/
 app/src/main/cpp/libs/
 app/src/main/jniLibs/
 
-# bundletool (downloaded by runplaystore.sh)
+# bundletool (downloaded by run.sh playstore)
 bundletool.jar
 *.apks
 
@@ -126,7 +126,7 @@ app/src/playstore/assets/plugin_libs.txt
 # vsthost_lib build artifacts (rebuilt by vsthost_lib/scripts/)
 # Everything in assets/ and jniLibs/ is generated — wine binaries, FEX PE DLLs,
 # X11/gnutls/freetype .so files, PE32+ guest .exe files, DXVK runtime, fonts.
-# See vsthost_lib/README.md (TBD in Step 5) for the build pipeline.
+# See vsthost_lib/README.md for the build pipeline.
 vsthost_lib/src/main/assets/*
 vsthost_lib/src/main/jniLibs/
 # Build-script caches and llvm-mingw build outputs

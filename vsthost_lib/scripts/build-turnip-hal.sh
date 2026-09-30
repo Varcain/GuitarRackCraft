@@ -2,8 +2,8 @@
 # Build Turnip (Mesa's Adreno Vulkan driver) as an ANDROID HAL driver
 # (vulkan.ad07xx.so, exports HMI = hw_module_t HAL_MODULE_INFO_SYM) from the
 # in-tree 3rd_party/mesa submodule, for arm64 Android Bionic. Replaces the
-# AdrenoTools prebuilt (K11MCH1 Turnip_v26.0.0_R8.zip) that fetch-turnip-libs.sh
-# downloads. Phase 3 (final) of the prebuilt→source migration.
+# AdrenoTools prebuilt (K11MCH1 Turnip_v26.0.0_R8.zip) that the former
+# fetch-turnip-libs.sh downloaded. Phase 3 (final) of the prebuilt→source migration.
 #
 # This is the PRIMARY GPU path: libadrenotools (a Winlator-style linker-namespace
 # hook) dlopens this HAL to give the driver /dev/kgsl access on untrusted_app

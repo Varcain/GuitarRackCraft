@@ -52,7 +52,7 @@ if(EXISTS "${LV2_LIBS_DIR}/include/lilv-0/lilv/lilv.h" OR EXISTS "${LV2_LIBS_DIR
         include_directories(${LV2_LIBS_DIR}/include/sord-0)
     endif()
     
-    # LV2 libraries (versioned names from build_lv2_libs.sh: lilv-0, serd-0, sord-0, sratom-0, zix-0)
+    # LV2 libraries (versioned names: lilv-0, serd-0, sord-0, sratom-0, zix-0)
     # Prefer static libraries to avoid packaging .so.0 files
     set(LV2_LIB_DIR "${LV2_LIBS_DIR}/lib")
     # Try static library first, then shared

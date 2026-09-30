@@ -1,4 +1,5 @@
-# Build outputs
+# Build outputs. (Everything under src/main/{assets,jniLibs}, toolchain/ and
+# .cache/ is generated too - the root .gitignore covers those.)
 .gradle/
 build/
 .cxx/
@@ -7,46 +8,6 @@ build/
 # Python bytecode (scripts/ uses python3 for pack-wine-fex.py)
 __pycache__/
 *.pyc
-
-# Wine packaging outputs — regenerate via scripts/fetch-and-pack-wine.sh
-# (~384 MB of libwine_*.so + 10 MB wine-data.tar.gz + 200 KB manifest)
-.cache/
-src/main/jniLibs/arm64-v8a/libwine_*.so
-src/main/assets/wine-data.tar.gz
-src/main/assets/wine-manifest.json
-
-# Legacy box64 build output (pre-FEX pivot; no longer linked but build
-# script kept around in case we need to compare). Regenerable.
-src/main/jniLibs/arm64-v8a/libbox64.so
-external/box64/build-android-arm64/
-
-# Built from upstream by scripts/build-android-libs.sh
-src/main/jniLibs/arm64-v8a/libfreetype.so
-src/main/jniLibs/arm64-v8a/libpng16.so
-
-# X11 client libs shipped under their original SONAMEs (Bionic linker
-# resolves them by name from nativeLibraryDir). Re-stage via
-# scripts/fetch-x11-libs.sh.
-src/main/jniLibs/arm64-v8a/libX11.so
-src/main/jniLibs/arm64-v8a/libXau.so
-src/main/jniLibs/arm64-v8a/libxcb.so
-src/main/jniLibs/arm64-v8a/libXdmcp.so
-src/main/jniLibs/arm64-v8a/libXext.so
-src/main/jniLibs/arm64-v8a/libXrender.so
-src/main/jniLibs/arm64-v8a/libXi.so
-src/main/jniLibs/arm64-v8a/libXfixes.so
-src/main/jniLibs/arm64-v8a/libXrandr.so
-src/main/jniLibs/arm64-v8a/libXcursor.so
-src/main/jniLibs/arm64-v8a/libXxf86vm.so
-src/main/jniLibs/arm64-v8a/libandroid-support.so
-
-# Fonts staged into assets for runtime install into wineprefix/drive_c/-
-# windows/Fonts/. Copied from /usr/share/fonts by build scripts.
-src/main/assets/wine-fonts/
-
-# Backups produced by scripts/patch-proot.py (regenerable).
-src/main/jniLibs/arm64-v8a/libwine_proot.so.orig
-src/main/jniLibs/arm64-v8a/libwine_proot.so.patched
 
 # Submodule build outputs — wine, FEX, llvm-mingw, DXVK, vst3sdk all
 # live as submodules under external/. Their inner build dirs should

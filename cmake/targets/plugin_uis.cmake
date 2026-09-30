@@ -22,8 +22,6 @@
 #   1. libxcairo.a (xputty static widget library with PNG resources)
 #   2. Guitarix trunk plugin UI .so files
 #   3. GxPlugins.lv2.Android UI .so files
-#
-# Replaces: scripts/build_x11_uis.sh (~335 lines)
 # =============================================================================
 
 set(_xputty_src "${THIRD_PARTY}/guitarix/trunk/src/LV2/xputty")

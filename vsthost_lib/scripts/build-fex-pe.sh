@@ -6,9 +6,8 @@
 # Both use llvm-mingw's clang as the cross compiler. Output lives at
 # external/fex-upstream/build-{arm64ec,wow64}/{Bin/,Source/Windows/.../}.
 #
-# This is upstream FEX with no patches applied yet. The first run will reveal
-# what (if anything) breaks for our toolchain version; fixes get applied via
-# patch files in patches/fex/ and re-applied via apply-fex-patches.sh.
+# This builds the pinned upstream FEX as is - no patches are needed so far
+# (patches/fex/ is where they would go).
 
 set -euo pipefail
 

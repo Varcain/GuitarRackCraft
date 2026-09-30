@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Build libdrm from source for arm64 Android Bionic (NDK + meson), freedreno
-# backend only. Replaces the Termux libdrm prebuilt — both the .deb fetched by
-# fetch-turnip-libs.sh (libdrm.so, the Turnip ICD's only real runtime dep on the
+# backend only. Replaces the Termux libdrm prebuilt — both the .deb the former
+# fetch-turnip-libs.sh fetched (libdrm.so, the Turnip ICD's only real runtime dep on the
 # msm/DRM path) AND the checked-in Termux blob at
 # patches/mesa/build-files/android-deps-data/lib/ that build-mesa-zink.sh links.
 # Phase 2 of the prebuilt→source migration.
