@@ -15,19 +15,20 @@
 # You should have received a copy of the GNU General Public License
 # along with Guitar RackCraft. If not, see <https://www.gnu.org/licenses/>.
 
-# Restores the VST host component outputs that the vst-components workflow
+# Restores the VST host component outputs that the components workflow
 # built and cached (read-only; a miss fails the job - it means that
-# workflow didn't populate the cache), and unpacks wine's build tree.
+# workflow didn't populate the cache), unpacks wine's build tree and fetches
+# the wine sources the pack reads - everything `build-all.sh pack` needs.
 #
 #   - uses: ./.github/actions/vst-components
 #     with: { keys: "${{ toJSON(needs.components.outputs) }}" }
 
 name: VST components
-description: Restore the VST host components the vst-components workflow cached
+description: Restore the VST host components the components workflow cached
 
 inputs:
   keys:
-    description: the vst-components workflow's outputs (its cache keys), as JSON
+    description: the components workflow's outputs (its cache keys), as JSON
     required: true
 
 runs:
@@ -75,14 +76,6 @@ runs:
         key: ${{ fromJSON(inputs.keys).mesa }}
         fail-on-cache-miss: true
 
-    # build.sh reuses the x11 job's X11 sysroot instead of rebuilding it.
-    - name: Restore X11 sysroot
-      uses: actions/cache/restore@v4
-      with:
-        path: build/x11_ui
-        key: ${{ fromJSON(inputs.keys).x11 }}
-        fail-on-cache-miss: true
-
     # pack-wine-fex.py's wine prune check reads PE imports with this
     # toolchain's llvm-readobj (needs LLVM >= 19 for the ARM64X EC view).
     - name: Restore llvm-mingw install
@@ -117,6 +110,19 @@ runs:
           vsthost_lib/src/main/assets/uihost_stub_x86.dll
         key: ${{ fromJSON(inputs.keys).hosts }}
         fail-on-cache-miss: true
+
+    # pack-wine-fex.py also packs two directories of wine's source tree, nls/
+    # (the codepage tables) and fonts/: fetch just those, at the commit HEAD
+    # pins, instead of the whole wine submodule.
+    - name: Fetch wine's nls/ and fonts/
+      shell: bash
+      run: |
+        d=vsthost_lib/external/wine-upstream
+        git -C "$d" init -q
+        git -C "$d" remote add origin "$(git config -f .gitmodules "submodule.$d.url")"
+        git -C "$d" sparse-checkout set nls fonts
+        git -C "$d" fetch -q --depth 1 --filter=blob:none origin "$(git rev-parse "HEAD:$d")"
+        git -C "$d" checkout -q FETCH_HEAD
 
     - name: Unpack wine output into its build dir
       shell: bash

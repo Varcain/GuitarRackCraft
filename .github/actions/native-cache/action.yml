@@ -38,6 +38,10 @@
 #   - if: steps.native-cache.outputs.cache-hit != 'true'
 #     uses: ./.github/actions/native-cache
 #     with: { mode: save, key: "${{ steps.native-cache.outputs.key }}" }
+#
+# The components workflow's native job probes with lookup-only: true (a hit
+# means there is nothing to build); jobs that only package the result
+# restore with fail-on-cache-miss: true.
 
 name: Native build cache
 description: Restore or save the native prebuild's outputs under the exact native cache key
@@ -49,6 +53,12 @@ inputs:
   key:
     description: the key to save under (the restore step's `key` output)
     required: false
+  lookup-only:
+    description: "restore: only check that the entry exists, don't download it"
+    default: 'false'
+  fail-on-cache-miss:
+    description: "restore: fail the job when there is no entry"
+    default: 'false'
 
 outputs:
   key:
@@ -84,12 +94,14 @@ runs:
       with:
         path: ${{ steps.paths.outputs.paths }}
         key: ${{ steps.key.outputs.native }}
+        lookup-only: ${{ inputs.lookup-only }}
+        fail-on-cache-miss: ${{ inputs.fail-on-cache-miss }}
 
     # app/src/main/assets also holds tracked files (modgui_runtime.js, plugin
     # screenshots and modgui overrides) that the key doesn't cover. The build
     # never changes them, so this commit's versions go back over the cached
     # copies.
-    - if: inputs.mode == 'restore' && steps.restore.outputs.cache-hit == 'true'
+    - if: inputs.mode == 'restore' && steps.restore.outputs.cache-hit == 'true' && inputs.lookup-only != 'true'
       shell: bash
       run: git checkout -- app/src/main/assets
 

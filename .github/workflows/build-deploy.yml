@@ -16,9 +16,9 @@
 # along with Guitar RackCraft. If not, see <https://www.gnu.org/licenses/>.
 
 # Build & Deploy — two independent, separately-gated release paths:
-#   * create_github_release -> `full` (VST) edition: build the VST components
-#     (vst-components.yml) + hosts, assembleFullRelease (HAS_VST_HOST=true),
-#     publish a GitHub Release APK.
+#   * create_github_release -> `full` (VST) edition: build the components -
+#     the VST host stack and the native prebuild (components.yml) - then pack,
+#     assembleFullRelease (HAS_VST_HOST=true), publish a GitHub Release APK.
 #   * upload_to_play_store  -> `playstore` edition: bundlePlaystoreRelease only
 #     (no :vsthost_lib, no wine), upload the AAB to Google Play.
 # The Play Store path never bundles VST; the VST pipeline never runs for a
@@ -57,28 +57,17 @@ concurrency:
 env:
   ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
   GRADLE_OPTS: -Dorg.gradle.daemon=false
-  COMMON_APT: >-
-    build-essential autoconf automake libtool bison flex gettext gperf
-    pkg-config cmake ninja-build meson patchelf patch python3 python3-pip
-    python3-mako git xz-utils ca-certificates curl
-  X11_APT: >-
-    libx11-dev libxext-dev libxrender-dev libxrandr-dev libxi-dev
-    libxfixes-dev libxcursor-dev libxxf86vm-dev libfreetype-dev
-    fonts-liberation fonts-dejavu
-  NATIVE_APT: >-
-    gcc-mingw-w64-x86-64 gcc-mingw-w64-i686 g++-mingw-w64-x86-64
-    ocaml ocamlbuild ocaml-findlib libnum-ocaml-dev faust libboost-dev ccache
 
 jobs:
   components:
     if: ${{ inputs.create_github_release }}
-    uses: ./.github/workflows/vst-components.yml
+    uses: ./.github/workflows/components.yml
 
   full-release:
     if: ${{ inputs.create_github_release }}
     needs: components
     runs-on: ubuntu-latest
-    timeout-minutes: 180
+    timeout-minutes: 90
     permissions:
       contents: write
 
@@ -87,108 +76,52 @@ jobs:
         uses: jlumbroso/free-disk-space@ceedf095f4ec1a097402bc6bd80831f2e1a6fde6  # v2.0.0
         with: { android: false, preinstalled-runtimes: false, dotnet: true, haskell: true, large-packages: true, docker-images: true, swap-storage: true }
 
-      # ── 1. Checkout & submodules ────────────────────────────────────────
+      # ── 1. Checkout ─────────────────────────────────────────────────────
       - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
 
-      - name: Restore submodule cache
-        id: submodule-cache
-        uses: actions/cache/restore@v4
-        with:
-          path: .git/modules
-          key: submodules-${{ runner.os }}-${{ hashFiles('.gitmodules') }}-${{ github.sha }}
-          restore-keys: |
-            submodules-${{ runner.os }}-${{ hashFiles('.gitmodules') }}-
-
-      - name: Initialize submodules
-        run: git submodule update --init --recursive --depth 1
-
-      - name: Save submodule cache
-        if: steps.submodule-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
-        with:
-          path: .git/modules
-          key: submodules-${{ runner.os }}-${{ hashFiles('.gitmodules') }}-${{ github.sha }}
-
       # ── 2. System dependencies ───────────────────────────────────────────
+      # patch for apply-patches.sh; patchelf and readelf (binutils) for the pack.
       - name: Install system dependencies
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends $COMMON_APT $X11_APT $NATIVE_APT
+          sudo apt-get install -y --no-install-recommends patch patchelf binutils python3
+
+      # The Gradle C++ builds compile oboe, the one submodule this job needs;
+      # it gets its 3rd_party/patches as build.sh would apply them.
+      - name: Check out and patch oboe
+        run: |
+          git submodule update --init --depth 1 3rd_party/oboe
+          for p in 3rd_party/patches/oboe/*.patch; do
+            scripts/apply-patches.sh "$p" 3rd_party/oboe
+          done
 
       # ── 3. JDK 17 + Android SDK packages ────────────────────────────────
       - name: Android toolchain
         uses: ./.github/actions/setup-android
 
-      # ── 4. VST host components (built by the components jobs) ────────────
+      # ── 4. What the components jobs built ───────────────────────────────
       - name: Restore VST components
         uses: ./.github/actions/vst-components
         with: { keys: "${{ toJSON(needs.components.outputs) }}" }
 
-      # ── 5. Native build cache ─────────────────────────────────────────────
-      - name: Restore native build cache
-        id: native-cache
+      - name: Restore the native build
         uses: ./.github/actions/native-cache
-        with: { mode: restore }
+        with: { mode: restore, fail-on-cache-miss: true }
 
-      # ── 6. ccache ─────────────────────────────────────────────────────────
-      - name: Setup ccache
-        run: |
-          ccache --set-config=max_size=2G
-          ccache --set-config=compression=true
-          ccache --set-config=compression_level=6
-          ccache --set-config=sloppiness=include_file_mtime,include_file_ctime,time_macros,file_stat_matches,file_stat_matches_ctime
-          ccache --set-config=hash_dir=false
-          ccache --zero-stats
-
-      - name: Restore ccache
-        id: ccache-restore
-        uses: actions/cache/restore@v4
-        with:
-          path: ~/.cache/ccache
-          key: ccache-${{ runner.os }}-${{ github.sha }}
-          restore-keys: |
-            ccache-${{ runner.os }}-
-
+      # ── 5. Pack the VST host stack, stage the native libraries ──────────
       # pack-wine-fex.py -> vsthost_lib/src/main/{jniLibs,assets}
       - name: Pack the VST host stack
         env:
           ANDROID_NDK: ${{ env.ANDROID_SDK_ROOT }}/ndk/${{ env.NDK_VSTHOST }}
         run: cd vsthost_lib && bash scripts/build-all.sh pack
 
-      # ── 7. Native build (Ninja handles incrementality) ──────────────────
-      - name: Build native libraries
-        # BUILD_VST=0: VST stack already packed from the cached components above.
-        run: BUILD_VST=0 ./build.sh full
-        env:
-          ANDROID_NDK: ${{ env.ANDROID_SDK_ROOT }}/ndk/${{ env.NDK_NATIVE }}
-          NATIVE_CACHE_EXACT: ${{ steps.native-cache.outputs.cache-hit }}
+      - name: Stage the native libraries
+        run: ./build.sh stage
 
-      - name: Dump ExternalProject logs on failure
-        if: failure()
-        run: for f in build/prebuild/*/src/*/stamp/*-*.log; do [ -f "$f" ] && echo "=== $f ===" && cat "$f"; done || true
-
-      - name: Show ccache stats
-        if: always()
-        run: ccache --show-stats
-
-      - name: Save native build cache
-        if: steps.native-cache.outputs.cache-hit != 'true'
-        uses: ./.github/actions/native-cache
-        with:
-          mode: save
-          key: ${{ steps.native-cache.outputs.key }}
-
-      - name: Save ccache
-        if: "!cancelled() && steps.ccache-restore.outputs.cache-hit != 'true'"
-        uses: actions/cache/save@v4
-        with:
-          path: ~/.cache/ccache
-          key: ccache-${{ runner.os }}-${{ github.sha }}
-
-      # ── 8. Decode release keystore ───────────────────────────────────────
+      # ── 6. Decode release keystore ───────────────────────────────────────
       - name: Decode upload keystore
         env:
           KEYSTORE_B64: ${{ secrets.KEYSTORE_BASE64 }}
@@ -209,7 +142,7 @@ jobs:
           fi
           echo "Keystore decoded and validated OK"
 
-      # ── 9. Patch version ─────────────────────────────────────────────────
+      # ── 7. Patch version ─────────────────────────────────────────────────
       - name: Set versionCode and versionName
         env:
           VERSION_CODE: ${{ inputs.version_code }}
@@ -222,7 +155,7 @@ jobs:
           echo "ORG_GRADLE_PROJECT_grcVersionCode=$VERSION_CODE" >> "$GITHUB_ENV"
           echo "ORG_GRADLE_PROJECT_grcVersionName=$VERSION_NAME" >> "$GITHUB_ENV"
 
-      # ── 10. Build the VST ("full" flavor) release APK ────────────────────
+      # ── 8. Build the VST ("full" flavor) release APK ─────────────────────
       #     assembleFullRelease only — no playstore bundle/AAB is produced.
       - name: Restore Gradle cache
         id: gradle-cache
@@ -255,7 +188,7 @@ jobs:
             ~/.gradle/build-cache
           key: gradle-${{ runner.os }}-${{ hashFiles('**/*.gradle.kts', 'gradle/wrapper/gradle-wrapper.properties') }}
 
-      # ── 11. Upload APK artifact ──────────────────────────────────────────
+      # ── 9. Upload APK artifact ───────────────────────────────────────────
       - name: Find built APK
         id: artifacts
         run: |
@@ -279,7 +212,7 @@ jobs:
           name: guitarrackcraft-vst-${{ inputs.version_name }}-apk
           path: ${{ steps.artifacts.outputs.apk }}
 
-      # ── 12. GitHub Release ───────────────────────────────────────────────
+      # ── 10. GitHub Release ───────────────────────────────────────────────
       - name: Create GitHub Release
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65  # v2.6.2
         with:
@@ -289,7 +222,7 @@ jobs:
           prerelease: ${{ contains(inputs.version_name, 'beta') || contains(inputs.version_name, 'alpha') || contains(inputs.version_name, 'rc') }}
           generate_release_notes: true
 
-      # ── 13. Cleanup ──────────────────────────────────────────────────────
+      # ── 11. Cleanup ──────────────────────────────────────────────────────
       - name: Remove upload keystore
         if: always()
         run: rm -f "$RUNNER_TEMP/upload.keystore"
