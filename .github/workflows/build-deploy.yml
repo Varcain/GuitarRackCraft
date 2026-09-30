@@ -207,58 +207,11 @@ jobs:
           tar -xf vsthost_lib/wine-android-out.tar -C vsthost_lib/external/wine-upstream
           test -x vsthost_lib/external/wine-upstream/build-android-arm64/loader/wine
 
-      # ── 6. Cache native build ────────────────────────────────────────────
-      - name: Compute native cache key
-        id: native-cache-key
-        run: |
-          # Hash build script, cmake configs, and patches
-          FILES_HASH=$(cat \
-            build.sh \
-            $(find cmake -name '*.cmake' -o -name 'CMakeLists.txt' -o -name 'CMakePresets.json' | sort) \
-            $(find 3rd_party/patches -name '*.patch' 2>/dev/null | sort) \
-            | sha256sum | cut -d' ' -f1)
-          # Hash submodule commits
-          SUBMOD_HASH=$(git submodule status | sha256sum | cut -d' ' -f1)
-          echo "key=native-${{ runner.os }}-${FILES_HASH}-${SUBMOD_HASH}" >> "$GITHUB_OUTPUT"
-
+      # ── 6. Native build cache ─────────────────────────────────────────────
       - name: Restore native build cache
         id: native-cache
-        uses: actions/cache/restore@v4
-        with:
-          path: |
-            build/prebuild
-            build/shared
-            build/aidadsp
-            build/aidax_full
-            build/nam
-            build/lv2
-            build/x11_ui
-            build/mesa
-            build/fftw3
-            build/fftw3-codelets
-            build/neuralrack
-            build/impulseloader
-            build/xdarkterror
-            build/xtinyterror
-            build/collisiondrive
-            build/metaltone
-            build/gxcabsim
-            build/modamptk
-            build/fatfrog
-            build/lv2_wrapper
-            app/src/main/jniLibs
-            app/src/full/jniLibs
-            app/src/main/assets
-            app/src/main/cpp/libs
-            gxplugins_pack/src/main/assets/plugins
-            neural_pack/src/main/assets/plugins
-            brummer_pack/src/main/assets/plugins
-          key: ${{ steps.native-cache-key.outputs.key }}
-          # NO restore-keys on purpose (mirrors build-vst-full.yml): a prefix /
-          # partial restore can bring back a stale autotools tree (e.g.
-          # build/x11_ui/libX11 configured with the previous CONFIGURE_ARGS) and
-          # fail the in-place reconfigure. Exact-key-only means a config change
-          # misses cleanly and build.sh does a clean build; ccache keeps it fast.
+        uses: ./.github/actions/native-cache
+        with: { mode: restore }
 
       # ── 7. ccache ─────────────────────────────────────────────────────────
       - name: Setup ccache
@@ -309,38 +262,11 @@ jobs:
         run: ccache --show-stats
 
       - name: Save native build cache
-        if: "!cancelled() && steps.native-cache.outputs.cache-hit != 'true'"
-        uses: actions/cache/save@v4
+        if: steps.native-cache.outputs.cache-hit != 'true'
+        uses: ./.github/actions/native-cache
         with:
-          path: |
-            build/prebuild
-            build/shared
-            build/aidadsp
-            build/aidax_full
-            build/nam
-            build/lv2
-            build/x11_ui
-            build/mesa
-            build/fftw3
-            build/fftw3-codelets
-            build/neuralrack
-            build/impulseloader
-            build/xdarkterror
-            build/xtinyterror
-            build/collisiondrive
-            build/metaltone
-            build/gxcabsim
-            build/modamptk
-            build/fatfrog
-            build/lv2_wrapper
-            app/src/main/jniLibs
-            app/src/full/jniLibs
-            app/src/main/assets
-            app/src/main/cpp/libs
-            gxplugins_pack/src/main/assets/plugins
-            neural_pack/src/main/assets/plugins
-            brummer_pack/src/main/assets/plugins
-          key: ${{ steps.native-cache-key.outputs.key }}
+          mode: save
+          key: ${{ steps.native-cache.outputs.key }}
 
       - name: Save ccache
         if: "!cancelled() && steps.ccache-restore.outputs.cache-hit != 'true'"
@@ -507,57 +433,11 @@ jobs:
           [ -d "$ANDROID_SDK_ROOT/build-tools/34.0.0" ] || \
             $ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager "build-tools;34.0.0"
 
-      # ── 5. Cache native build ────────────────────────────────────────────
-      - name: Compute native cache key
-        id: native-cache-key
-        run: |
-          # Hash build script, cmake configs, and patches
-          FILES_HASH=$(cat \
-            build.sh \
-            $(find cmake -name '*.cmake' -o -name 'CMakeLists.txt' -o -name 'CMakePresets.json' | sort) \
-            $(find 3rd_party/patches -name '*.patch' 2>/dev/null | sort) \
-            | sha256sum | cut -d' ' -f1)
-          # Hash submodule commits
-          SUBMOD_HASH=$(git submodule status | sha256sum | cut -d' ' -f1)
-          echo "files-hash=${FILES_HASH}" >> "$GITHUB_OUTPUT"
-          echo "key=native-${{ runner.os }}-${FILES_HASH}-${SUBMOD_HASH}" >> "$GITHUB_OUTPUT"
-
+      # ── 5. Native build cache ─────────────────────────────────────────────
       - name: Restore native build cache
         id: native-cache
-        uses: actions/cache/restore@v4
-        with:
-          path: |
-            build/prebuild
-            build/shared
-            build/aidadsp
-            build/aidax_full
-            build/nam
-            build/lv2
-            build/x11_ui
-            build/mesa
-            build/fftw3
-            build/fftw3-codelets
-            build/neuralrack
-            build/impulseloader
-            build/xdarkterror
-            build/xtinyterror
-            build/collisiondrive
-            build/metaltone
-            build/gxcabsim
-            build/modamptk
-            build/fatfrog
-            build/lv2_wrapper
-            app/src/main/jniLibs
-            app/src/full/jniLibs
-            app/src/main/assets
-            app/src/main/cpp/libs
-            gxplugins_pack/src/main/assets/plugins
-            neural_pack/src/main/assets/plugins
-            brummer_pack/src/main/assets/plugins
-          key: ${{ steps.native-cache-key.outputs.key }}
-          restore-keys: |
-            native-${{ runner.os }}-${{ steps.native-cache-key.outputs.files-hash }}-
-            native-${{ runner.os }}-
+        uses: ./.github/actions/native-cache
+        with: { mode: restore }
 
       # ── 7. ccache ─────────────────────────────────────────────────────────
       - name: Setup ccache
@@ -596,38 +476,11 @@ jobs:
         run: ccache --show-stats
 
       - name: Save native build cache
-        if: "!cancelled() && steps.native-cache.outputs.cache-hit != 'true'"
-        uses: actions/cache/save@v4
+        if: steps.native-cache.outputs.cache-hit != 'true'
+        uses: ./.github/actions/native-cache
         with:
-          path: |
-            build/prebuild
-            build/shared
-            build/aidadsp
-            build/aidax_full
-            build/nam
-            build/lv2
-            build/x11_ui
-            build/mesa
-            build/fftw3
-            build/fftw3-codelets
-            build/neuralrack
-            build/impulseloader
-            build/xdarkterror
-            build/xtinyterror
-            build/collisiondrive
-            build/metaltone
-            build/gxcabsim
-            build/modamptk
-            build/fatfrog
-            build/lv2_wrapper
-            app/src/main/jniLibs
-            app/src/full/jniLibs
-            app/src/main/assets
-            app/src/main/cpp/libs
-            gxplugins_pack/src/main/assets/plugins
-            neural_pack/src/main/assets/plugins
-            brummer_pack/src/main/assets/plugins
-          key: ${{ steps.native-cache-key.outputs.key }}
+          mode: save
+          key: ${{ steps.native-cache.outputs.key }}
 
       - name: Save ccache
         if: "!cancelled() && steps.ccache-restore.outputs.cache-hit != 'true'"

@@ -167,56 +167,11 @@ jobs:
           tar -xf vsthost_lib/wine-android-out.tar -C vsthost_lib/external/wine-upstream
           test -x vsthost_lib/external/wine-upstream/build-android-arm64/loader/wine
 
-      # ── Native (build.sh full) cache + ccache + gradle — same scheme as ci.yml.
-      - name: Compute native cache key
-        id: native-key
-        run: |
-          FILES_HASH=$(cat \
-            build.sh \
-            $(find cmake -name '*.cmake' -o -name 'CMakeLists.txt' -o -name 'CMakePresets.json' 2>/dev/null | sort) \
-            $(find 3rd_party/patches -name '*.patch' 2>/dev/null | sort) \
-            2>/dev/null | sha256sum | cut -d' ' -f1)
-          SUBMOD_HASH=$(git submodule status | sha256sum | cut -d' ' -f1)
-          echo "key=native-${{ runner.os }}-${FILES_HASH}-${SUBMOD_HASH}" >> "$GITHUB_OUTPUT"
-      - name: Cache native build (build.sh)
-        uses: actions/cache@v4
-        with:
-          path: |
-            build/prebuild
-            build/shared
-            build/aidadsp
-            build/aidax_full
-            build/nam
-            build/lv2
-            build/x11_ui
-            build/mesa
-            build/fftw3
-            build/fftw3-codelets
-            build/neuralrack
-            build/impulseloader
-            build/xdarkterror
-            build/xtinyterror
-            build/collisiondrive
-            build/metaltone
-            build/gxcabsim
-            build/modamptk
-            build/fatfrog
-            build/lv2_wrapper
-            app/src/main/jniLibs
-            app/src/full/jniLibs
-            app/src/main/assets
-            app/src/main/cpp/libs
-            gxplugins_pack/src/main/assets/plugins
-            neural_pack/src/main/assets/plugins
-            brummer_pack/src/main/assets/plugins
-          key: ${{ steps.native-key.outputs.key }}
-          # NO restore-keys on purpose. A prefix (partial) restore brings back a
-          # stale autotools build tree — e.g. build/x11_ui/libX11 configured with
-          # the previous CONFIGURE_ARGS. When the args change (e.g. dropping
-          # --disable-xkb), build.sh reconfigures it in place and autotools
-          # dirty-reconfigure fails on the runner ("Performing configure step for
-          # 'libX11' FAILED"). Exact-key-only means a config change misses the
-          # cache and build.sh does a CLEAN build; ccache keeps recompiles fast.
+      # ── Native (build.sh full) cache + ccache + gradle.
+      - name: Restore native build cache
+        id: native-cache
+        uses: ./.github/actions/native-cache
+        with: { mode: restore }
       - name: Cache ccache
         uses: actions/cache@v4
         with:
@@ -262,9 +217,17 @@ jobs:
       - name: Build native libraries (build.sh full)
         env:
           ANDROID_NDK: ${{ env.ANDROID_SDK_ROOT }}/ndk/${{ env.NDK_NATIVE }}
+          NATIVE_CACHE_EXACT: ${{ steps.native-cache.outputs.cache-hit }}
         # BUILD_VST=0: the VST stack is staged above from the cached component
         # jobs (+ build-all.sh turnip/adrenotools/hosts/pack); don't rebuild it.
         run: BUILD_VST=0 ./build.sh full
+
+      - name: Save native build cache
+        if: steps.native-cache.outputs.cache-hit != 'true'
+        uses: ./.github/actions/native-cache
+        with:
+          mode: save
+          key: ${{ steps.native-cache.outputs.key }}
 
       - name: Show ccache stats
         if: always()

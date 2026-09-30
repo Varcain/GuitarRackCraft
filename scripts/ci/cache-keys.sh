@@ -55,9 +55,14 @@ key[dxvk]="dxvk-$os-$(commit vsthost_lib/external/dxvk)-$(commit vsthost_lib/ext
 # pack-wine-fex.py, whose strip_symbol_versions() it runs on libEGL.
 key[mesa]="mesa-$os-$(commit 3rd_party/mesa)-$(hash vsthost_lib/patches/mesa vsthost_lib/src/main/cpp/mesashim \
     $S/build-mesa-zink.sh $S/build-libdrm-android.sh $S/pack-wine-fex.py)-ndk$ndk_vst"
+# The native prebuild (build.sh full/playstore build the same targets):
+# everything it reads, and every 3rd_party submodule commit HEAD pins (from the
+# tree, so it doesn't matter which are initialised).
+key[native]="native-$os-$(hash build.sh cmake 3rd_party/patches config scripts/apply-patches.sh \
+    plugin_descriptions.json)-$(git ls-tree -r HEAD 3rd_party | awk '$2 == "commit"' | h16)"
 
 names=("$@")
-[ ${#names[@]} -gt 0 ] || names=(llvm llvm_android winedeps x11 wine fex dxvk mesa)
+[ ${#names[@]} -gt 0 ] || names=(llvm llvm_android winedeps x11 wine fex dxvk mesa native)
 for name in "${names[@]}"; do
     [ -n "${key[$name]:-}" ] || { echo "cache-keys.sh: unknown key '$name'" >&2; exit 2; }
     echo "$name=${key[$name]}"
