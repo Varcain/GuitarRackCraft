@@ -11,8 +11,10 @@
 #include "util/log.h"
 #include "x11/DisplayState.h"
 #include "x11/X11NativeDisplay.h"
+#if VSTHOST_DEBUG_DIAGNOSTICS
 #include "ahbspike/AhbSpike.h"
 #include "ahbspike/AhbChannelTest.h"
+#endif
 
 #include <jni.h>
 
@@ -147,11 +149,16 @@ Java_com_varcain_vsthost_NativeBridge_nativeSetX11FramebufferFrozen(
 
 /* Phase 0 GPU-upgrade spike (throwaway diagnostic). Runs the cross-driver
  * AHardwareBuffer + fence interop test in the app process and logs PASS/FAIL to
- * logcat tag "AhbSpike". Returns true on PASS. See ahbspike/AhbSpike.cpp. */
+ * logcat tag "AhbSpike". Returns true on PASS; false when built without
+ * VSTHOST_DEBUG_DIAGNOSTICS (release). See ahbspike/AhbSpike.cpp. */
 JNIEXPORT jboolean JNICALL
 Java_com_varcain_vsthost_NativeBridge_nativeAhbSpike(
     JNIEnv* env, jobject /*thiz*/, jstring hookDir, jstring driverDir,
     jstring driverName, jstring logPath) {
+#if !VSTHOST_DEBUG_DIAGNOSTICS
+    (void)env; (void)hookDir; (void)driverDir; (void)driverName; (void)logPath;
+    return JNI_FALSE;
+#else
     const char* hook = env->GetStringUTFChars(hookDir, nullptr);
     const char* drv  = env->GetStringUTFChars(driverDir, nullptr);
     const char* name = env->GetStringUTFChars(driverName, nullptr);
@@ -162,6 +169,7 @@ Java_com_varcain_vsthost_NativeBridge_nativeAhbSpike(
     env->ReleaseStringUTFChars(driverName, name);
     env->ReleaseStringUTFChars(logPath, lpath);
     return ok ? JNI_TRUE : JNI_FALSE;
+#endif
 }
 
 /* Phase 1 synthetic GPU-present validation hook. on=true: registers a
@@ -179,10 +187,15 @@ Java_com_varcain_vsthost_NativeBridge_nativeDebugEditorAhbGradient(
 /* Phase 2 synthetic side-channel client (throwaway). Connects to display N's
  * AHB side-channel and drives one REGISTER→PRESENT→hold→UNREGISTER cycle with a
  * gradient AHB, proving the AF_UNIX transport + SCM_RIGHTS AHB passing. Blocking
- * for holdMs; call from a worker thread. Logs to logPath. See AhbChannelTest. */
+ * for holdMs; call from a worker thread. Logs to logPath. Returns false when
+ * built without VSTHOST_DEBUG_DIAGNOSTICS (release). See AhbChannelTest. */
 JNIEXPORT jboolean JNICALL
 Java_com_varcain_vsthost_NativeBridge_nativeAhbChannelTest(
     JNIEnv* env, jobject /*thiz*/, jint displayNumber, jint holdMs, jstring logPath) {
+#if !VSTHOST_DEBUG_DIAGNOSTICS
+    (void)env; (void)displayNumber; (void)holdMs; (void)logPath;
+    return JNI_FALSE;
+#else
     const char* lpath = logPath ? env->GetStringUTFChars(logPath, nullptr) : nullptr;
     // The listener is named after the display number wine sees in DISPLAY
     // (bound port - 6000), which differs from displayNumber if the server
@@ -192,6 +205,7 @@ Java_com_varcain_vsthost_NativeBridge_nativeAhbChannelTest(
     bool ok = guitarrackcraft::runAhbChannelTest(ahbDisplay, holdMs, lpath);
     if (lpath) env->ReleaseStringUTFChars(logPath, lpath);
     return ok ? JNI_TRUE : JNI_FALSE;
+#endif
 }
 
 }  // extern "C"

@@ -79,6 +79,18 @@ android {
         prefabPublishing = true
     }
 
+    buildTypes {
+        debug {
+            // The AhbSpike/AhbChannelTest developer diagnostics (see
+            // src/main/cpp/CMakeLists.txt) - left out of release builds.
+            externalNativeBuild {
+                cmake {
+                    arguments += "-DVSTHOST_DEBUG_DIAGNOSTICS=ON"
+                }
+            }
+        }
+    }
+
     prefab {
         create("vsthost") {
             headers = "src/main/cpp"

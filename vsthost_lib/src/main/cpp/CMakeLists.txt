@@ -30,10 +30,6 @@ add_library(vsthost SHARED
     ipc/PickerChannel.cpp
     "${GRC_APP_CPP_DIR}/plugin/PluginUIGuard.cpp"  # called by the X11 server
     util/PeExports.cpp
-    # Phase 0 GPU-upgrade spike (cross-driver AHB+fence, throwaway diagnostic)
-    ahbspike/AhbSpike.cpp
-    # Phase 2 AHB side-channel synthetic client (throwaway diagnostic)
-    ahbspike/AhbChannelTest.cpp
     # GuitarRackCraft IPlugin bridge (consumed by :app via prefab)
     vst/VstFactory.cpp
     vst/WineVstPlugin.cpp
@@ -50,8 +46,21 @@ target_link_libraries(vsthost
     log
     EGL
     GLESv2
-    vulkan   # AhbSpike.cpp (Vulkan types/headers; Turnip loaded via dlopen at runtime)
 )
+
+# Developer diagnostics, driven by marker files from the fullDebug hooks and
+# PluginSurface: the Phase 0 GPU-upgrade spike (cross-driver AHB + fence) and
+# the Phase 2 AHB side-channel synthetic client. Only debug builds turn this on
+# (vsthost_lib/build.gradle.kts); without it their JNI entry points return false.
+option(VSTHOST_DEBUG_DIAGNOSTICS "Build the AhbSpike/AhbChannelTest diagnostics" OFF)
+if(VSTHOST_DEBUG_DIAGNOSTICS)
+    target_sources(vsthost PRIVATE
+        ahbspike/AhbSpike.cpp
+        ahbspike/AhbChannelTest.cpp
+    )
+    target_compile_definitions(vsthost PRIVATE VSTHOST_DEBUG_DIAGNOSTICS=1)
+    target_link_libraries(vsthost vulkan)  # AhbSpike's Vulkan types; Turnip is dlopen'd
+endif()
 
 target_compile_options(vsthost PRIVATE
     -Wall
