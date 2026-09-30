@@ -85,6 +85,14 @@ runs:
         path: ${{ steps.paths.outputs.paths }}
         key: ${{ steps.key.outputs.native }}
 
+    # app/src/main/assets also holds tracked files (modgui_runtime.js, plugin
+    # screenshots and modgui overrides) that the key doesn't cover. The build
+    # never changes them, so this commit's versions go back over the cached
+    # copies.
+    - if: inputs.mode == 'restore' && steps.restore.outputs.cache-hit == 'true'
+      shell: bash
+      run: git checkout -- app/src/main/assets
+
     - if: inputs.mode == 'save'
       uses: actions/cache/save@v4
       with:
