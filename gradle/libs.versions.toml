@@ -1,0 +1,65 @@
+# Versions for the Gradle build, shared by :app and :vsthost_lib.
+# (The NDK is pinned in config/toolchain.properties, which the native prebuild
+# and the VST toolchain scripts read too.)
+
+[versions]
+agp = "8.7.3"
+kotlin = "1.9.20"
+# The Compose compiler that matches this Kotlin version.
+composeCompiler = "1.5.4"
+compileSdk = "35"
+minSdk = "26"
+# The SDK's CMake, which builds the modules' C++ (the native prebuild uses the host's).
+cmake = "3.22.1"
+
+composeBom = "2023.10.01"
+coreKtx = "1.13.1"
+lifecycle = "2.6.2"
+activityCompose = "1.8.1"
+navigationCompose = "2.7.5"
+webkit = "1.8.0"
+accompanist = "0.32.0"
+okhttp = "4.12.0"
+gson = "2.10.1"
+coil = "2.5.0"
+junit = "4.13.2"
+androidxTestJunit = "1.1.5"
+androidxTestRules = "1.5.0"
+espresso = "3.5.1"
+uiautomator = "2.3.0"
+
+[libraries]
+androidx-core-ktx = { module = "androidx.core:core-ktx", version.ref = "coreKtx" }
+androidx-lifecycle-runtime-ktx = { module = "androidx.lifecycle:lifecycle-runtime-ktx", version.ref = "lifecycle" }
+androidx-lifecycle-viewmodel-compose = { module = "androidx.lifecycle:lifecycle-viewmodel-compose", version.ref = "lifecycle" }
+androidx-activity-compose = { module = "androidx.activity:activity-compose", version.ref = "activityCompose" }
+androidx-navigation-compose = { module = "androidx.navigation:navigation-compose", version.ref = "navigationCompose" }
+androidx-webkit = { module = "androidx.webkit:webkit", version.ref = "webkit" }
+
+# Compose: versions come from the BOM.
+androidx-compose-bom = { module = "androidx.compose:compose-bom", version.ref = "composeBom" }
+androidx-compose-ui = { module = "androidx.compose.ui:ui" }
+androidx-compose-ui-graphics = { module = "androidx.compose.ui:ui-graphics" }
+androidx-compose-ui-tooling = { module = "androidx.compose.ui:ui-tooling" }
+androidx-compose-ui-tooling-preview = { module = "androidx.compose.ui:ui-tooling-preview" }
+androidx-compose-ui-test-junit4 = { module = "androidx.compose.ui:ui-test-junit4" }
+androidx-compose-ui-test-manifest = { module = "androidx.compose.ui:ui-test-manifest" }
+androidx-compose-foundation = { module = "androidx.compose.foundation:foundation" }
+androidx-compose-material3 = { module = "androidx.compose.material3:material3" }
+androidx-compose-material-icons-extended = { module = "androidx.compose.material:material-icons-extended" }
+
+accompanist-permissions = { module = "com.google.accompanist:accompanist-permissions", version.ref = "accompanist" }
+okhttp = { module = "com.squareup.okhttp3:okhttp", version.ref = "okhttp" }
+gson = { module = "com.google.code.gson:gson", version.ref = "gson" }
+coil-compose = { module = "io.coil-kt:coil-compose", version.ref = "coil" }
+
+junit = { module = "junit:junit", version.ref = "junit" }
+androidx-test-ext-junit = { module = "androidx.test.ext:junit", version.ref = "androidxTestJunit" }
+androidx-test-rules = { module = "androidx.test:rules", version.ref = "androidxTestRules" }
+androidx-test-espresso-core = { module = "androidx.test.espresso:espresso-core", version.ref = "espresso" }
+androidx-test-uiautomator = { module = "androidx.test.uiautomator:uiautomator", version.ref = "uiautomator" }
+
+[plugins]
+android-application = { id = "com.android.application", version.ref = "agp" }
+android-library = { id = "com.android.library", version.ref = "agp" }
+kotlin-android = { id = "org.jetbrains.kotlin.android", version.ref = "kotlin" }

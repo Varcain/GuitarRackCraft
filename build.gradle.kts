@@ -18,10 +18,11 @@
  */
 
 // Top-level build file where you can add configuration options common to all sub-projects/modules.
+// Versions: gradle/libs.versions.toml
 plugins {
-    id("com.android.application") version "8.7.3" apply false
-    id("com.android.library") version "8.7.3" apply false
-    id("org.jetbrains.kotlin.android") version "1.9.20" apply false
+    alias(libs.plugins.android.application) apply false
+    alias(libs.plugins.android.library) apply false
+    alias(libs.plugins.kotlin.android) apply false
 }
 
 // <root>/build holds the native prebuild (build.sh: build/prebuild, x11_ui,

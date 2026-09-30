@@ -31,7 +31,7 @@ val toolchain = Properties().apply {
 
 android {
     namespace = "com.varcain.vsthost"
-    compileSdk = 35
+    compileSdk = libs.versions.compileSdk.get().toInt()
     // :app's NDK: libvsthost.so runs on the libc++_shared.so :app packages
     // (and hands it a std::unique_ptr, VstFactory.h).
     ndkVersion = toolchain.getProperty("ndk.version")
@@ -41,7 +41,7 @@ android {
         // dropping to 26 to align with consumer. If runtime needs an API 27+
         // symbol, surface via Build.VERSION.SDK_INT guards rather than raising
         // the floor.
-        minSdk = 26
+        minSdk = libs.versions.minSdk.get().toInt()
         // Library-level marker only — the consumer's per-flavor targetSdk
         // controls actual runtime behavior. In GuitarRackCraft, only the
         // `full` flavor (targetSdk=28) depends on this lib; the `playstore`
@@ -65,7 +65,7 @@ android {
     externalNativeBuild {
         cmake {
             path = file("src/main/cpp/CMakeLists.txt")
-            version = "3.22.1"
+            version = libs.versions.cmake.get()
         }
     }
 
@@ -86,8 +86,7 @@ android {
     }
 
     composeOptions {
-        // Matches :app and GuitarRackCraft's Kotlin 1.9.20.
-        kotlinCompilerExtensionVersion = "1.5.4"
+        kotlinCompilerExtensionVersion = libs.versions.composeCompiler.get()
     }
 
     compileOptions {
@@ -117,16 +116,15 @@ android {
 }
 
 dependencies {
-    // Align with :app — Compose BOM 2023.10.01, Kotlin 1.9.20 era.
-    val composeBom = platform("androidx.compose:compose-bom:2023.10.01")
-    implementation(composeBom)
+    // Same versions as :app (gradle/libs.versions.toml).
+    implementation(platform(libs.androidx.compose.bom))
 
-    implementation("androidx.core:core-ktx:1.13.1")
-    implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.6.2")
-    implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.6.2")
-    implementation("androidx.activity:activity-compose:1.8.1")
-    implementation("androidx.compose.ui:ui")
-    implementation("androidx.compose.ui:ui-graphics")
-    implementation("androidx.compose.foundation:foundation")
-    implementation("androidx.compose.material3:material3")
+    implementation(libs.androidx.core.ktx)
+    implementation(libs.androidx.lifecycle.runtime.ktx)
+    implementation(libs.androidx.lifecycle.viewmodel.compose)
+    implementation(libs.androidx.activity.compose)
+    implementation(libs.androidx.compose.ui)
+    implementation(libs.androidx.compose.ui.graphics)
+    implementation(libs.androidx.compose.foundation)
+    implementation(libs.androidx.compose.material3)
 }
