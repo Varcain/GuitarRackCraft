@@ -390,8 +390,8 @@ static void vstpocWriteFexConfig(const std::string& configFile, const std::strin
  * below) — every GL editor now goes through zink->Turnip instead of system
  * Adreno GLES. Adds the mesa + turnip dirs to LD_LIBRARY_PATH so mesa's deps
  * resolve (mesa-only libs incl. the stub libLLVM live in mesaDir; shared
- * libdrm/libxcb/libz in turnipDir; the app-built X11 libs in nativeLibDir win,
- * but they're the same Termux build). zink uses the system Vulkan loader by
+ * libdrm/libxcb/libz in turnipDir; the app-built X11 libs in nativeLibDir
+ * win). zink uses the system Vulkan loader by
  * default. */
 static void vstpocSetMesaZinkEnv(const std::string& wineRoot, const std::string& nativeLibDir) {
     const std::string mesaDir   = wineRoot + "/mesa";
@@ -989,9 +989,9 @@ bool WineHostProcess::start() {
         // nativeLibraryDir, but only when the binary IS the app's main
         // process. For our fork+execve'd wine subprocess, Bionic falls
         // back to the system default search path which doesn't include
-        // nativeLibraryDir. Explicitly add it so libX11.so / libxcb.so /
-        // libandroid-support.so (Termux-built X11 client libs we ship
-        // under their original SONAMEs) are found by winex11.so.
+        // nativeLibraryDir. Explicitly add it so the X11 client libs
+        // (libX11.so / libxcb.so / ..., shipped in the base APK under
+        // their own SONAMEs) are found by winex11.so.
         ::setenv("LD_LIBRARY_PATH", cfg_.nativeLibDir.c_str(), 1);
 
         // Wine environment. With native arm64 wine running under Bionic

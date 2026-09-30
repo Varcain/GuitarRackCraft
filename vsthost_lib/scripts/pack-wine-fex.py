@@ -389,21 +389,19 @@ def main() -> int:
         if device_path in pruned or (
                 "/aarch64-unix/" in device_path and Path(device_path).stem.lower() in orphan_stems):
             continue
-        # X11 libs ship with their original SONAME so Bionic's linker can
-        # resolve them by the names baked into winex11.so / libX11.so etc.
-        # Marker prefix tells us not to rename + not to put them in the
-        # manifest (WineSetup doesn't symlink them; they live straight in
-        # nativeLibraryDir where the dynamic linker auto-searches).
+        # Libraries that ship under their own SONAME (the _X11_RAW_ marker is
+        # historical - today freetype/png, gnutls and the adrenotools libs),
+        # so Bionic's linker resolves them by the names wine's libraries
+        # link against. Not renamed and not in the manifest: WineSetup
+        # doesn't symlink them; they live straight in nativeLibraryDir,
+        # which the dynamic linker searches.
         if device_path.startswith("_X11_RAW_/"):
             real_name = device_path.removeprefix("_X11_RAW_/")
             dst = out_jni / real_name
             strip_into(src, dst, args.strip)
-            # X11 libs from Termux .debs still need SONAME normalisation
-            # (libxcb.so.1 → libxcb.so etc) because Bionic only accepts
-            # unversioned names from nativeLibraryDir. Freetype/png are
-            # built clean by scripts/build-android-libs.sh so they
-            # already have unversioned SONAMEs — patchelf is a no-op
-            # for them.
+            # Bionic only accepts unversioned names from nativeLibraryDir;
+            # the libraries we build already have them, so this is normally
+            # a no-op.
             normalize_sonames(dst)
             total_bytes += dst.stat().st_size
             continue

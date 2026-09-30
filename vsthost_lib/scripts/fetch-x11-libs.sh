@@ -1,18 +1,8 @@
 #!/usr/bin/env bash
-# Fetches Termux's prebuilt arm64-android-bionic X11 client libraries and
-# X11 protocol headers into toolchain/x11-{libs,headers}/. These are
-# build-time inputs for winex11.drv compilation and runtime inputs
-# (shipped in jniLibs).
-#
-# Termux's libraries are built specifically for Android arm64 Bionic —
-# they link against libc.so (not glibc's libc.so.6) and use Termux's
-# libandroid-support.so shim for POSIX functions that Bionic doesn't
-# implement directly. Confirmed to load on OnePlus 12 untrusted_app
-# SELinux context.
-#
-# Versions are pinned to the current stable channel — bump if newer
-# upstream is needed. Termux packages mirror upstream X.org closely so
-# protocol-level changes between versions are rare.
+# Stages the host's X11 protocol headers into toolchain/x11-headers/ (build
+# inputs for winex11.drv) and Liberation/DejaVu host fonts into
+# toolchain/wine-fonts/. The X11 client libraries themselves are built from
+# source by the x11 phase; this script used to download Termux prebuilts.
 
 set -euo pipefail
 

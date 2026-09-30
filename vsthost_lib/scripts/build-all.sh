@@ -15,7 +15,8 @@
 #
 # Phases (default order — each phase's output feeds later ones):
 #   llvm      setup-fex-pivot.sh       — verify submodules + build llvm-mingw
-#   winedeps  fetch-x11-libs.sh        — stage Termux X11 libs + headers
+#   x11       (native cmake)           — X11 client libs from source → build/x11_ui/sysroot
+#   winedeps  fetch-x11-libs.sh        — host X11 headers + wine fonts
 #             build-android-libs.sh    — libpng + libfreetype for arm64 Bionic
 #             build-gnutls-android.sh  — libgnutls.so (wine secur32 / TLS)
 #   wine      build-wine-pe.sh         — wine PE DLLs (ARM64X); produces wine-tools
@@ -29,6 +30,7 @@
 #             build-libdrm-android.sh  — source libdrm (freedreno) → drm sysroot + turnip-libs
 #             build-turnip-icd.sh      — source Turnip Vulkan ICD libvulkan_freedreno.so (from mesa submodule)
 #             build-vulkan-loader.sh   — Khronos Vulkan loader libvulkan.so.1 (source) → turnip-libs.tar.gz
+#             build-lavapipe-android.sh — software Vulkan ICD (only with an Android LLVM install)
 #   hosts     build-vst-host.sh        — vst_host.exe + vst_host_x86.exe (PE guests)
 #             build-vst3-host.sh       — vst3_host.exe (VST3 hosting; needs vst3sdk submodule)
 #             build-uihost-stub.sh     — touch-keyboard COM stubs
