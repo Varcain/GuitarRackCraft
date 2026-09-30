@@ -45,8 +45,6 @@ on:
 
 env:
   ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
-  NDK_VSTHOST: 26.1.10909125
-  NDK_NATIVE: 27.2.12479018
   GRADLE_OPTS: -Dorg.gradle.daemon=false
   COMMON_APT: >-
     build-essential autoconf automake libtool bison flex gettext gperf
@@ -73,53 +71,13 @@ jobs:
       fex: ${{ steps.k.outputs.fex }}
       dxvk: ${{ steps.k.outputs.dxvk }}
       mesa: ${{ steps.k.outputs.mesa }}
+      ndk_vst: ${{ steps.k.outputs.ndk_vst }}
+      ndk_native: ${{ steps.k.outputs.ndk_native }}
     steps:
       - uses: actions/checkout@v4
-      - name: Compute VST host cache keys
+      - name: Compute the cache keys (scripts/ci/cache-keys.sh)
         id: k
-        run: |
-          os=${{ runner.os }}
-          gl()  { git rev-parse "HEAD:$1" 2>/dev/null || echo none; }
-          h16() { sha256sum | cut -c1-16; }
-
-          LLVM_C=$(gl vsthost_lib/external/llvm-mingw)
-          echo "llvm=llvm-$os-$LLVM_C" >> "$GITHUB_OUTPUT"
-
-          LLVMA_H=$( cat vsthost_lib/scripts/fetch-llvm-source.sh \
-                         vsthost_lib/scripts/build-llvm-android.sh | h16)
-          echo "llvm_android=llvm-android-$os-$LLVMA_H-ndk${NDK_VSTHOST}" >> "$GITHUB_OUTPUT"
-
-          WD=$(cat vsthost_lib/scripts/fetch-x11-libs.sh \
-                   vsthost_lib/scripts/build-android-libs.sh \
-                   vsthost_lib/scripts/build-gnutls-android.sh | h16)
-          echo "winedeps=winedeps-$os-$WD-ndk${NDK_VSTHOST}" >> "$GITHUB_OUTPUT"
-
-          X11_K=$( { cat cmake/targets/x11_sysroot.cmake vsthost_lib/scripts/build-all.sh; \
-                     git rev-parse HEAD:3rd_party/x11; } | h16)
-          echo "x11=x11-$os-$X11_K-ndk${NDK_NATIVE}" >> "$GITHUB_OUTPUT"
-
-          WINE_C=$(gl vsthost_lib/external/wine-upstream)
-          WINE_H=$( { find vsthost_lib/patches/wine -type f -name '*.patch' | sort | xargs -r cat; \
-                      cat vsthost_lib/scripts/build-wine-pe.sh \
-                          vsthost_lib/scripts/build-wine-android.sh \
-                          vsthost_lib/scripts/apply-wine-patches.sh; } | h16)
-          echo "wine=wine-$os-$WINE_C-$WINE_H-$LLVM_C" >> "$GITHUB_OUTPUT"
-
-          FEX_C=$(gl vsthost_lib/external/fex-upstream)
-          FEX_H=$(cat vsthost_lib/scripts/build-fex-pe.sh | h16)
-          echo "fex=fex-$os-$FEX_C-$FEX_H-$LLVM_C" >> "$GITHUB_OUTPUT"
-
-          DXVK_C=$(gl vsthost_lib/external/dxvk)
-          VKH_C=$(gl vsthost_lib/external/Vulkan-Headers)
-          GLSLANG_C=$(gl vsthost_lib/external/glslang)
-          DXVK_H=$( { find vsthost_lib/patches/dxvk -type f -name '*.patch' 2>/dev/null | sort | xargs -r cat; \
-                      cat vsthost_lib/scripts/build-dxvk.sh; } | h16)
-          echo "dxvk=dxvk-$os-$DXVK_C-$VKH_C-$GLSLANG_C-$DXVK_H-$LLVM_C" >> "$GITHUB_OUTPUT"
-
-          MESA_C=$(gl 3rd_party/mesa)
-          MESA_H=$( { find vsthost_lib/patches/mesa -type f -name '*.patch' 2>/dev/null | sort | xargs -r cat; \
-                      cat vsthost_lib/scripts/build-mesa-zink.sh vsthost_lib/scripts/build-libdrm-android.sh; } | h16)
-          echo "mesa=mesa-$os-$MESA_C-$MESA_H-ndk${NDK_VSTHOST}" >> "$GITHUB_OUTPUT"
+        run: scripts/ci/cache-keys.sh >> "$GITHUB_OUTPUT"
 
   llvm:
     needs: keys
@@ -152,6 +110,8 @@ jobs:
     needs: keys
     runs-on: ubuntu-latest
     timeout-minutes: 180
+    env:
+      NDK_VSTHOST: ${{ needs.keys.outputs.ndk_vst }}
     steps:
       - uses: actions/checkout@v4
       - name: Cache android LLVM install
@@ -185,6 +145,8 @@ jobs:
     needs: keys
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    env:
+      NDK_NATIVE: ${{ needs.keys.outputs.ndk_native }}
     steps:
       - uses: actions/checkout@v4
       - name: Cache X11 sysroot
@@ -200,9 +162,9 @@ jobs:
           sudo apt-get install -y --no-install-recommends $COMMON_APT $X11_APT $NATIVE_APT
           yes | "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
           "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" "ndk;${NDK_NATIVE}"
-      - name: Init X11/GL submodules
+      - name: Init X11 submodules
         if: steps.x11-cache.outputs.cache-hit != 'true'
-        run: git submodule update --init --recursive 3rd_party/x11 3rd_party/expat 3rd_party/mesa
+        run: git submodule update --init --recursive 3rd_party/x11
       - name: Build X11 sysroot
         if: steps.x11-cache.outputs.cache-hit != 'true'
         env:
@@ -213,6 +175,8 @@ jobs:
     needs: [keys, llvm, x11]
     runs-on: ubuntu-latest
     timeout-minutes: 300
+    env:
+      NDK_VSTHOST: ${{ needs.keys.outputs.ndk_vst }}
     steps:
       - uses: actions/checkout@v4
       - name: Cache winedeps
@@ -341,6 +305,8 @@ jobs:
     needs: keys
     runs-on: ubuntu-latest
     timeout-minutes: 90
+    env:
+      NDK_VSTHOST: ${{ needs.keys.outputs.ndk_vst }}
     steps:
       - uses: actions/checkout@v4
       - name: Cache Mesa-Zink asset
