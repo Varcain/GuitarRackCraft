@@ -115,13 +115,7 @@ function(brummer_add_ui_target TARGET_NAME OUTPUT_NAME SOURCE BUILD_DIR XPUTTY_T
     
     target_link_libraries(${TARGET_NAME} PRIVATE
         -Wl,--whole-archive ${XPUTTY_TARGET} -Wl,--no-whole-archive
-        "${X11_SYSROOT}/lib/libcairo.a"
-        "${X11_SYSROOT}/lib/libpixman-1.a"
-        "${X11_SYSROOT}/lib/libpng.a"
-        -L"${X11_SYSROOT}/lib"
-        X11 xcb Xau Xrender
-        xshm_stub
-        m z log dl
+        grc_x11_ui_libs
     )
     
     set_target_properties(${TARGET_NAME} PROPERTIES

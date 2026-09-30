@@ -89,15 +89,7 @@ target_compile_options(gxcabsim_ui PRIVATE
 target_link_options(gxcabsim_ui PRIVATE
     -shared -Wl,-z,noexecstack -Wl,-z,relro,-z,now
     -Wl,--gc-sections -Wl,--exclude-libs,ALL)
-target_link_libraries(gxcabsim_ui PRIVATE
-    "${X11_SYSROOT}/lib/libcairo.a"
-    "${X11_SYSROOT}/lib/libpixman-1.a"
-    "${X11_SYSROOT}/lib/libpng.a"
-    -L"${X11_SYSROOT}/lib"
-    X11 xcb Xau Xrender
-    xshm_stub
-    m z log dl
-)
+target_link_libraries(gxcabsim_ui PRIVATE grc_x11_ui_libs)
 set_target_properties(gxcabsim_ui PROPERTIES
     OUTPUT_NAME "gx_cabsim_ui"
     SUFFIX ".so"

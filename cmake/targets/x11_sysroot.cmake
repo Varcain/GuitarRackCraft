@@ -211,3 +211,17 @@ ExternalProject_Add(cairo
 )
 
 add_custom_target(x11_sysroot DEPENDS cairo x11_runtime_libs)
+
+# ─── What a cairo/X11 plugin UI links ────────────────────────────────────────
+# cairo and its static dependencies, the X11 client libraries the base APK
+# ships, and the MIT-SHM stub. Consumers still add_dependencies(x11_sysroot).
+add_library(grc_x11_ui_libs INTERFACE)
+target_link_libraries(grc_x11_ui_libs INTERFACE
+    "${X11_SYSROOT}/lib/libcairo.a"
+    "${X11_SYSROOT}/lib/libpixman-1.a"
+    "${X11_SYSROOT}/lib/libpng.a"
+    -L"${X11_SYSROOT}/lib"
+    X11 xcb Xau Xrender
+    xshm_stub
+    m z log dl
+)

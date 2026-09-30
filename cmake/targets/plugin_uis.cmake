@@ -155,13 +155,7 @@ foreach(_pdir IN LISTS _trunk_plugin_dirs)
     target_link_options(${_target} PRIVATE ${_ui_ldflags})
     target_link_libraries(${_target} PRIVATE
         -Wl,--whole-archive xputty_lib -Wl,--no-whole-archive
-        "${X11_SYSROOT}/lib/libcairo.a"
-        "${X11_SYSROOT}/lib/libpixman-1.a"
-        "${X11_SYSROOT}/lib/libpng.a"
-        -L"${X11_SYSROOT}/lib"
-        X11 xcb Xau Xrender
-        xshm_stub
-        m z log dl
+        grc_x11_ui_libs
     )
     # Build into a dir that mirrors the assets structure
     file(RELATIVE_PATH _rel_asset_path "${ASSETS_DIR}" "${_asset_dir}")
@@ -258,15 +252,7 @@ if(IS_DIRECTORY "${_gx_plugins_src}")
         target_compile_options(${_target} PRIVATE
             -fPIC -DANDROID -O2 -Wno-unused-parameter -DNO_XSHM)
         target_link_options(${_target} PRIVATE ${_ui_ldflags})
-        target_link_libraries(${_target} PRIVATE
-            "${X11_SYSROOT}/lib/libcairo.a"
-            "${X11_SYSROOT}/lib/libpixman-1.a"
-            "${X11_SYSROOT}/lib/libpng.a"
-            -L"${X11_SYSROOT}/lib"
-            X11 xcb Xau Xrender
-            xshm_stub
-            m z log dl
-        )
+        target_link_libraries(${_target} PRIVATE grc_x11_ui_libs)
         # Build into a dir that mirrors the assets structure
         file(RELATIVE_PATH _rel_asset_path "${ASSETS_DIR}" "${_asset_dir}")
         set_target_properties(${_target} PROPERTIES
