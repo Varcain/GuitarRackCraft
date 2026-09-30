@@ -130,6 +130,7 @@ patchelf --set-soname libEGL_vstpoc.so "$OUT/libEGL_vstpoc.so"
 python3 - "$OUT/libEGL_vstpoc.so" <<PY
 import importlib.util as u, sys
 from pathlib import Path
+sys.path.insert(0, "$repo_root/scripts")   # for its sibling import, wine_prune
 s = u.spec_from_file_location("p", "$repo_root/scripts/pack-wine-fex.py")
 m = u.module_from_spec(s); s.loader.exec_module(m)
 m.strip_symbol_versions(Path(sys.argv[1]))
