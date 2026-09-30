@@ -675,12 +675,17 @@ jobs:
           KEYSTORE_B64: ${{ secrets.KEYSTORE_BASE64 }}
 
       # ── 10. Patch version ────────────────────────────────────────────────
-      - name: Patch versionCode and versionName
+      - name: Set versionCode and versionName
+        env:
+          VERSION_CODE: ${{ inputs.version_code }}
+          VERSION_NAME: ${{ inputs.version_name }}
         run: |
-          sed -i \
-            -e 's/versionCode = [0-9]*/versionCode = ${{ inputs.version_code }}/' \
-            -e 's/versionName = ".*"/versionName = "${{ inputs.version_name }}"/' \
-            app/build.gradle.kts
+          # app/build.gradle.kts reads them as the grcVersionCode /
+          # grcVersionName Gradle properties.
+          [[ "$VERSION_CODE" =~ ^[0-9]+$ ]] || { echo "version_code must be an integer" >&2; exit 1; }
+          [[ "$VERSION_NAME" =~ ^[A-Za-z0-9._+-]+$ ]] || { echo "version_name has unexpected characters" >&2; exit 1; }
+          echo "ORG_GRADLE_PROJECT_grcVersionCode=$VERSION_CODE" >> "$GITHUB_ENV"
+          echo "ORG_GRADLE_PROJECT_grcVersionName=$VERSION_NAME" >> "$GITHUB_ENV"
 
       # ── 11. Build the VST ("full" flavor) release APK ────────────────────
       #     assembleFullRelease only — no playstore bundle/AAB is produced.
@@ -957,12 +962,17 @@ jobs:
           KEYSTORE_B64: ${{ secrets.KEYSTORE_BASE64 }}
 
       # ── 10. Patch version ────────────────────────────────────────────────
-      - name: Patch versionCode and versionName
+      - name: Set versionCode and versionName
+        env:
+          VERSION_CODE: ${{ inputs.version_code }}
+          VERSION_NAME: ${{ inputs.version_name }}
         run: |
-          sed -i \
-            -e 's/versionCode = [0-9]*/versionCode = ${{ inputs.version_code }}/' \
-            -e 's/versionName = ".*"/versionName = "${{ inputs.version_name }}"/' \
-            app/build.gradle.kts
+          # app/build.gradle.kts reads them as the grcVersionCode /
+          # grcVersionName Gradle properties.
+          [[ "$VERSION_CODE" =~ ^[0-9]+$ ]] || { echo "version_code must be an integer" >&2; exit 1; }
+          [[ "$VERSION_NAME" =~ ^[A-Za-z0-9._+-]+$ ]] || { echo "version_name has unexpected characters" >&2; exit 1; }
+          echo "ORG_GRADLE_PROJECT_grcVersionCode=$VERSION_CODE" >> "$GITHUB_ENV"
+          echo "ORG_GRADLE_PROJECT_grcVersionName=$VERSION_NAME" >> "$GITHUB_ENV"
 
       # ── 11. Build the Play Store AAB (playstore flavor, no VST) ─────────────────
       - name: Restore Gradle cache

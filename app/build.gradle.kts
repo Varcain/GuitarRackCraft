@@ -51,8 +51,11 @@ android {
         applicationId = "com.varcain.guitarrackcraft"
         minSdk = 26
         targetSdk = 35
-        versionCode = 100  // 0.1
-        versionName = "0.1-main"
+        // Releases set these with -PgrcVersionCode / -PgrcVersionName (CI:
+        // build-deploy.yml); a local device install can pass a higher code the
+        // same way. The fallbacks are the development defaults.
+        versionCode = providers.gradleProperty("grcVersionCode").map { it.toInt() }.getOrElse(100)  // 0.1
+        versionName = providers.gradleProperty("grcVersionName").getOrElse("0.1-main")
 
         val buildDate = SimpleDateFormat("yyyy-MM-dd").format(Date())
         val buildTime = SimpleDateFormat("HH:mm").format(Date())
