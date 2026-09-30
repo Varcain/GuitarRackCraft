@@ -29,6 +29,9 @@ on:
   pull_request:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
@@ -75,8 +78,8 @@ jobs:
     timeout-minutes: 180
     steps:
       - name: Free disk space
-        uses: jlumbroso/free-disk-space@main
-        with: { android: false, tool-cache: false, dotnet: true, haskell: true, large-packages: true, docker-images: true, swap-storage: true }
+        uses: jlumbroso/free-disk-space@ceedf095f4ec1a097402bc6bd80831f2e1a6fde6  # v2.0.0
+        with: { android: false, preinstalled-runtimes: false, dotnet: true, haskell: true, large-packages: true, docker-images: true, swap-storage: true }
       - uses: actions/checkout@v4
         with:
           submodules: recursive
@@ -161,6 +164,11 @@ jobs:
 
       - name: Build full debug APK
         run: ./gradlew assembleFullDebug
+
+      # Fails on Windows PE files packaged under lib/ as .so - what antivirus
+      # engines flagged in the full APK.
+      - name: Audit the APK's Windows binaries
+        run: python3 tools/vt_check.py audit app/build/outputs/apk/full/debug/app-full-debug.apk
 
       - name: Upload full debug APK
         uses: actions/upload-artifact@v4

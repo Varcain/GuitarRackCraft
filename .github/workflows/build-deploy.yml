@@ -48,6 +48,9 @@ on:
         type: boolean
         default: false
 
+permissions:
+  contents: read
+
 concurrency:
   group: build-deploy
 
@@ -81,8 +84,8 @@ jobs:
 
     steps:
       - name: Free disk space
-        uses: jlumbroso/free-disk-space@main
-        with: { android: false, tool-cache: false, dotnet: true, haskell: true, large-packages: true, docker-images: true, swap-storage: true }
+        uses: jlumbroso/free-disk-space@ceedf095f4ec1a097402bc6bd80831f2e1a6fde6  # v2.0.0
+        with: { android: false, preinstalled-runtimes: false, dotnet: true, haskell: true, large-packages: true, docker-images: true, swap-storage: true }
 
       # ── 1. Checkout & submodules ────────────────────────────────────────
       - name: Checkout
@@ -194,20 +197,24 @@ jobs:
 
       # ── 8. Decode release keystore ───────────────────────────────────────
       - name: Decode upload keystore
+        env:
+          KEYSTORE_B64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
         run: |
           if [ -z "$KEYSTORE_B64" ]; then
             echo "::error::KEYSTORE_BASE64 secret is not set"
             exit 1
           fi
           echo "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/upload.keystore"
-          # Verify the keystore is valid
-          keytool -list -keystore "$RUNNER_TEMP/upload.keystore" \
-            -storepass "${{ secrets.KEYSTORE_PASSWORD }}" -storetype JKS 2>&1 | head -5 \
-            || keytool -list -keystore "$RUNNER_TEMP/upload.keystore" \
-              -storepass "${{ secrets.KEYSTORE_PASSWORD }}" -storetype PKCS12 2>&1 | head -5
+          # keytool tells JKS from PKCS12 itself; the password stays off the
+          # command line.
+          if ! keytool -list -keystore "$RUNNER_TEMP/upload.keystore" \
+                 -storepass:env KEYSTORE_PASSWORD -alias "$KEY_ALIAS" >/dev/null; then
+            echo "::error::the keystore doesn't open with KEYSTORE_PASSWORD, or has no KEY_ALIAS entry"
+            exit 1
+          fi
           echo "Keystore decoded and validated OK"
-        env:
-          KEYSTORE_B64: ${{ secrets.KEYSTORE_BASE64 }}
 
       # ── 9. Patch version ─────────────────────────────────────────────────
       - name: Set versionCode and versionName
@@ -237,12 +244,13 @@ jobs:
             gradle-${{ runner.os }}-
 
       - name: Build VST release APK
-        run: |
-          ./gradlew assembleFullRelease \
-            -PRELEASE_STORE_FILE=${{ runner.temp }}/upload.keystore \
-            -PRELEASE_STORE_PASSWORD=${{ secrets.KEYSTORE_PASSWORD }} \
-            -PRELEASE_KEY_ALIAS=${{ secrets.KEY_ALIAS }} \
-            -PRELEASE_KEY_PASSWORD=${{ secrets.KEY_PASSWORD }}
+        env:
+          # app/build.gradle.kts reads them as the RELEASE_* Gradle properties.
+          ORG_GRADLE_PROJECT_RELEASE_STORE_FILE: ${{ runner.temp }}/upload.keystore
+          ORG_GRADLE_PROJECT_RELEASE_STORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          ORG_GRADLE_PROJECT_RELEASE_KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          ORG_GRADLE_PROJECT_RELEASE_KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: ./gradlew assembleFullRelease
 
       - name: Save Gradle cache
         if: "!cancelled() && steps.gradle-cache.outputs.cache-hit != 'true'"
@@ -265,6 +273,13 @@ jobs:
           fi
           echo "apk=$APK" >> "$GITHUB_OUTPUT"
 
+      # Fails on Windows PE files packaged under lib/ as .so - what antivirus
+      # engines flagged in the full APK.
+      - name: Audit the APK's Windows binaries
+        env:
+          APK: ${{ steps.artifacts.outputs.apk }}
+        run: python3 tools/vt_check.py audit "$APK"
+
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
@@ -273,8 +288,7 @@ jobs:
 
       # ── 12. GitHub Release ───────────────────────────────────────────────
       - name: Create GitHub Release
-        if: inputs.create_github_release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65  # v2.6.2
         with:
           tag_name: v${{ inputs.version_name }}
           name: Guitar RackCraft v${{ inputs.version_name }}
@@ -291,8 +305,6 @@ jobs:
     if: ${{ inputs.upload_to_play_store }}
     runs-on: ubuntu-latest
     timeout-minutes: 120
-    permissions:
-      contents: write
 
     steps:
       # ── 1. Checkout & submodules ────────────────────────────────────────
@@ -393,20 +405,24 @@ jobs:
 
       # ── 7. Decode upload keystore ────────────────────────────────────────
       - name: Decode upload keystore
+        env:
+          KEYSTORE_B64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
         run: |
           if [ -z "$KEYSTORE_B64" ]; then
             echo "::error::KEYSTORE_BASE64 secret is not set"
             exit 1
           fi
           echo "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/upload.keystore"
-          # Verify the keystore is valid
-          keytool -list -keystore "$RUNNER_TEMP/upload.keystore" \
-            -storepass "${{ secrets.KEYSTORE_PASSWORD }}" -storetype JKS 2>&1 | head -5 \
-            || keytool -list -keystore "$RUNNER_TEMP/upload.keystore" \
-              -storepass "${{ secrets.KEYSTORE_PASSWORD }}" -storetype PKCS12 2>&1 | head -5
+          # keytool tells JKS from PKCS12 itself; the password stays off the
+          # command line.
+          if ! keytool -list -keystore "$RUNNER_TEMP/upload.keystore" \
+                 -storepass:env KEYSTORE_PASSWORD -alias "$KEY_ALIAS" >/dev/null; then
+            echo "::error::the keystore doesn't open with KEYSTORE_PASSWORD, or has no KEY_ALIAS entry"
+            exit 1
+          fi
           echo "Keystore decoded and validated OK"
-        env:
-          KEYSTORE_B64: ${{ secrets.KEYSTORE_BASE64 }}
 
       # ── 8. Patch version ─────────────────────────────────────────────────
       - name: Set versionCode and versionName
@@ -435,12 +451,13 @@ jobs:
             gradle-${{ runner.os }}-
 
       - name: Build Play Store AAB (playstore flavor — no VST)
-        run: |
-          ./gradlew bundlePlaystoreRelease \
-            -PRELEASE_STORE_FILE=${{ runner.temp }}/upload.keystore \
-            -PRELEASE_STORE_PASSWORD=${{ secrets.KEYSTORE_PASSWORD }} \
-            -PRELEASE_KEY_ALIAS=${{ secrets.KEY_ALIAS }} \
-            -PRELEASE_KEY_PASSWORD=${{ secrets.KEY_PASSWORD }}
+        env:
+          # app/build.gradle.kts reads them as the RELEASE_* Gradle properties.
+          ORG_GRADLE_PROJECT_RELEASE_STORE_FILE: ${{ runner.temp }}/upload.keystore
+          ORG_GRADLE_PROJECT_RELEASE_STORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          ORG_GRADLE_PROJECT_RELEASE_KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          ORG_GRADLE_PROJECT_RELEASE_KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: ./gradlew bundlePlaystoreRelease
 
       - name: Save Gradle cache
         if: "!cancelled() && steps.gradle-cache.outputs.cache-hit != 'true'"
@@ -457,6 +474,10 @@ jobs:
         id: artifacts
         run: |
           AAB=$(find app/build/outputs/bundle/playstoreRelease -name '*.aab' | head -1)
+          if [ -z "$AAB" ]; then
+            echo "::error::No playstoreRelease AAB found"
+            exit 1
+          fi
           echo "aab=$AAB" >> "$GITHUB_OUTPUT"
 
       - name: Upload AAB artifact
@@ -468,18 +489,20 @@ jobs:
 
       # ── 11. Verify AAB signature ─────────────────────────────────────────
       - name: Verify AAB is signed
-        if: inputs.upload_to_play_store
+        env:
+          AAB: ${{ steps.artifacts.outputs.aab }}
         run: |
-          AAB="${{ steps.artifacts.outputs.aab }}"
-          echo "Checking JAR signature on $AAB"
-          jarsigner -verify -verbose -certs "$AAB" | head -20
-          jarsigner -verify "$AAB"
-          echo "AAB signature verified OK"
+          # jarsigner -verify exits 0 on an unsigned file too; only a file whose
+          # signature checks out prints "jar verified."
+          jarsigner -verify "$AAB" | tee "$RUNNER_TEMP/jarsigner.txt"
+          if ! grep -qx 'jar verified\.' "$RUNNER_TEMP/jarsigner.txt"; then
+            echo "::error::$AAB is not signed, or its signature doesn't verify"
+            exit 1
+          fi
 
       # ── 12. Play Store upload ────────────────────────────────────────────
       - name: Upload to Play Store
-        if: inputs.upload_to_play_store
-        uses: r0adkll/upload-google-play@v1
+        uses: r0adkll/upload-google-play@e738b9dd8f2476ea806d921b64aacd24f34515a5  # v1.1.5
         with:
           serviceAccountJsonPlainText: ${{ secrets.PLAY_STORE_KEY }}
           packageName: com.varcain.guitarrackcraft

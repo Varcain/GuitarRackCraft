@@ -43,6 +43,9 @@ on:
       mesa:
         value: ${{ jobs.keys.outputs.mesa }}
 
+permissions:
+  contents: read
+
 env:
   ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
   GRADLE_OPTS: -Dorg.gradle.daemon=false
@@ -93,8 +96,8 @@ jobs:
           key: ${{ needs.keys.outputs.llvm }}
       - name: Free disk space
         if: steps.cache.outputs.cache-hit != 'true'
-        uses: jlumbroso/free-disk-space@main
-        with: { android: true, tool-cache: false, dotnet: true, haskell: true, large-packages: true, docker-images: true, swap-storage: true }
+        uses: jlumbroso/free-disk-space@ceedf095f4ec1a097402bc6bd80831f2e1a6fde6  # v2.0.0
+        with: { android: true, preinstalled-runtimes: false, dotnet: true, haskell: true, large-packages: true, docker-images: true, swap-storage: true }
       - name: Build llvm-mingw
         if: steps.cache.outputs.cache-hit != 'true'
         run: |
@@ -122,8 +125,8 @@ jobs:
           key: ${{ needs.keys.outputs.llvm_android }}
       - name: Free disk space
         if: steps.cache.outputs.cache-hit != 'true'
-        uses: jlumbroso/free-disk-space@main
-        with: { android: false, tool-cache: false, dotnet: true, haskell: true, large-packages: true, docker-images: true, swap-storage: true }
+        uses: jlumbroso/free-disk-space@ceedf095f4ec1a097402bc6bd80831f2e1a6fde6  # v2.0.0
+        with: { android: false, preinstalled-runtimes: false, dotnet: true, haskell: true, large-packages: true, docker-images: true, swap-storage: true }
       - name: System deps + host LLVM 18 + NDK
         if: steps.cache.outputs.cache-hit != 'true'
         run: |
@@ -198,8 +201,8 @@ jobs:
           key: ${{ needs.keys.outputs.wine }}
       - name: Free disk space
         if: steps.winedeps-cache.outputs.cache-hit != 'true' || steps.wine-cache.outputs.cache-hit != 'true'
-        uses: jlumbroso/free-disk-space@main
-        with: { android: false, tool-cache: false, dotnet: true, haskell: true, large-packages: true, docker-images: true, swap-storage: true }
+        uses: jlumbroso/free-disk-space@ceedf095f4ec1a097402bc6bd80831f2e1a6fde6  # v2.0.0
+        with: { android: false, preinstalled-runtimes: false, dotnet: true, haskell: true, large-packages: true, docker-images: true, swap-storage: true }
       - name: System deps + NDK
         if: steps.winedeps-cache.outputs.cache-hit != 'true' || steps.wine-cache.outputs.cache-hit != 'true'
         run: |
@@ -251,8 +254,8 @@ jobs:
           key: ${{ needs.keys.outputs.fex }}
       - name: Free disk space
         if: steps.cache.outputs.cache-hit != 'true'
-        uses: jlumbroso/free-disk-space@main
-        with: { android: true, tool-cache: false, dotnet: true, haskell: true, large-packages: true, docker-images: true, swap-storage: true }
+        uses: jlumbroso/free-disk-space@ceedf095f4ec1a097402bc6bd80831f2e1a6fde6  # v2.0.0
+        with: { android: true, preinstalled-runtimes: false, dotnet: true, haskell: true, large-packages: true, docker-images: true, swap-storage: true }
       - name: Restore llvm-mingw
         if: steps.cache.outputs.cache-hit != 'true'
         uses: actions/cache/restore@v4
@@ -282,8 +285,8 @@ jobs:
           key: ${{ needs.keys.outputs.dxvk }}
       - name: Free disk space
         if: steps.cache.outputs.cache-hit != 'true'
-        uses: jlumbroso/free-disk-space@main
-        with: { android: true, tool-cache: false, dotnet: true, haskell: true, large-packages: true, docker-images: true, swap-storage: true }
+        uses: jlumbroso/free-disk-space@ceedf095f4ec1a097402bc6bd80831f2e1a6fde6  # v2.0.0
+        with: { android: true, preinstalled-runtimes: false, dotnet: true, haskell: true, large-packages: true, docker-images: true, swap-storage: true }
       - name: Restore llvm-mingw
         if: steps.cache.outputs.cache-hit != 'true'
         uses: actions/cache/restore@v4
@@ -317,8 +320,8 @@ jobs:
           key: ${{ needs.keys.outputs.mesa }}
       - name: Free disk space
         if: steps.cache.outputs.cache-hit != 'true'
-        uses: jlumbroso/free-disk-space@main
-        with: { android: false, tool-cache: false, dotnet: true, haskell: true, large-packages: true, docker-images: true, swap-storage: true }
+        uses: jlumbroso/free-disk-space@ceedf095f4ec1a097402bc6bd80831f2e1a6fde6  # v2.0.0
+        with: { android: false, preinstalled-runtimes: false, dotnet: true, haskell: true, large-packages: true, docker-images: true, swap-storage: true }
       - name: Build Mesa-Zink
         if: steps.cache.outputs.cache-hit != 'true'
         env:
