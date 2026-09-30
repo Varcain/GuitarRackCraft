@@ -53,8 +53,6 @@ concurrency:
 
 env:
   ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
-  NDK_VSTHOST: 26.1.10909125
-  NDK_NATIVE: 27.2.12479018
   GRADLE_OPTS: -Dorg.gradle.daemon=false
   COMMON_APT: >-
     build-essential autoconf automake libtool bison flex gettext gperf
@@ -117,103 +115,22 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends $COMMON_APT $X11_APT $NATIVE_APT
 
-      # ── 3. JDK 17 ───────────────────────────────────────────────────────
-      - name: Set up JDK 17
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: 17
+      # ── 3. JDK 17 + Android SDK packages ────────────────────────────────
+      - name: Android toolchain
+        uses: ./.github/actions/setup-android
 
-      # ── 4. Android SDK components (skip already-installed) ─────────────
-      - name: Install Android SDK components (both NDKs)
-        run: |
-          SDKMGR="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
-          yes | "$SDKMGR" --licenses >/dev/null || true
-          for pkg in "ndk;${NDK_NATIVE}" "ndk;${NDK_VSTHOST}" \
-                     "cmake;3.22.1" "platforms;android-34" "build-tools;34.0.0"; do
-            "$SDKMGR" "$pkg"
-          done
+      # ── 4. VST host components (built by the components jobs) ────────────
+      - name: Restore VST components
+        uses: ./.github/actions/vst-components
+        with: { keys: "${{ toJSON(needs.components.outputs) }}" }
 
-      # ── 5. VST host component caches ─────────────────────────────────────
-      # Restore the component outputs produced by this workflow's cache jobs
-      # before staging :vsthost_lib into the full APK.
-      - name: Restore winedeps
-        uses: actions/cache/restore@v4
-        with:
-          path: |
-            vsthost_lib/toolchain/x11-libs
-            vsthost_lib/toolchain/x11-headers
-            vsthost_lib/toolchain/wine-fonts
-            vsthost_lib/toolchain/android-libs
-            vsthost_lib/toolchain/gnutls-android-arm64
-          key: ${{ needs.components.outputs.winedeps }}
-          fail-on-cache-miss: true
-
-      - name: Restore wine output tar
-        uses: actions/cache/restore@v4
-        with:
-          path: vsthost_lib/wine-android-out.tar
-          key: ${{ needs.components.outputs.wine }}
-          fail-on-cache-miss: true
-
-      - name: Restore FEX Bin
-        uses: actions/cache/restore@v4
-        with:
-          path: |
-            vsthost_lib/external/fex-upstream/build-arm64ec/Bin
-            vsthost_lib/external/fex-upstream/build-wow64/Bin
-          key: ${{ needs.components.outputs.fex }}
-          fail-on-cache-miss: true
-
-      - name: Restore DXVK assets
-        uses: actions/cache/restore@v4
-        with:
-          path: vsthost_lib/src/main/assets/dxvk
-          key: ${{ needs.components.outputs.dxvk }}
-          fail-on-cache-miss: true
-
-      - name: Restore Mesa-Zink asset
-        uses: actions/cache/restore@v4
-        with:
-          path: vsthost_lib/src/main/assets/mesa-zink-libs.tar.gz
-          key: ${{ needs.components.outputs.mesa }}
-          fail-on-cache-miss: true
-
-      - name: Restore X11 sysroot
-        uses: actions/cache/restore@v4
-        with:
-          path: build/x11_ui
-          key: ${{ needs.components.outputs.x11 }}
-          fail-on-cache-miss: true
-
-      - name: Restore llvm-mingw install
-        # pack-wine-fex.py's wine prune check reads PE imports with this
-        # toolchain's llvm-readobj (needs LLVM >= 19 for the ARM64X EC view).
-        uses: actions/cache/restore@v4
-        with:
-          path: vsthost_lib/external/llvm-mingw/install
-          key: ${{ needs.components.outputs.llvm }}
-          fail-on-cache-miss: true
-
-      - name: Restore android LLVM install
-        uses: actions/cache/restore@v4
-        with:
-          path: vsthost_lib/external/llvm-android/install-android-arm64
-          key: ${{ needs.components.outputs.llvm_android }}
-          fail-on-cache-miss: true
-
-      - name: Unpack wine output into build dir
-        run: |
-          tar -xf vsthost_lib/wine-android-out.tar -C vsthost_lib/external/wine-upstream
-          test -x vsthost_lib/external/wine-upstream/build-android-arm64/loader/wine
-
-      # ── 6. Native build cache ─────────────────────────────────────────────
+      # ── 5. Native build cache ─────────────────────────────────────────────
       - name: Restore native build cache
         id: native-cache
         uses: ./.github/actions/native-cache
         with: { mode: restore }
 
-      # ── 7. ccache ─────────────────────────────────────────────────────────
+      # ── 6. ccache ─────────────────────────────────────────────────────────
       - name: Setup ccache
         run: |
           ccache --set-config=max_size=2G
@@ -245,7 +162,7 @@ jobs:
           ANDROID_NDK: ${{ env.ANDROID_SDK_ROOT }}/ndk/${{ env.NDK_VSTHOST }}
         run: cd vsthost_lib && bash scripts/build-all.sh turnip adrenotools hosts pack
 
-      # ── 8. Native build (Ninja handles incrementality) ──────────────────
+      # ── 7. Native build (Ninja handles incrementality) ──────────────────
       - name: Build native libraries
         # BUILD_VST=0: VST stack already staged from the cached components above.
         run: BUILD_VST=0 ./build.sh full
@@ -275,7 +192,7 @@ jobs:
           path: ~/.cache/ccache
           key: ccache-${{ runner.os }}-${{ github.sha }}
 
-      # ── 9. Decode release keystore ───────────────────────────────────────
+      # ── 8. Decode release keystore ───────────────────────────────────────
       - name: Decode upload keystore
         run: |
           if [ -z "$KEYSTORE_B64" ]; then
@@ -292,7 +209,7 @@ jobs:
         env:
           KEYSTORE_B64: ${{ secrets.KEYSTORE_BASE64 }}
 
-      # ── 10. Patch version ────────────────────────────────────────────────
+      # ── 9. Patch version ─────────────────────────────────────────────────
       - name: Set versionCode and versionName
         env:
           VERSION_CODE: ${{ inputs.version_code }}
@@ -305,7 +222,7 @@ jobs:
           echo "ORG_GRADLE_PROJECT_grcVersionCode=$VERSION_CODE" >> "$GITHUB_ENV"
           echo "ORG_GRADLE_PROJECT_grcVersionName=$VERSION_NAME" >> "$GITHUB_ENV"
 
-      # ── 11. Build the VST ("full" flavor) release APK ────────────────────
+      # ── 10. Build the VST ("full" flavor) release APK ────────────────────
       #     assembleFullRelease only — no playstore bundle/AAB is produced.
       - name: Restore Gradle cache
         id: gradle-cache
@@ -337,7 +254,7 @@ jobs:
             ~/.gradle/build-cache
           key: gradle-${{ runner.os }}-${{ hashFiles('**/*.gradle.kts', 'gradle/wrapper/gradle-wrapper.properties') }}
 
-      # ── 12. Upload APK artifact ──────────────────────────────────────────
+      # ── 11. Upload APK artifact ──────────────────────────────────────────
       - name: Find built APK
         id: artifacts
         run: |
@@ -354,7 +271,7 @@ jobs:
           name: guitarrackcraft-vst-${{ inputs.version_name }}-apk
           path: ${{ steps.artifacts.outputs.apk }}
 
-      # ── 13. GitHub Release ───────────────────────────────────────────────
+      # ── 12. GitHub Release ───────────────────────────────────────────────
       - name: Create GitHub Release
         if: inputs.create_github_release
         uses: softprops/action-gh-release@v2
@@ -365,7 +282,7 @@ jobs:
           prerelease: ${{ contains(inputs.version_name, 'beta') || contains(inputs.version_name, 'alpha') || contains(inputs.version_name, 'rc') }}
           generate_release_notes: true
 
-      # ── 14. Cleanup ──────────────────────────────────────────────────────
+      # ── 13. Cleanup ──────────────────────────────────────────────────────
       - name: Remove upload keystore
         if: always()
         run: rm -f "$RUNNER_TEMP/upload.keystore"
@@ -413,33 +330,18 @@ jobs:
             flex bison ocaml ocamlbuild ocaml-findlib libnum-ocaml-dev \
             faust libboost-dev
 
-      # ── 3. JDK 17 ───────────────────────────────────────────────────────
-      - name: Set up JDK 17
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: 17
+      # ── 3. JDK 17 + Android SDK packages ────────────────────────────────
+      - name: Android toolchain
+        uses: ./.github/actions/setup-android
+        with: { vst-ndk: false }
 
-      # ── 4. Android SDK components (skip already-installed) ─────────────
-      - name: Install Android SDK components
-        run: |
-          yes | $ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager --licenses || true
-          [ -d "$ANDROID_SDK_ROOT/ndk/27.2.12479018" ] || \
-            $ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager "ndk;27.2.12479018"
-          [ -d "$ANDROID_SDK_ROOT/cmake/3.22.1" ] || \
-            $ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager "cmake;3.22.1"
-          [ -d "$ANDROID_SDK_ROOT/platforms/android-34" ] || \
-            $ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager "platforms;android-34"
-          [ -d "$ANDROID_SDK_ROOT/build-tools/34.0.0" ] || \
-            $ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager "build-tools;34.0.0"
-
-      # ── 5. Native build cache ─────────────────────────────────────────────
+      # ── 4. Native build cache ─────────────────────────────────────────────
       - name: Restore native build cache
         id: native-cache
         uses: ./.github/actions/native-cache
         with: { mode: restore }
 
-      # ── 7. ccache ─────────────────────────────────────────────────────────
+      # ── 5. ccache ─────────────────────────────────────────────────────────
       - name: Setup ccache
         run: |
           sudo apt-get install -y --no-install-recommends ccache
@@ -459,12 +361,12 @@ jobs:
           restore-keys: |
             ccache-${{ runner.os }}-
 
-      # ── 8. Native build (Ninja handles incrementality) ──────────────────
+      # ── 6. Native build (Ninja handles incrementality) ──────────────────
       - name: Build native libraries
         # playstore flavor only — no VST, no full-flavor overlay.
         run: ./build.sh playstore
         env:
-          ANDROID_NDK: ${{ env.ANDROID_SDK_ROOT }}/ndk/27.2.12479018
+          ANDROID_NDK: ${{ env.ANDROID_SDK_ROOT }}/ndk/${{ env.NDK_NATIVE }}
           NATIVE_CACHE_EXACT: ${{ steps.native-cache.outputs.cache-hit }}
 
       - name: Dump ExternalProject logs on failure
@@ -489,7 +391,7 @@ jobs:
           path: ~/.cache/ccache
           key: ccache-${{ runner.os }}-${{ github.sha }}
 
-      # ── 9. Decode upload keystore ────────────────────────────────────────
+      # ── 7. Decode upload keystore ────────────────────────────────────────
       - name: Decode upload keystore
         run: |
           if [ -z "$KEYSTORE_B64" ]; then
@@ -506,7 +408,7 @@ jobs:
         env:
           KEYSTORE_B64: ${{ secrets.KEYSTORE_BASE64 }}
 
-      # ── 10. Patch version ────────────────────────────────────────────────
+      # ── 8. Patch version ─────────────────────────────────────────────────
       - name: Set versionCode and versionName
         env:
           VERSION_CODE: ${{ inputs.version_code }}
@@ -519,7 +421,7 @@ jobs:
           echo "ORG_GRADLE_PROJECT_grcVersionCode=$VERSION_CODE" >> "$GITHUB_ENV"
           echo "ORG_GRADLE_PROJECT_grcVersionName=$VERSION_NAME" >> "$GITHUB_ENV"
 
-      # ── 11. Build the Play Store AAB (playstore flavor, no VST) ─────────────────
+      # ── 9. Build the Play Store AAB (playstore flavor, no VST) ──────────────────
       - name: Restore Gradle cache
         id: gradle-cache
         uses: actions/cache/restore@v4
@@ -550,7 +452,7 @@ jobs:
             ~/.gradle/build-cache
           key: gradle-${{ runner.os }}-${{ hashFiles('**/*.gradle.kts', 'gradle/wrapper/gradle-wrapper.properties') }}
 
-      # ── 12. Upload workflow artifact (AAB only) ──────────────────────────
+      # ── 10. Upload workflow artifact (AAB only) ──────────────────────────
       - name: Find built AAB
         id: artifacts
         run: |
@@ -564,7 +466,7 @@ jobs:
           path: ${{ steps.artifacts.outputs.aab }}
 
 
-      # ── 14. Verify AAB signature ─────────────────────────────────────────
+      # ── 11. Verify AAB signature ─────────────────────────────────────────
       - name: Verify AAB is signed
         if: inputs.upload_to_play_store
         run: |
@@ -574,7 +476,7 @@ jobs:
           jarsigner -verify "$AAB"
           echo "AAB signature verified OK"
 
-      # ── 15. Play Store upload ────────────────────────────────────────────
+      # ── 12. Play Store upload ────────────────────────────────────────────
       - name: Upload to Play Store
         if: inputs.upload_to_play_store
         uses: r0adkll/upload-google-play@v1
@@ -585,7 +487,7 @@ jobs:
           track: internal
           status: draft
 
-      # ── 16. Cleanup ──────────────────────────────────────────────────────
+      # ── 13. Cleanup ──────────────────────────────────────────────────────
       - name: Remove upload keystore
         if: always()
         run: rm -f "$RUNNER_TEMP/upload.keystore"

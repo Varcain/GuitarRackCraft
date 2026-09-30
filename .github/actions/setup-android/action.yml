@@ -1,0 +1,64 @@
+# Copyright (C) 2026 Kamil Lulko <kamil.lulko@gmail.com>
+#
+# This file is part of Guitar RackCraft.
+#
+# Guitar RackCraft is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# Guitar RackCraft is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with Guitar RackCraft. If not, see <https://www.gnu.org/licenses/>.
+
+# JDK 17 and the Android SDK packages the build pins:
+#   - the NDKs from config/toolchain.properties (ndk.version for the app and
+#     the native prebuild, ndk.version.vst for the VST toolchain scripts);
+#   - the SDK CMake and compileSdk platform from gradle/libs.versions.toml;
+#   - build-tools 34.0.0, AGP 8.7's default (the build doesn't set
+#     buildToolsVersion).
+# Exports NDK_NATIVE and NDK_VSTHOST to the job's later steps.
+
+name: Android toolchain
+description: JDK 17 plus the NDKs, CMake, platform and build-tools the build pins
+
+inputs:
+  vst-ndk:
+    description: also install the VST toolchain scripts' NDK (ndk.version.vst)
+    default: 'true'
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-java@v4
+      with: { distribution: temurin, java-version: 17 }
+
+    - name: Install Android SDK packages
+      shell: bash
+      env:
+        VST_NDK: ${{ inputs.vst-ndk }}
+      run: |
+        prop() { sed -n "s/^$1=//p" config/toolchain.properties; }
+        catalog() { sed -n "s/^$1 = \"\(.*\)\"$/\1/p" gradle/libs.versions.toml; }
+        ndk_native="$(prop ndk.version)"
+        ndk_vst="$(prop ndk.version.vst)"
+        cmake="$(catalog cmake)"
+        compile_sdk="$(catalog compileSdk)"
+        for v in "$ndk_native" "$ndk_vst" "$cmake" "$compile_sdk"; do
+          [ -n "$v" ] || { echo "setup-android: a version pin is missing" >&2; exit 1; }
+        done
+        {
+          echo "NDK_NATIVE=$ndk_native"
+          echo "NDK_VSTHOST=$ndk_vst"
+        } >> "$GITHUB_ENV"
+
+        pkgs=("ndk;$ndk_native" "cmake;$cmake" "platforms;android-$compile_sdk" "build-tools;34.0.0")
+        if [ "$VST_NDK" = true ]; then pkgs+=("ndk;$ndk_vst"); fi
+        sdkmanager="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
+        # (yes dies of SIGPIPE once sdkmanager is done reading)
+        yes | "$sdkmanager" --licenses >/dev/null || true
+        "$sdkmanager" "${pkgs[@]}"

@@ -35,8 +35,6 @@ concurrency:
 
 env:
   ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
-  NDK_VSTHOST: 26.1.10909125
-  NDK_NATIVE: 27.2.12479018
   GRADLE_OPTS: -Dorg.gradle.daemon=false
   COMMON_APT: >-
     build-essential autoconf automake libtool bison flex gettext gperf
@@ -88,84 +86,12 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends $COMMON_APT $X11_APT $NATIVE_APT
 
-      - name: Set up JDK 17
-        uses: actions/setup-java@v4
-        with: { distribution: temurin, java-version: 17 }
+      - name: Android toolchain
+        uses: ./.github/actions/setup-android
 
-      - name: Install Android SDK components (both NDKs)
-        run: |
-          SDKMGR="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
-          yes | "$SDKMGR" --licenses >/dev/null || true
-          for pkg in "ndk;${NDK_NATIVE}" "ndk;${NDK_VSTHOST}" \
-                     "cmake;3.22.1" "platforms;android-34" "build-tools;34.0.0"; do
-            "$SDKMGR" "$pkg"
-          done
-
-      # ── Restore each component cache (read-only; fail fast if a build job
-      #    didn't populate it). These ARE the wine/FEX/DXVK/Mesa build outputs.
-      - name: Restore winedeps
-        uses: actions/cache/restore@v4
-        with:
-          path: |
-            vsthost_lib/toolchain/x11-libs
-            vsthost_lib/toolchain/x11-headers
-            vsthost_lib/toolchain/wine-fonts
-            vsthost_lib/toolchain/android-libs
-            vsthost_lib/toolchain/gnutls-android-arm64
-          key: ${{ needs.components.outputs.winedeps }}
-          fail-on-cache-miss: true
-      - name: Restore wine output tar
-        uses: actions/cache/restore@v4
-        with:
-          path: vsthost_lib/wine-android-out.tar
-          key: ${{ needs.components.outputs.wine }}
-          fail-on-cache-miss: true
-      - name: Restore FEX Bin
-        uses: actions/cache/restore@v4
-        with:
-          path: |
-            vsthost_lib/external/fex-upstream/build-arm64ec/Bin
-            vsthost_lib/external/fex-upstream/build-wow64/Bin
-          key: ${{ needs.components.outputs.fex }}
-          fail-on-cache-miss: true
-      - name: Restore DXVK assets
-        uses: actions/cache/restore@v4
-        with:
-          path: vsthost_lib/src/main/assets/dxvk
-          key: ${{ needs.components.outputs.dxvk }}
-          fail-on-cache-miss: true
-      - name: Restore Mesa-Zink asset
-        uses: actions/cache/restore@v4
-        with:
-          path: vsthost_lib/src/main/assets/mesa-zink-libs.tar.gz
-          key: ${{ needs.components.outputs.mesa }}
-          fail-on-cache-miss: true
-      - name: Restore X11 sysroot (from the x11 job — build.sh full reuses it, no rebuild)
-        uses: actions/cache/restore@v4
-        with:
-          path: build/x11_ui
-          key: ${{ needs.components.outputs.x11 }}
-          fail-on-cache-miss: true
-      - name: Restore llvm-mingw install
-        # pack-wine-fex.py's wine prune check reads PE imports with this
-        # toolchain's llvm-readobj (needs LLVM >= 19 for the ARM64X EC view).
-        uses: actions/cache/restore@v4
-        with:
-          path: vsthost_lib/external/llvm-mingw/install
-          key: ${{ needs.components.outputs.llvm }}
-          fail-on-cache-miss: true
-
-      - name: Restore android LLVM install (build-all turnip builds lavapipe step 8c5 when present)
-        uses: actions/cache/restore@v4
-        with:
-          path: vsthost_lib/external/llvm-android/install-android-arm64
-          key: ${{ needs.components.outputs.llvm_android }}
-          fail-on-cache-miss: true
-
-      - name: Unpack wine output into build dir
-        run: |
-          tar -xf vsthost_lib/wine-android-out.tar -C vsthost_lib/external/wine-upstream
-          test -x vsthost_lib/external/wine-upstream/build-android-arm64/loader/wine
+      - name: Restore VST components
+        uses: ./.github/actions/vst-components
+        with: { keys: "${{ toJSON(needs.components.outputs) }}" }
 
       # ── Native (build.sh full) cache + ccache + gradle.
       - name: Restore native build cache

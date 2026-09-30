@@ -1,0 +1,107 @@
+# Copyright (C) 2026 Kamil Lulko <kamil.lulko@gmail.com>
+#
+# This file is part of Guitar RackCraft.
+#
+# Guitar RackCraft is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# Guitar RackCraft is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with Guitar RackCraft. If not, see <https://www.gnu.org/licenses/>.
+
+# Restores the VST host component outputs that the vst-components workflow
+# built and cached (read-only; a miss fails the job - it means that
+# workflow didn't populate the cache), and unpacks wine's build tree.
+#
+#   - uses: ./.github/actions/vst-components
+#     with: { keys: "${{ toJSON(needs.components.outputs) }}" }
+
+name: VST components
+description: Restore the VST host components the vst-components workflow cached
+
+inputs:
+  keys:
+    description: the vst-components workflow's outputs (its cache keys), as JSON
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Restore winedeps
+      uses: actions/cache/restore@v4
+      with:
+        path: |
+          vsthost_lib/toolchain/x11-libs
+          vsthost_lib/toolchain/x11-headers
+          vsthost_lib/toolchain/wine-fonts
+          vsthost_lib/toolchain/android-libs
+          vsthost_lib/toolchain/gnutls-android-arm64
+        key: ${{ fromJSON(inputs.keys).winedeps }}
+        fail-on-cache-miss: true
+
+    - name: Restore wine output tar
+      uses: actions/cache/restore@v4
+      with:
+        path: vsthost_lib/wine-android-out.tar
+        key: ${{ fromJSON(inputs.keys).wine }}
+        fail-on-cache-miss: true
+
+    - name: Restore FEX Bin
+      uses: actions/cache/restore@v4
+      with:
+        path: |
+          vsthost_lib/external/fex-upstream/build-arm64ec/Bin
+          vsthost_lib/external/fex-upstream/build-wow64/Bin
+        key: ${{ fromJSON(inputs.keys).fex }}
+        fail-on-cache-miss: true
+
+    - name: Restore DXVK assets
+      uses: actions/cache/restore@v4
+      with:
+        path: vsthost_lib/src/main/assets/dxvk
+        key: ${{ fromJSON(inputs.keys).dxvk }}
+        fail-on-cache-miss: true
+
+    - name: Restore Mesa-Zink asset
+      uses: actions/cache/restore@v4
+      with:
+        path: vsthost_lib/src/main/assets/mesa-zink-libs.tar.gz
+        key: ${{ fromJSON(inputs.keys).mesa }}
+        fail-on-cache-miss: true
+
+    # build.sh reuses the x11 job's X11 sysroot instead of rebuilding it.
+    - name: Restore X11 sysroot
+      uses: actions/cache/restore@v4
+      with:
+        path: build/x11_ui
+        key: ${{ fromJSON(inputs.keys).x11 }}
+        fail-on-cache-miss: true
+
+    # pack-wine-fex.py's wine prune check reads PE imports with this
+    # toolchain's llvm-readobj (needs LLVM >= 19 for the ARM64X EC view).
+    - name: Restore llvm-mingw install
+      uses: actions/cache/restore@v4
+      with:
+        path: vsthost_lib/external/llvm-mingw/install
+        key: ${{ fromJSON(inputs.keys).llvm }}
+        fail-on-cache-miss: true
+
+    # build-all.sh turnip builds lavapipe (step 8c5) when it's present.
+    - name: Restore android LLVM install
+      uses: actions/cache/restore@v4
+      with:
+        path: vsthost_lib/external/llvm-android/install-android-arm64
+        key: ${{ fromJSON(inputs.keys).llvm_android }}
+        fail-on-cache-miss: true
+
+    - name: Unpack wine output into its build dir
+      shell: bash
+      run: |
+        tar -xf vsthost_lib/wine-android-out.tar -C vsthost_lib/external/wine-upstream
+        test -x vsthost_lib/external/wine-upstream/build-android-arm64/loader/wine
