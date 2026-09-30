@@ -56,9 +56,8 @@ object EngineInitHelper {
             Log.d(TAG, "Plugin lib dir (PAD): ${pluginDir.absolutePath}")
         }
 
-        // Preload X11/Mesa SONAME libs (libX11.so.6, libGL.so.1, etc.)
-        // BEFORE nativeInit(), because some DSP plugins (e.g. full AIDA-X via DPF)
-        // link against libX11.so.6 and lilv's dlopen will fail without it.
+        // The writable scratch dir plugin UI .so copies go to; the X11 client
+        // libs themselves load from nativeLibraryDir.
         engine.ensureX11LibsDir(context)
         val ok = engine.nativeInit()
         if (!ok) {

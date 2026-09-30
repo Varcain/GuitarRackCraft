@@ -246,23 +246,4 @@ ExternalProject_Add(mesa
     LOG_CONFIGURE TRUE LOG_BUILD TRUE
 )
 
-set(_mesa_rt_stamp "${X11_BUILD_DIR}/mesa_runtime_libs.stamp")
-add_custom_command(
-    OUTPUT "${_mesa_rt_stamp}"
-    COMMAND ${CMAKE_COMMAND} -E make_directory "${JNILIBS_DIR}"
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${X11_SYSROOT}/lib/libGL.so" "${JNILIBS_DIR}/libGL.so"
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${X11_SYSROOT}/lib/libglapi.so" "${JNILIBS_DIR}/libglapi.so"
-    COMMAND ${NDK_STRIP} --strip-unneeded "${JNILIBS_DIR}/libGL.so"
-    COMMAND ${NDK_STRIP} --strip-unneeded "${JNILIBS_DIR}/libglapi.so"
-    COMMAND ${CMAKE_COMMAND} -E make_directory "${APP_ROOT}/assets/x11_libs/arm64-v8a"
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${X11_SYSROOT}/lib/libGL.so" "${APP_ROOT}/assets/x11_libs/arm64-v8a/libGL.so.1"
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${X11_SYSROOT}/lib/libglapi.so" "${APP_ROOT}/assets/x11_libs/arm64-v8a/libglapi.so.0"
-    COMMAND ${NDK_STRIP} --strip-unneeded "${APP_ROOT}/assets/x11_libs/arm64-v8a/libGL.so.1"
-    COMMAND ${NDK_STRIP} --strip-unneeded "${APP_ROOT}/assets/x11_libs/arm64-v8a/libglapi.so.0"
-    COMMAND ${CMAKE_COMMAND} -E touch "${_mesa_rt_stamp}"
-    DEPENDS "${X11_SYSROOT}/lib/libGL.so" "${X11_SYSROOT}/lib/libglapi.so"
-)
-add_custom_target(mesa_runtime_libs DEPENDS "${_mesa_rt_stamp}")
-add_dependencies(mesa_runtime_libs mesa)
-
-add_custom_target(x11_sysroot DEPENDS cairo mesa_runtime_libs x11_runtime_libs)
+add_custom_target(x11_sysroot DEPENDS cairo x11_runtime_libs)

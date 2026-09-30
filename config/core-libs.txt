@@ -24,7 +24,3 @@ libXfixes.so*
 libXrandr.so*
 libXcursor.so*
 libXxf86vm.so*
-
-# Mesa GL
-libGL.so*
-libglapi.so*
