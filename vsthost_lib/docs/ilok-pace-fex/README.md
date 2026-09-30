@@ -82,7 +82,7 @@ adb shell am broadcast -n com.varcain.guitarrackcraft/com.varcain.guitarrackcraf
 2. Build: `libarm64ecfex.dll` (ninja in `external/fex-upstream/build-arm64ec`,
    target `Bin/libarm64ecfex.dll`) and `rpcrt4.dll` (the aarch64-windows make target).
    ⚠ `build-arm64ec/Bin` had a 5.1MB build ≠ the 4.8MB shipped — rebuild stock FEX
-   first or you ship the wrong base (see memory feedback_wine_patch_repack_traps).
+   first or you ship the wrong base.
 3. Hot-deploy with the symlink-race trick (cache copy + 0.1s `ln -sf;mv` loop beating
    applyManifestSymlinks) — libwine_* mapping: fex=f5eb, rpcrt4=f1aa, msi64=f134,
    msi32=f421, wineboot=f2f4, unix-ntdll=f00e.
@@ -97,4 +97,3 @@ adb shell am broadcast -n com.varcain.guitarrackcraft/com.varcain.guitarrackcraf
 - MS ARM64EC ABI (variadic x4/x5): https://learn.microsoft.com/en-us/windows/arm/arm64ec-abi
 - iLok WoA/emulation unsupported (PACE ARM64 beta, full rollout "through 2026"):
   https://help.ilok.com/faq_ilm.html
-- Memory notes: `feedback_ilok_pace_fex_arm64ec`, `feedback_ilok_sha256_processor_arch`

@@ -5,9 +5,9 @@ Triage a vst_host_<uuid>.log into a 1-page health report.
 Streaming parser (line-by-line) so a 500 MB log finishes in <5 s without
 loading the whole file. Recognises ~20 known signatures for plugin
 lifecycle, DXVK/D3D11 init, VEH events, exceptions, JUCE event-loop
-patterns, and X11 paint activity. Cross-references the agent memory
-index at /home/varcain/.claude/projects/-home-varcain-projects-private-vstpoc/memory/MEMORY.md
-to surface relevant [[memory-name]] links in the diagnosis line.
+patterns, and X11 paint activity. If $TRIAGE_MEMORY_INDEX names a notes
+index (Markdown lines "- [Title](file.md) — hook"), matching entries are
+cross-referenced as [[name]] links in the diagnosis line.
 
 Usage:
   triage-vst-log.py <local-log-path>
@@ -33,9 +33,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable
 
-MEMORY_INDEX = Path(
-    "/home/varcain/.claude/projects/-home-varcain-projects-private-vstpoc/memory/MEMORY.md"
-)
+# Optional notes index to cross-reference (see the module docstring).
+MEMORY_INDEX = Path(os.environ["TRIAGE_MEMORY_INDEX"]) if os.environ.get("TRIAGE_MEMORY_INDEX") else None
 APP_PACKAGE = "com.varcain.guitarrackcraft"
 CACHE_LOG_PREFIX = "cache/vst_host_v"
 
@@ -369,7 +368,7 @@ def load_memory_index() -> list[tuple[str, str, str]]:
     """Return list of (name, file, hook-text) tuples from MEMORY.md.
     Empty list if index can't be read (no fatal — diagnosis just doesn't
     cross-reference)."""
-    if not MEMORY_INDEX.exists():
+    if MEMORY_INDEX is None or not MEMORY_INDEX.exists():
         return []
     out = []
     for raw in MEMORY_INDEX.read_text(errors="replace").splitlines():

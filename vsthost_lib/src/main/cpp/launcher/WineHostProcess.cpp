@@ -29,7 +29,7 @@ namespace {
 // USER_STORM_BREAK / POST_GAP_MS) are LOAD-BEARING for JUCE plugin editors
 // (TH-U/X50 WM_USER+123 storms) but a ~100x latency tax for Chromium/Electron
 // managers — their message pump self-wakes by re-posting the same WM, which
-// our coalescer mistakes for a storm (see feedback_wm_throttle_chromium_tax).
+// our coalescer mistakes for a storm.
 // The knobs are read ONCE by the wineserver, which is SHARED per prefix, so
 // the choice can't be per-flow — only per-prefix-KIND. A v-prefix hosts a
 // standalone plugin (throttles ON); an e-/installer-prefix hosts an Electron
@@ -516,8 +516,8 @@ void WineHostProcess::setupWineEnvChild(const Config& cfg) {
         ::setenv("FEX_APP_CACHE_LOCATION",  cacheDir.c_str(),  1);
     }
     /* FEX_SMCCHECKS: SMC (self-modifying code) detection mode. "full"
-     * revalidates every JIT block before execution — ~3-5× perf cost
-     * (memory: feedback_fex_smcchecks_full_perf). "mtrack" is the FEX
+     * revalidates every JIT block before execution — ~3-5× perf cost.
+     * "mtrack" is the FEX
      * default (memory-tracking-based invalidation); much faster, correct
      * for code that doesn't legitimately rewrite itself mid-stream.
      *
@@ -535,14 +535,14 @@ void WineHostProcess::setupWineEnvChild(const Config& cfg) {
      * in a self-feeding WM_USER storm (UI frozen, audio xruns). Single-thread
      * JUCE fixed menus end-to-end; X50II + LeCto verified on device.
      * vst3_host ignores this env. Override via wine_env.txt (=0) to A/B.
-     * See vst_host.c per_plugin_editor_thread + memory
-     * feedback_x50_stomp_popup_grab_dismiss. */
+     * See vst_host.c per_plugin_editor_thread. */
     ::setenv("VSTPOC_LOAD_ON_EDITOR_THREAD", "1", 1);
     /* Plugin-specific env defaults must be set before wine_env.txt so local
      * testing can still override or disable them without a rebuild. */
     vstpocApplyPluginEnvDefaults(cfg);
     /* vstpoc: file-driven env overrides (VSTPOC_STACK_PCT etc.) — see start()'s
-     * inline copy. Both blocks per feedback_winehostprocess_dup_env. */
+     * inline copy - both env blocks must set it (vst_host launches with the
+     * inline one). */
     vstpocApplyEnvFile(cfg.cacheDir);
     /* FEX TSO config: leave at defaults.
      *   FEX_HALFBARRIERTSOENABLED=1 (default) — half-barrier optimisation
@@ -553,7 +553,7 @@ void WineHostProcess::setupWineEnvChild(const Config& cfg) {
      *
      * Both were forced to slow modes on 2026-05-23 as a memory-ordering
      * hypothesis for TH-U's drag-drop NULL deref — gdb later confirmed
-     * (feedback_thu_deep_deadlock) the bug was a JUCE-internal deadlock,
+     * the bug was a JUCE-internal deadlock,
      * not a FEX TSO race. The slow settings were paying a real-time
      * deadline tax for nothing. Reverted 2026-05-27 after Helix Native
      * showed audio stuttering under the combined FEX overhead. */
@@ -573,14 +573,14 @@ void WineHostProcess::setupWineEnvChild(const Config& cfg) {
     /* vstpoc patch 028 + storm breaker (0046) + post-gap (030): gate on prefix
      * KIND — plugin (v) prefixes keep them ON (JUCE storms); manager/Electron
      * (e/installer) prefixes turn them OFF (the Chromium ~100x msg-pump tax).
-     * See vstpocIsPluginPrefix + feedback_wm_throttle_chromium_tax. Read once
+     * See vstpocIsPluginPrefix. Read once
      * by the shared-per-prefix wineserver — kill wineserver to apply. */
     const bool vstpocPluginPfx = vstpocIsPluginPrefix(cfg.winePrefix);
     /* vstpoc 0061: the kernel-object-wait sent-message drain is the REAL fix for the
      * JUCE WaitableEvent cross-thread deadlock (TH-U), confirmed with the throttle OFF
      * — so the WM-storm THROTTLE is now disabled by default (it was only a probability
      * dial for that deadlock and taxes Chromium/Electron ~100x). The drain is GUI-gated
-     * (TEB server_queue) + plugin-prefix-gated. See feedback_thu_deep_deadlock. */
+     * (TEB server_queue) + plugin-prefix-gated. */
     ::setenv("WINE_VSTPOC_DRAIN_KERNEL_WAIT", vstpocPluginPfx ? "1" : "0", 1);
     ::setenv("WINE_VSTPOC_COALESCE_POSTS",   "0", 1);
     ::setenv("WINE_VSTPOC_USER_STORM_BREAK", "0", 1);
@@ -598,7 +598,7 @@ void WineHostProcess::setupWineEnvChild(const Config& cfg) {
      * the IK managers + their plugins live; the delicate v-prefix JUCE plugins
      * are left untouched (cache unvalidated there) and can opt in via
      * wine_env.txt (VSTPOC_REGCACHE=1). Read per process by ntdll; no wineserver
-     * restart needed. See feedback_amplitube_registry_heartbeat. */
+     * restart needed. */
     ::setenv("VSTPOC_REGCACHE", vstpocPluginPfx ? "0" : "1", 1);
     /* vstpoc: GPU present (winex11 patch 0048). Ship the editor's rendered
      * AHardwareBuffer GPU->GPU to the X server over the AHB side-channel +
@@ -611,7 +611,7 @@ void WineHostProcess::setupWineEnvChild(const Config& cfg) {
      * the channel/buffer fails. Scoped to non-plugin (e/installer) prefixes
      * where BIAS + the managers live (BIAS verified); v-prefix Vulkan editors
      * (TONEX/TH-U) stay on readback until render-verified. Opt out via
-     * wine_env.txt (VSTPOC_AHB_PRESENT=0). See feedback_bias_knob_drag_gpu_latency. */
+     * wine_env.txt (VSTPOC_AHB_PRESENT=0). */
     ::setenv("VSTPOC_AHB_PRESENT", vstpocPluginPfx ? "0" : "1", 1);
     /* GL editor zero-copy present (the AHB-bounce in win32u/opengl.c): allocate an
      * AHB, render the editor frame into it via wine's Mesa dma-buf import, and ship
@@ -619,7 +619,7 @@ void WineHostProcess::setupWineEnvChild(const Config& cfg) {
      * (framebuffer_surface_swap), with a readback fallback on any failure. Plugin
      * prefixes force AHB_PRESENT=0, so the GL path needs its own knob (default-on).
      * ~0.7 core saved vs readback on Ampbox. Override via wine_env.txt
-     * VSTPOC_AHB_GL=0. See feedback_gl_zerocopy_dmabuf_not_ahb. */
+     * VSTPOC_AHB_GL=0. */
     ::setenv("VSTPOC_AHB_GL", "1", 1);
     /* TH-U editor deadlock fix: drop win_data_mutex across the cross-thread send
      * in winex11 WM_STATE/_XEMBED PropertyNotify handlers. Default off in wine;
@@ -749,8 +749,7 @@ bool WineHostProcess::bootServicesIfNeeded() {
      * abort at the same custom action). Overwrite it to AMD64 here via the LIVE
      * wineserver wineboot just started (an offline system.reg edit would lose to
      * the in-memory copy). Only this Environment value changes; the
-     * SystemCpuInformation API is untouched, so plugin rendering is unaffected.
-     * See memory feedback_ilok_sha256_processor_arch. */
+     * SystemCpuInformation API is untouched, so plugin rendering is unaffected. */
     {
         pid_t gp = ::fork();
         if (gp == 0) {
@@ -928,7 +927,7 @@ bool WineHostProcess::start() {
      * if staging fails. Per-<uid> subdir avoids collisions in a chain (every imported
      * plugin is named "plugin.dll"). Stages the DLL only (current import flow is
      * single-DLL); a multi-file plugin would need its whole dir. Harmless for
-     * non-probing plugins. See reference_6505red_copy_protected. */
+     * non-probing plugins. */
     for (const auto& p : cfg_.pluginPaths) {
         std::string arg = p;
         if (!cfg_.winePrefix.empty() && p.size() > 1 && p[0] == '/') {
@@ -1039,8 +1038,7 @@ bool WineHostProcess::start() {
             ::setenv("WINEDLLDIR", dllDir.c_str(), 1);
             /* vstpoc: Turnip via libadrenotools (Android-HAL driver), like
              * Winlator. MUST be duplicated here — the actual vst_host fork uses
-             * this inline env block, not setupWineEnvChild (see
-             * feedback_winehostprocess_dup_env). win32u patch 0030 calls
+             * this inline env block, not setupWineEnvChild. win32u patch 0030 calls
              * adrenotools_open_libvulkan(HOOKDIR=nativeLibraryDir,
              * DRIVERDIR, DRIVERNAME). Do NOT set VSTPOC_VULKAN_LOADER — patch
              * 0024 keeps the android_surface bridge (correct for the Android
@@ -1077,8 +1075,7 @@ bool WineHostProcess::start() {
 
         /* FEX-Emu code caching — same setup as setupWineEnvChild. MUST be
          * duplicated here because the actual vst_host fork uses this
-         * inline env block, not setupWineEnvChild (see
-         * feedback_winehostprocess_dup_env). FEX picks up paths from
+         * inline env block, not setupWineEnvChild. FEX picks up paths from
          * FEX_APP_{CONFIG,DATA,CACHE}_LOCATION env vars; everything else
          * (EnableCodeCachingWIP etc) goes via Config.json in the config
          * dir. */
@@ -1117,7 +1114,7 @@ bool WineHostProcess::start() {
         /* VST2 default (2026-06-10): single-thread JUCE — load each plugin on
          * its editor thread (vst_host.c). Fixes the X50II stompbox-menu storm
          * (frozen UI + xruns); X50II + LeCto verified. Duplicated from
-         * setupWineEnvChild per feedback_winehostprocess_dup_env — THIS is the
+         * setupWineEnvChild — THIS is the
          * real vst_host launch path. wine_env.txt (=0) overrides for A/B. */
         ::setenv("VSTPOC_LOAD_ON_EDITOR_THREAD", "1", 1);
         /* Plugin-specific env defaults must be set before wine_env.txt so local
@@ -1130,9 +1127,8 @@ bool WineHostProcess::start() {
          * wins over the defaults above. */
         vstpocApplyEnvFile(cfg_.cacheDir);
         /* DXVK debug logging — duplicated from setupWineEnvChild because
-         * the actual vst_host launch uses this inline block. Per
-         * feedback_winehostprocess_dup_env: env vars must be in BOTH or
-         * they silently no-op on vst_host. "info" (not "debug") — see the
+         * the actual vst_host launch uses this inline block. Env vars
+         * must be in BOTH blocks or they silently no-op on vst_host. "info" (not "debug") — see the
          * setupWineEnvChild copy for why the per-shader debug dump is off. */
         ::setenv("DXVK_LOG_LEVEL", "info", 1);
         /* DXVK GPL off on Turnip — see setupWineEnvChild for the rationale
@@ -1238,11 +1234,11 @@ bool WineHostProcess::start() {
         /* vstpoc: gate the WM-storm throttles on prefix KIND — plugin (v)
          * prefixes ON (JUCE storms), manager/Electron (e/installer) prefixes
          * OFF (Chromium msg-pump tax). MUST match the setupWineEnvChild copy
-         * above (the dual-env-block trap). See feedback_wm_throttle_chromium_tax. */
+         * above (the dual-env-block trap). */
         const bool vstpocPluginPfx = vstpocIsPluginPrefix(cfg_.winePrefix);
         /* vstpoc 0061: drain is the real JUCE-WaitableEvent deadlock fix → WM-storm
          * throttle now disabled by default. MUST match the setupWineEnvChild copy
-         * above (dual-env-block trap). See feedback_thu_deep_deadlock. */
+         * above (dual-env-block trap). */
         ::setenv("WINE_VSTPOC_DRAIN_KERNEL_WAIT", vstpocPluginPfx ? "1" : "0", 1);
         ::setenv("WINE_VSTPOC_COALESCE_POSTS",   "0", 1);
         ::setenv("WINE_VSTPOC_USER_STORM_BREAK", "0", 1);
@@ -1251,12 +1247,12 @@ bool WineHostProcess::start() {
         /* vstpoc: registry open-handle cache (ntdll patch 0053) — non-plugin
          * (e/installer) prefixes ON, v-prefix plugins OFF. MUST match the
          * setupWineEnvChild copy above (dual-env-block trap). Kills AmpliTube's
-         * ~7000/sec registry-IPC heartbeat. See feedback_amplitube_registry_heartbeat. */
+         * ~7000/sec registry-IPC heartbeat. */
         ::setenv("VSTPOC_REGCACHE", vstpocPluginPfx ? "0" : "1", 1);
         /* vstpoc: GPU present (winex11 patch 0048) — e/installer prefixes ON,
          * v-prefix OFF. Ships the editor AHB GPU->GPU (zero-copy) vs CPU readback
          * + XPutImage. MUST match the setupWineEnvChild copy above (dual-block
-         * trap). BIAS verified. See feedback_bias_knob_drag_gpu_latency. */
+         * trap). BIAS verified. */
         ::setenv("VSTPOC_AHB_PRESENT", vstpocPluginPfx ? "0" : "1", 1);
         ::setenv("VSTPOC_AHB_GL", "1", 1);  /* GL editor AHB-bounce zero-copy present; mirror setupWineEnvChild (dual-block trap) */
         ::setenv("WINE_VSTPOC_WM_STATE_UNLOCK","1", 1);  /* TH-U editor: drop lock across cross-thread send */

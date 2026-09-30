@@ -12,8 +12,7 @@
 # under their REAL names. pack-wine-fex.py copies toolchain/adrenotools-libs/*
 # into src/main/jniLibs/arm64-v8a/. Without them the adrenotools path can't load
 # → AmpliTube's (and any Mesa-Zink) GL editor renders black. These were
-# previously built+copied by hand (lost on a fresh clone / CI). See
-# feedback_amplitube_turnip_driver_name_regression.
+# previously built+copied by hand (lost on a fresh clone / CI).
 #
 # gen/bcenabler_patch.h is pre-generated in the submodule, so build_asm.sh is
 # NOT needed (it only regenerates that header, and would need a host

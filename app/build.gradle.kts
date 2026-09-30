@@ -121,8 +121,7 @@ android {
             // app_data_file (denied at targetSdk >= 29). The full flavor
             // bundles :vsthost_lib (~1 GB of wine + FEX) and stays at 28
             // for that reason; sideload-only distribution (F-Droid, direct
-            // APK). See plan: prepare-plan-for-integrating-toasty-knuth.md
-            // and memory: feedback_targetsdk35_blocked.md.
+            // APK).
             targetSdk = 28
             buildConfigField("boolean", "USE_ASSET_PACKS", "false")
             buildConfigField("boolean", "HAS_VST_HOST",   "true")
@@ -274,7 +273,7 @@ dependencies {
     // X11 plugin UIs: native EGL + ANativeWindow (see app/src/main/cpp/x11/)
 
     // VST hosting (wine + FEX, ~1 GB) — only in the `full` flavor, never in
-    // `playstore`. See plan: prepare-plan-for-integrating-toasty-knuth.md.
+    // `playstore`.
     "fullImplementation"(project(":vsthost_lib"))
 
     // Core Android

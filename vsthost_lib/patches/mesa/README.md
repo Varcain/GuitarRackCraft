@@ -9,8 +9,7 @@ context via zink → Turnip, needed by JUCE desktop-GLSL plugin editors
 
 The built `.so` files live in `toolchain/mesa-zink-libs/` and the packaged
 `mesa-zink-libs.tar.gz` — **both gitignored** (large build artifacts). This dir
-is the source-of-truth to *regenerate* them. See `project_zink_layer3_state`
-memory for the full root-cause history of each fix.
+is the source-of-truth to *regenerate* them.
 
 ## ► Just run the script
 `scripts/build-mesa-zink.sh` does everything below and is wired into

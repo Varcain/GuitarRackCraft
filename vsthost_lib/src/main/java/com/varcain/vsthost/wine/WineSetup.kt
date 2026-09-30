@@ -73,7 +73,7 @@ object WineSetup {
     private const val SETUP_VERSION = 40  // v39: patch 0061 — kernelbase WaitForSingleObjectEx/WaitForMultipleObjectsEx sent-msg drain on the JUCE WaitableEvent (kernel-object) wait, the TH-U deadlock fix; bump to re-extract the rebuilt kernelbase.dll. // v38: DXVK/D3D11 plugin editors (AmpliTube, Ampbox) now RENDER on software lavapipe. Two lavapipe-build roots, both ours: (1) lavapipe was built with empty -Dplatforms so LVP_USE_WSI_PLATFORM was undefined → lvp_device.c dropped VK_KHR_swapchain from its tables → DXVK couldn't create the D3D11 device. Fix = -DLVP_USE_WSI_PLATFORM in build-lavapipe-android.sh (the headless sw WSI was already compiled). (2) llvmpipe's DETECT_OS_LINUX device-memory path (forced by MESA_FORCE_LINUX) backs allocations with a shared memfd + mmap(MAP_SHARED), which Android untrusted_app seccomp blocks → map_memory returned MAP_FAILED → vkMapMemory handed DXVK -1 → c0000005. Fix = patches/mesa/0004 gates the memfd path behind !defined(MESA_FORCE_LINUX) → plain malloc on Android. Plus vulkan-loader/0001 now also enumerates VK_KHR_swapchain (device) and win32u 0059 forces has_VK_KHR_swapchain under VSTPOC_FORCE_LAVAPIPE. Run with MESA_VK_WSI_HEADLESS_SWAPCHAIN=1. bump so installs re-extract the rebuilt lavapipe + loader. // v37: turnip-libs.tar.gz Khronos loader (libvulkan.so.1) patched to ENUMERATE VK_KHR_surface (vulkan-loader/0001). Built software-only (all platform WSI off), the loader advertised no surface extensions and lavapipe (empty platforms) only enumerates VK_EXT_headless_surface, so DXVK's required VK_KHR_surface was absent → D3D11/DXVK editors (AmpCraft, Ampbox) crashed on a NULL instance on lavapipe. With the loader advertising VK_KHR_surface (it always implements the trampolines) + win32u patch 0059 rewriting the host surface to VK_EXT_headless_surface, DXVK editors now render on lavapipe. bump so installs re-extract the patched loader. // v36: lavapipe (Mesa software Vulkan, libvulkan_lvp.so + lvp_icd.aarch64.json) added to turnip-libs.tar.gz, and the mesa-zink shim (vulkan_turnip_shim) gained a lavapipe final fallback + VSTPOC_FORCE_LAVAPIPE gate. The universal software-Vulkan floor: when no GPU Vulkan can run zink/DXVK (non-Adreno, or a vendor Vulkan lacking robustness2/nullDescriptor), the editor still renders (slow but correct). bump so installs re-extract both new assets. // v35: mesa-zink-libs.tar.gz vulkan_turnip_shim now falls back to the system Vulkan (adrenotools no-driver, then /system/lib64/libvulkan.so) when Turnip/adrenotools is unavailable — so zink/the GL editor isn't Adreno-locked. bump so installs re-extract the new shim. // v34: turnip-libs.tar.gz AdrenoTools HAL Turnip (vulkan.ad07xx.so, exports HMI) is now BUILT FROM SOURCE (mesa 24.2.8 submodule, -Dplatforms=android -Dandroid-stub=true -Dplatform-sdk-version=34, kgsl) instead of the K11MCH1 Turnip_v26.0.0_R8.zip prebuilt — Phase 3 (final) of the prebuilt→source migration; the last prebuilt + last fetch-*.sh retired. structural match to R8 (HMI + identical DT_NEEDED). bump so existing installs re-extract
     // v33: turnip-libs.tar.gz Turnip ICD (libvulkan_freedreno.so) + libdrm.so are now BUILT FROM SOURCE (mesa 24.2.8 submodule, no-WSI -Dplatforms= + libdrm-2.4.125) instead of Termux .debs — Phase 2 of the prebuilt→source migration; the entire Termux WSI cluster (libxcb*/wayland/xshmfence/android-shmem/ffi/zstd/libz.so.1) is dropped. bump so existing installs re-extract the new asset
     // v32: turnip-libs.tar.gz's Khronos Vulkan loader (libvulkan.so.1) is now BUILT FROM SOURCE (external/Vulkan-Loader v1.3.296, CMAKE_SYSTEM_NAME=Linux generic discovery) instead of the Termux vulkan-loader-generic .deb — Phase 1 of the prebuilt→source migration; bump so existing installs re-extract the swapped loader
-    // v31: turnip-libs.tar.gz now bundles the AdrenoTools HAL Turnip (vulkan.ad07xx.so, exports HMI) alongside the Khronos ICD — the HAL driver is the adrenotools/zink PRIMARY GPU path (kgsl) and was previously only device-pushed (lost on clean reinstall → AmpliTube black). See feedback_amplitube_turnip_driver_name_regression
+    // v31: turnip-libs.tar.gz now bundles the AdrenoTools HAL Turnip (vulkan.ad07xx.so, exports HMI) alongside the Khronos ICD — the HAL driver is the adrenotools/zink PRIMARY GPU path (kgsl) and was previously only device-pushed (lost on clean reinstall → AmpliTube black)
     // v30: repackaged mesa-zink-libs.tar.gz with the 6 zink fixes (kopper/swrast dri_target, EGL_OPENGL_API, zink-HW pdev, etc.) — the asset was stale (only device-pushed before); fixes "DRI_SWRast version 5" fatal after a data wipe
 
     data class Setup(
@@ -1176,7 +1176,7 @@ object WineSetup {
      *  "ContainerFormat" value (what CreateDecoder matches on — load-bearing) plus the
      *  CATID_WICBitmapDecoders\Instance\<clsid> entry so the enumerator finds it.
      *  Purely additive registry entries for a shipped built-in DLL → safe for all
-     *  plugins. See reference_6505red_copy_protected + feedback_com_class_registration_seed. */
+     *  plugins. */
     private fun seedWicDecoders(winePrefix: File) {
         val systemReg = File(winePrefix, "system.reg")
         if (!systemReg.exists()) return
@@ -1236,7 +1236,7 @@ object WineSetup {
      *  decoded → vector-grid fallback). A symlink is a REG_LINK (`#link`) value the
      *  plain-text seeders can't emit, so we generate the UTF-16LE hex(6) target (no
      *  trailing NUL — matches wine's on-disk symlinks) and convert the bare key in
-     *  place. See reference_6505red_copy_protected. */
+     *  place. */
     private fun seedWow64ClassesLink(winePrefix: File) {
         val systemReg = File(winePrefix, "system.reg")
         if (!systemReg.exists()) return
@@ -1666,8 +1666,7 @@ object WineSetup {
          * Win10+ (SHA256-capable). On a minimal Android prefix that 32-bit view is
          * empty (full wineboot, which mirrors it, never runs), so the check reads
          * NOT_FOUND and shows "Installs on Windows 7 require SHA256 support" and
-         * aborts. Seeding the Wow6432Node view clears it. See memory
-         * feedback_ilok_sha256_processor_arch. */
+         * aborts. Seeding the Wow6432Node view clears it. */
         val sysBody = """
 
 #vstpoc-win11-currentversion-v2

@@ -109,5 +109,5 @@ already proves the host-window pattern on this exact X server.
 
 ## Out of scope
 
-The BIAS caret (FEX miscompile) — orthogonal; resume that via the differential branch-trace
-([[feedback_fex_custom_build_deploy]]). This migration neither helps nor hinders it.
+The BIAS caret (FEX miscompile) — orthogonal; resume that via the differential branch-trace.
+This migration neither helps nor hinders it.

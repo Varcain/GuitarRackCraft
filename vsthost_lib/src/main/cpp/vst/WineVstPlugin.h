@@ -22,7 +22,7 @@ namespace vsthost {
  * Latency: at least one block of round-trip (push input now → pull output
  * next call). Acceptable for the use case; documented in the integration
  * plan. Never zero-pad short input — feeder upstream guarantees full
- * blocks (feedback_vst_host_no_zero_pad).
+ * blocks.
  */
 class WineVstPlugin : public guitarrackcraft::IPlugin {
 public:

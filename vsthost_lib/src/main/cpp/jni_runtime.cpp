@@ -255,7 +255,7 @@ Java_com_varcain_vsthost_NativeBridge_nativeStartInstaller(
              * for any exe that ships an Electron resources/app.asar sibling, so
              * it survives a data wipe (cache/exe_args.txt lives in the wiped
              * cache dir). Plain installers (Inno/NSIS) have no app.asar → no
-             * flags → unaffected. See project_ik_product_manager_bringup. */
+             * flags → unaffected. */
             {
                 const size_t slash = exePath.find_last_of('/');
                 const std::string exeDir =

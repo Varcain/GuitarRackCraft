@@ -330,8 +330,7 @@ void WineVstPlugin::process(const float* const* inputs,
     // 2) pull processed output. There's a ≥1-block round-trip latency by
     //    design; pulled < numFrames is expected at startup and on any
     //    transient stall. Zero-fill the gap (don't reuse stale data) and
-    //    bump the underrun counter. Never zero-pad inputs upstream —
-    //    feedback_vst_host_no_zero_pad.
+    //    bump the underrun counter. Never zero-pad inputs upstream.
     const int32_t pulled = ring_->pullAudio(outputs[0], outputs[1], static_cast<int32_t>(numFrames));
     if (pulled < static_cast<int32_t>(numFrames)) {
         for (int32_t i = pulled; i < static_cast<int32_t>(numFrames); ++i) {

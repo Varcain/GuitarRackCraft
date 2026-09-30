@@ -59,7 +59,7 @@ for p in "${patches[@]}"; do
         # (diffed against a different base) — DON'T fuzz it in silently; that
         # hides drift and ships subtly-wrong hunks. Re-export it against the
         # current tree (apply the prior patches, hand-resolve, `git diff`) so a
-        # future git apply is exact. See feedback_wine_patch_repack_traps.
+        # future git apply is exact.
         echo "  ! $name — does not apply cleanly (stale base — re-export it)"
         echo "    inspect with: git -C $WINE_DIR apply --3way $p"
         exit 1

@@ -136,7 +136,7 @@ static void logHex(const char* label, const uint8_t* data, size_t len) {
 using namespace X11Op;
 using namespace X11Event;
 
-/* P1 GPU compositor (see memory project_gpu_xserver_upgrade). When true,
+/* P1 GPU compositor. When true,
  * renderLoop composites the editor layer and each popup as separate textured
  * quads on the GPU in z-order (painter's algorithm) instead of CPU-memcpy'ing
  * popup pixels into the editor framebuffer. This is the structural foundation
@@ -486,8 +486,7 @@ struct X11NativeDisplay::Impl {
      * EITHER dimension, so treat any overlay with a sub-32px dimension as a
      * shadow strip and skip it for BOTH rendering and hit-testing (the two must
      * agree or clicks land on an invisible strip). This restores the proven
-     * pre-2026-06-09 filter; see feedback_popup_overlay_has_content and
-     * feedback_x50_stomp_popup_grab_dismiss. A real popup must also have been
+     * pre-2026-06-09 filter. A real popup must also have been
      * PutImage'd (hasContent) — an unpainted overlay is invisible, so a click
      * on it is meaningless and would otherwise route to wine's internal
      * never-displayed helper windows (e.g. the 166x45 IME helper at 0,0). */
@@ -1554,8 +1553,7 @@ struct X11NativeDisplay::Impl {
      * coords) and dismiss; wine then XUngrabPointers. Our old stub acked the
      * grab but routed by geometry, so outside-clicks hit the main editor and
      * the menu could never close ("UI freeze"). Set/cleared on the connection
-     * thread (case 26/27), read on the touch-drain thread → atomic.
-     * See feedback_x50_stomp_popup_grab_dismiss. */
+     * thread (case 26/27), read on the touch-drain thread → atomic. */
     std::atomic<uint32_t> xPointerGrabWindow_{0};
     std::atomic<bool>     xPointerGrabOwnerEvents_{false};
 
@@ -1783,11 +1781,11 @@ struct X11NativeDisplay::Impl {
                      * 0x200007 → ignored; (2) `explorer.exe /desktop=` launch →
                      * frame created but as a separate top-level NOT in the editor's
                      * parent chain + a stray console; (3) focus the largest
-                     * non-desktop root-child = approach A → did not land. See
-                     * memory feedback_bias_text_input_lag.md cont.8–11 for the full
-                     * map + remaining ideas (re-parent editor under frame; suppress
-                     * console via FreeConsole/DETACHED_PROCESS; identify the frame
-                     * by WM_CLASS=explorer.exe). For now: safe editor focus. */
+                     * non-desktop root-child = approach A → did not land.
+                     * Remaining ideas: re-parent the editor under the frame;
+                     * suppress the console via FreeConsole/DETACHED_PROCESS;
+                     * identify the frame by WM_CLASS=explorer.exe. For now: safe
+                     * editor focus. */
                     (void)vdeskWindow;
                     if (bestKeyTarget) topLevel = bestKeyTarget;
                     uint32_t fm = focusModeMask_.load(std::memory_order_relaxed);

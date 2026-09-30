@@ -47,7 +47,6 @@ android {
         // `full` flavor (targetSdk=28) depends on this lib; the `playstore`
         // flavor (targetSdk=35) does not, because wine's PE relocations need
         // pre-Android-10 SELinux execmod that's denied at targetSdk >= 29.
-        // See vstpoc memory: feedback_targetsdk35_blocked.md
         targetSdk = 28
 
         ndk {

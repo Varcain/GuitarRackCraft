@@ -16,7 +16,7 @@
 # reference). Run after `git submodule update --init --recursive 3rd_party/mesa`.
 #
 # Called by scripts/build-all.sh (step "build-mesa-zink"); also runnable alone.
-# See patches/mesa/README.md and project_zink_layer3_state for the full history.
+# See patches/mesa/README.md for the full history.
 
 set -euo pipefail
 
