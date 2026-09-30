@@ -16,7 +16,7 @@
 # along with Guitar RackCraft. If not, see <https://www.gnu.org/licenses/>.
 
 # =============================================================================
-# cmake/targets/x11_sysroot.cmake — Build X11/Cairo/Mesa dependency chain
+# cmake/targets/x11_sysroot.cmake — Build the X11/Cairo dependency chain
 # =============================================================================
 
 set(_x11_dir    "${THIRD_PARTY}/x11")
@@ -207,42 +207,6 @@ ExternalProject_Add(cairo
     INSTALL_COMMAND ninja -C <BINARY_DIR> install
     DEPENDS libX11 libXext libXrender pixman libpng
     INSTALL_BYPRODUCTS "${X11_SYSROOT}/lib/libcairo.a"
-    LOG_CONFIGURE TRUE LOG_BUILD TRUE
-)
-
-# ─── 8. Mesa deps ───────────────────────────────────────────────────────────
-set(EXPAT_SRC "${THIRD_PARTY}/expat/expat")
-ExternalProject_Add(expat
-    SOURCE_DIR "${EXPAT_SRC}" BINARY_DIR "${X11_BUILD_DIR}/expat" INSTALL_DIR "${X11_SYSROOT}"
-    CMAKE_ARGS -DCMAKE_TOOLCHAIN_FILE=${CMAKE_TOOLCHAIN_FILE} -DANDROID_ABI=${ANDROID_ABI} -DANDROID_PLATFORM=${ANDROID_PLATFORM} -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=<INSTALL_DIR> -DBUILD_SHARED_LIBS=OFF -DEXPAT_BUILD_TOOLS=OFF -DEXPAT_BUILD_EXAMPLES=OFF -DEXPAT_BUILD_TESTS=OFF -DEXPAT_BUILD_DOCS=OFF -DEXPAT_SHARED_LIBS=OFF ${NDK_CCACHE_CMAKE_ARGS}
-    INSTALL_BYPRODUCTS "${X11_SYSROOT}/lib/libexpat.a"
-    LOG_CONFIGURE TRUE LOG_BUILD TRUE
-)
-
-set(_zlib_stamp "${X11_BUILD_DIR}/zlib_sysroot.stamp")
-add_custom_command(
-    OUTPUT "${_zlib_stamp}"
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${NDK_SYSROOT}/usr/lib/aarch64-linux-android/libz.a" "${X11_SYSROOT}/lib/libz.a"
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${NDK_SYSROOT}/usr/include/zlib.h" "${X11_SYSROOT}/include/zlib.h"
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${NDK_SYSROOT}/usr/include/zconf.h" "${X11_SYSROOT}/include/zconf.h"
-    COMMAND ${CMAKE_COMMAND} -DOUTPUT=${X11_SYSROOT}/lib/pkgconfig/zlib.pc -DPREFIX=${X11_SYSROOT} -P "${CMAKE_BINARY_DIR}/scripts/WriteZlibPC.cmake"
-    COMMAND ${CMAKE_COMMAND} -E touch "${_zlib_stamp}"
-)
-add_custom_target(zlib_sysroot DEPENDS "${_zlib_stamp}")
-file(WRITE "${CMAKE_BINARY_DIR}/scripts/WriteZlibPC.cmake" "include(\"${PROJECT_ROOT}/cmake/modules/ExternalBuild.cmake\")\nwrite_pkg_config(OUTPUT \"\${OUTPUT}\" NAME zlib DESCRIPTION \"zlib compression library\" VERSION 1.2.13 PREFIX \"\${PREFIX}\" LIBS -lz)")
-
-# ─── 9. Mesa ────────────────────────────────────────────────────────────────
-ExternalProject_Add(mesa
-    SOURCE_DIR "${THIRD_PARTY}/mesa" BINARY_DIR "${MESA_BUILD_DIR}" INSTALL_DIR "${X11_SYSROOT}"
-    # build.sh applies this too, but the VST turnip scripts reset
-    # 3rd_party/mesa after it; apply-patches.sh skips it when present.
-    PATCH_COMMAND bash "${PROJECT_ROOT}/scripts/apply-patches.sh"
-        "${THIRD_PARTY}/patches/mesa/0001-allow-force-linux-detection-on-android.patch" <SOURCE_DIR>
-    CONFIGURE_COMMAND ${CMAKE_COMMAND} -E env "PKG_CONFIG_PATH=${_x11_pkg}" "PKG_CONFIG_LIBDIR=${X11_SYSROOT}/lib/pkgconfig" "PKG_CONFIG_SYSROOT_DIR=" meson setup <BINARY_DIR> <SOURCE_DIR> --cross-file "${MESA_BUILD_DIR}/mesa_cross.txt" --prefix=<INSTALL_DIR> --default-library=shared -Dplatforms=x11 -Dgallium-drivers=softpipe -Dvulkan-drivers= -Dglx=xlib -Degl=disabled -Dgbm=disabled -Dllvm=disabled -Dshared-glapi=enabled -Dgles1=disabled -Dgles2=disabled -Dosmesa=false -Dvalgrind=disabled -Dlibunwind=disabled -Dlmsensors=disabled -Dbuild-tests=false -Dxmlconfig=disabled -Dxlib-lease=disabled
-    BUILD_COMMAND ninja -C <BINARY_DIR> -j${NJOBS}
-    INSTALL_COMMAND ninja -C <BINARY_DIR> install
-    DEPENDS libX11 libXext expat zlib_sysroot
-    INSTALL_BYPRODUCTS "${X11_SYSROOT}/lib/libGL.so" "${X11_SYSROOT}/lib/libglapi.so"
     LOG_CONFIGURE TRUE LOG_BUILD TRUE
 )
 

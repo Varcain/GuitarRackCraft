@@ -24,8 +24,8 @@
 #
 # Usage:
 #   watch_external_sources(serd DIRECTORIES "${THIRD_PARTY}/serd/src")
-#   watch_external_sources(mesa DIRECTORIES "${THIRD_PARTY}/mesa/src"
-#                               PATTERNS "*.c" "*.h")
+#   watch_external_sources(cairo DIRECTORIES "${THIRD_PARTY}/x11/cairo/src"
+#                                PATTERNS "*.c" "*.h")
 # =============================================================================
 
 function(watch_external_sources target)

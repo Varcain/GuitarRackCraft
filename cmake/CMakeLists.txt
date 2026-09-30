@@ -117,18 +117,13 @@ file(MAKE_DIRECTORY "${X11_BUILD_DIR}" "${X11_SYSROOT}/lib" "${X11_SYSROOT}/incl
 
 generate_meson_cross_file("${X11_BUILD_DIR}/android_cross.txt" "${X11_SYSROOT}")
 
-# Mesa-specific cross-file (system='linux', -DMESA_FORCE_LINUX)
-set(MESA_BUILD_DIR "${PROJECT_ROOT}/build/mesa" CACHE PATH "Mesa build dir")
-file(MAKE_DIRECTORY "${MESA_BUILD_DIR}")
-generate_mesa_cross_file("${MESA_BUILD_DIR}/mesa_cross.txt" "${X11_SYSROOT}")
-
-# X11_ONLY: build just the X11/Cairo/Mesa sysroot (the dedicated `x11` CI job
+# X11_ONLY: build just the X11/Cairo sysroot (the dedicated `x11` CI job
 # sets -DX11_ONLY=ON). Skips the LV2/fftw/plugin builds below — they need
 # build.sh's OCaml codelet-gen + the LV2/plugin submodules and are unrelated to
 # the X11 client libs wine links. The wine + assemble jobs restore the X11 cache.
 # NOTE: this must gate every ExternalProject_Add for a plugin submodule —
 # ExternalProject validates SOURCE_DIR existence at CONFIGURE time, so a call
-# left ungated fails the x11 job (which inits only 3rd_party/{x11,expat,mesa}).
+# left ungated fails the x11 job (which inits only 3rd_party/x11 and a few others).
 option(X11_ONLY "Build only the X11 sysroot; skip LV2/fftw/plugins" OFF)
 
 if(NOT X11_ONLY)
@@ -157,8 +152,8 @@ add_library(xshm_stub STATIC "${APP_ROOT}/cpp/xshm_stub.c")
 target_compile_options(xshm_stub PRIVATE -fPIC -DANDROID -O2)
 
 # ─── Phase 1: Sysroot dependencies ───────────────────────────────────────────
-# X11/Cairo/Mesa sysroot — ALWAYS built (the `x11` job builds ONLY this; it
-# references only 3rd_party/{x11,expat,mesa}).
+# X11/Cairo sysroot — ALWAYS built (the `x11` job builds ONLY this; it
+# references only 3rd_party/x11).
 include(${CMAKE_CURRENT_SOURCE_DIR}/targets/x11_sysroot.cmake)
 
 # Everything below (LV2 libs, FFTW3, all plugin targets, metadata, all_plugins)
