@@ -154,53 +154,14 @@ add_autotools_project(libpng
 ExternalProject_Add_Step(libpng autoreconf COMMAND bash "${_ensure_autotools_script}" <SOURCE_DIR> DEPENDEES download DEPENDERS configure)
 
 # ─── 7. Cairo ───────────────────────────────────────────────────────────────
-set(_cairo_configure_script "${X11_BUILD_DIR}/configure_cairo.sh")
-grc_write_if_changed("${_cairo_configure_script}" "#!/bin/bash
-set -euo pipefail
-builddir=\"$1\"
-srcdir=\"$2\"
-prefix=\"$3\"
-pcdir=\"$builddir/pkgconfig-no-xrender\"
-
-rm -rf \"$pcdir\"
-mkdir -p \"$pcdir\"
-cp \"${X11_SYSROOT}/lib/pkgconfig/\"*.pc \"$pcdir/\" 2>/dev/null || true
-cp \"${X11_SYSROOT}/share/pkgconfig/\"*.pc \"$pcdir/\" 2>/dev/null || true
-rm -f \"$pcdir/xrender.pc\"
-
-run_setup() {
-  PKG_CONFIG_PATH=\"$pcdir\" \\
-  PKG_CONFIG_LIBDIR=\"$pcdir\" \\
-  PKG_CONFIG_SYSROOT_DIR= \\
-  meson setup \"$@\" \\
-    --prefix=\"$prefix\" \\
-    --cross-file \"${_x11_cross}\" \\
-    --default-library=static \\
-    -Dxlib=enabled \\
-    -Dxcb=disabled \\
-    -Dpng=enabled \\
-    -Dfreetype=disabled \\
-    -Dfontconfig=disabled \\
-    -Dglib=disabled \\
-    -Dspectre=disabled \\
-    -Dsymbol-lookup=disabled \\
-    -Dtests=disabled
-}
-
-if [ -f \"$builddir/meson-private/coredata.dat\" ]; then
-  run_setup --wipe \"$builddir\" \"$srcdir\"
-else
-  run_setup \"$builddir\" \"$srcdir\"
-fi
-")
-ExternalProject_Add(cairo
+# Built with the XRender backend: the sysroot has libXrender, and a cross build
+# takes pkg-config's search path from the cross file.
+add_meson_project(cairo
     SOURCE_DIR "${_x11_dir}/cairo" BINARY_DIR "${X11_BUILD_DIR}/cairo" INSTALL_DIR "${X11_SYSROOT}"
-    CONFIGURE_COMMAND bash "${_cairo_configure_script}" <BINARY_DIR> <SOURCE_DIR> <INSTALL_DIR>
-    BUILD_COMMAND ninja -C <BINARY_DIR> -j${NJOBS}
-    INSTALL_COMMAND ninja -C <BINARY_DIR> install
-    DEPENDS libX11 libXext libXrender pixman libpng
-    INSTALL_BYPRODUCTS "${X11_SYSROOT}/lib/libcairo.a"
-    LOG_CONFIGURE TRUE LOG_BUILD TRUE
+    CROSS_FILE ${_x11_cross} DEPENDS libX11 libXext libXrender pixman libpng
+    MESON_ARGS -Dxlib=enabled -Dxcb=disabled -Dpng=enabled -Dfreetype=disabled -Dfontconfig=disabled
+               -Dglib=disabled -Dspectre=disabled -Dsymbol-lookup=disabled -Dtests=disabled
+    EXTERNAL_PROJECT_ARGS INSTALL_BYPRODUCTS "${X11_SYSROOT}/lib/libcairo.a"
 )
 
 add_custom_target(x11_sysroot DEPENDS cairo x11_runtime_libs)
