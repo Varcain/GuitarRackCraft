@@ -82,18 +82,24 @@ jobs:
         id: k
         run: scripts/ci/cache-keys.sh >> "$GITHUB_OUTPUT"
 
+  # Each component job first looks its cache entry up without downloading it
+  # (lookup-only): on a hit the job is done - the consumers restore the entry
+  # themselves. On a miss it builds, then saves (only if the build succeeded).
+
   llvm:
     needs: keys
     runs-on: ubuntu-latest
     timeout-minutes: 150
     steps:
-      - uses: actions/checkout@v4
-      - name: Cache llvm-mingw install
+      - name: Look up the llvm-mingw install
         id: cache
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: vsthost_lib/external/llvm-mingw/install
           key: ${{ needs.keys.outputs.llvm }}
+          lookup-only: true
+      - if: steps.cache.outputs.cache-hit != 'true'
+        uses: actions/checkout@v4
       - name: Free disk space
         if: steps.cache.outputs.cache-hit != 'true'
         uses: jlumbroso/free-disk-space@ceedf095f4ec1a097402bc6bd80831f2e1a6fde6  # v2.0.0
@@ -108,6 +114,12 @@ jobs:
             vsthost_lib/external/wine-upstream \
             vsthost_lib/external/fex-upstream
           cd vsthost_lib && bash scripts/build-all.sh llvm
+      - name: Save the llvm-mingw install
+        if: steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: vsthost_lib/external/llvm-mingw/install
+          key: ${{ needs.keys.outputs.llvm }}
 
   llvm-android:
     needs: keys
@@ -116,13 +128,15 @@ jobs:
     env:
       NDK_VSTHOST: ${{ needs.keys.outputs.ndk_vst }}
     steps:
-      - uses: actions/checkout@v4
-      - name: Cache android LLVM install
+      - name: Look up the android LLVM install
         id: cache
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: vsthost_lib/external/llvm-android/install-android-arm64
           key: ${{ needs.keys.outputs.llvm_android }}
+          lookup-only: true
+      - if: steps.cache.outputs.cache-hit != 'true'
+        uses: actions/checkout@v4
       - name: Free disk space
         if: steps.cache.outputs.cache-hit != 'true'
         uses: jlumbroso/free-disk-space@ceedf095f4ec1a097402bc6bd80831f2e1a6fde6  # v2.0.0
@@ -143,6 +157,12 @@ jobs:
           cd vsthost_lib
           bash scripts/fetch-llvm-source.sh
           bash scripts/build-llvm-android.sh
+      - name: Save the android LLVM install
+        if: steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: vsthost_lib/external/llvm-android/install-android-arm64
+          key: ${{ needs.keys.outputs.llvm_android }}
 
   x11:
     needs: keys
@@ -151,28 +171,36 @@ jobs:
     env:
       NDK_NATIVE: ${{ needs.keys.outputs.ndk_native }}
     steps:
-      - uses: actions/checkout@v4
-      - name: Cache X11 sysroot
-        id: x11-cache
-        uses: actions/cache@v4
+      - name: Look up the X11 sysroot
+        id: cache
+        uses: actions/cache/restore@v4
         with:
           path: build/x11_ui
           key: ${{ needs.keys.outputs.x11 }}
+          lookup-only: true
+      - if: steps.cache.outputs.cache-hit != 'true'
+        uses: actions/checkout@v4
       - name: System deps + NDK
-        if: steps.x11-cache.outputs.cache-hit != 'true'
+        if: steps.cache.outputs.cache-hit != 'true'
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends $COMMON_APT $X11_APT $NATIVE_APT
           yes | "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
           "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" "ndk;${NDK_NATIVE}"
       - name: Init X11 submodules
-        if: steps.x11-cache.outputs.cache-hit != 'true'
+        if: steps.cache.outputs.cache-hit != 'true'
         run: git submodule update --init --recursive 3rd_party/x11
       - name: Build X11 sysroot
-        if: steps.x11-cache.outputs.cache-hit != 'true'
+        if: steps.cache.outputs.cache-hit != 'true'
         env:
           ANDROID_NDK: ${{ env.ANDROID_SDK_ROOT }}/ndk/${{ env.NDK_NATIVE }}
         run: cd vsthost_lib && bash scripts/build-all.sh x11
+      - name: Save the X11 sysroot
+        if: steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: build/x11_ui
+          key: ${{ needs.keys.outputs.x11 }}
 
   wine:
     needs: [keys, llvm, x11]
@@ -181,10 +209,9 @@ jobs:
     env:
       NDK_VSTHOST: ${{ needs.keys.outputs.ndk_vst }}
     steps:
-      - uses: actions/checkout@v4
-      - name: Cache winedeps
+      - name: Look up winedeps
         id: winedeps-cache
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: |
             vsthost_lib/toolchain/x11-libs
@@ -193,12 +220,16 @@ jobs:
             vsthost_lib/toolchain/android-libs
             vsthost_lib/toolchain/gnutls-android-arm64
           key: ${{ needs.keys.outputs.winedeps }}
-      - name: Cache wine output tar
+          lookup-only: true
+      - name: Look up the wine output tar
         id: wine-cache
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: vsthost_lib/wine-android-out.tar
           key: ${{ needs.keys.outputs.wine }}
+          lookup-only: true
+      - if: steps.winedeps-cache.outputs.cache-hit != 'true' || steps.wine-cache.outputs.cache-hit != 'true'
+        uses: actions/checkout@v4
       - name: Free disk space
         if: steps.winedeps-cache.outputs.cache-hit != 'true' || steps.wine-cache.outputs.cache-hit != 'true'
         uses: jlumbroso/free-disk-space@ceedf095f4ec1a097402bc6bd80831f2e1a6fde6  # v2.0.0
@@ -210,9 +241,33 @@ jobs:
           sudo apt-get install -y --no-install-recommends $COMMON_APT $X11_APT
           yes | "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
           "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" "ndk;${NDK_VSTHOST}"
+      # wine builds against winedeps: restore them when cached, else build them.
+      - name: Restore winedeps
+        if: steps.winedeps-cache.outputs.cache-hit == 'true' && steps.wine-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            vsthost_lib/toolchain/x11-libs
+            vsthost_lib/toolchain/x11-headers
+            vsthost_lib/toolchain/wine-fonts
+            vsthost_lib/toolchain/android-libs
+            vsthost_lib/toolchain/gnutls-android-arm64
+          key: ${{ needs.keys.outputs.winedeps }}
+          fail-on-cache-miss: true
       - name: Build winedeps
         if: steps.winedeps-cache.outputs.cache-hit != 'true'
         run: cd vsthost_lib && bash scripts/build-all.sh winedeps
+      - name: Save winedeps
+        if: steps.winedeps-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            vsthost_lib/toolchain/x11-libs
+            vsthost_lib/toolchain/x11-headers
+            vsthost_lib/toolchain/wine-fonts
+            vsthost_lib/toolchain/android-libs
+            vsthost_lib/toolchain/gnutls-android-arm64
+          key: ${{ needs.keys.outputs.winedeps }}
       - name: Restore llvm-mingw
         if: steps.wine-cache.outputs.cache-hit != 'true'
         uses: actions/cache/restore@v4
@@ -237,21 +292,29 @@ jobs:
           bash scripts/build-all.sh wine
           tar --exclude='*.o' --exclude='*.a' --exclude='*.cross.o' \
               -cf wine-android-out.tar -C external/wine-upstream build-android-arm64
+      - name: Save the wine output tar
+        if: steps.wine-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: vsthost_lib/wine-android-out.tar
+          key: ${{ needs.keys.outputs.wine }}
 
   fex:
     needs: [keys, llvm]
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
-      - uses: actions/checkout@v4
-      - name: Cache FEX Bin
+      - name: Look up FEX Bin
         id: cache
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: |
             vsthost_lib/external/fex-upstream/build-arm64ec/Bin
             vsthost_lib/external/fex-upstream/build-wow64/Bin
           key: ${{ needs.keys.outputs.fex }}
+          lookup-only: true
+      - if: steps.cache.outputs.cache-hit != 'true'
+        uses: actions/checkout@v4
       - name: Free disk space
         if: steps.cache.outputs.cache-hit != 'true'
         uses: jlumbroso/free-disk-space@ceedf095f4ec1a097402bc6bd80831f2e1a6fde6  # v2.0.0
@@ -270,19 +333,29 @@ jobs:
           sudo apt-get install -y --no-install-recommends $COMMON_APT
           git submodule update --init --recursive vsthost_lib/external/fex-upstream
           cd vsthost_lib && bash scripts/build-all.sh fex
+      - name: Save FEX Bin
+        if: steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            vsthost_lib/external/fex-upstream/build-arm64ec/Bin
+            vsthost_lib/external/fex-upstream/build-wow64/Bin
+          key: ${{ needs.keys.outputs.fex }}
 
   dxvk:
     needs: [keys, llvm]
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
-      - name: Cache DXVK assets
+      - name: Look up the DXVK assets
         id: cache
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: vsthost_lib/src/main/assets/dxvk
           key: ${{ needs.keys.outputs.dxvk }}
+          lookup-only: true
+      - if: steps.cache.outputs.cache-hit != 'true'
+        uses: actions/checkout@v4
       - name: Free disk space
         if: steps.cache.outputs.cache-hit != 'true'
         uses: jlumbroso/free-disk-space@ceedf095f4ec1a097402bc6bd80831f2e1a6fde6  # v2.0.0
@@ -303,6 +376,12 @@ jobs:
             vsthost_lib/external/dxvk vsthost_lib/external/Vulkan-Headers \
             vsthost_lib/external/glslang
           cd vsthost_lib && bash scripts/build-all.sh dxvk
+      - name: Save the DXVK assets
+        if: steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: vsthost_lib/src/main/assets/dxvk
+          key: ${{ needs.keys.outputs.dxvk }}
 
   mesa:
     needs: keys
@@ -311,13 +390,15 @@ jobs:
     env:
       NDK_VSTHOST: ${{ needs.keys.outputs.ndk_vst }}
     steps:
-      - uses: actions/checkout@v4
-      - name: Cache Mesa-Zink asset
+      - name: Look up the Mesa-Zink asset
         id: cache
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: vsthost_lib/src/main/assets/mesa-zink-libs.tar.gz
           key: ${{ needs.keys.outputs.mesa }}
+          lookup-only: true
+      - if: steps.cache.outputs.cache-hit != 'true'
+        uses: actions/checkout@v4
       - name: Free disk space
         if: steps.cache.outputs.cache-hit != 'true'
         uses: jlumbroso/free-disk-space@ceedf095f4ec1a097402bc6bd80831f2e1a6fde6  # v2.0.0
@@ -333,3 +414,9 @@ jobs:
           "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" "ndk;${NDK_VSTHOST}"
           git submodule update --init 3rd_party/mesa
           cd vsthost_lib && bash scripts/build-all.sh mesa
+      - name: Save the Mesa-Zink asset
+        if: steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: vsthost_lib/src/main/assets/mesa-zink-libs.tar.gz
+          key: ${{ needs.keys.outputs.mesa }}
