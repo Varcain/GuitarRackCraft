@@ -24,16 +24,49 @@
  * (OpenGL-include.hpp, nanovg, etc.) that does #include <GL/gl.h> gets the
  * GLES2 declarations instead. This avoids modifying any AIDA-X submodule files.
  *
- * Placed on the include path BEFORE the NDK/Mesa sysroot so it shadows
- * any system GL/gl.h.
+ * It comes on the include path AFTER the X11 sysroot (CMake puts the include
+ * directories before CMAKE_CXX_FLAGS, where aidax_full_configure.sh adds it),
+ * so it is the GL/gl.h only because the sysroot has none since the native
+ * Mesa build is gone. (An older build/x11_ui may still hold Mesa's desktop
+ * GL headers, which declare a superset of this.)
  */
 #ifndef _GL_GL_H_COMPAT_SHIM
 #define _GL_GL_H_COMPAT_SHIM
 
-#ifdef DGL_USE_GLES2
-#  include <GLES2/gl2.h>
-#else
+#ifndef DGL_USE_GLES2
 #  error "This GL/gl.h shim is only for DGL_USE_GLES2 builds"
+#else
+
+#include <GLES2/gl2.h>
+
+/* GL_BGR, which DPF's image-format mapping (OpenGL.hpp, NanoVG.cpp) uses
+ * besides GLES2's formats; the value is desktop GL's. */
+#define GL_BGR 0x80E0
+
+/* DPF's OpenGL.cpp also compiles its legacy GL 1.x drawing (immediate mode,
+ * matrix stack), which a DGL_USE_GLES2 build never calls. Declared only so it
+ * compiles: --gc-sections drops it, and libGLESv2 doesn't export these, so
+ * --no-undefined fails the link if any of them ever becomes reachable. */
+#define GL_QUADS                0x0007
+#define GL_POLYGON              0x0009
+#define GL_TEXTURE_BORDER_COLOR 0x1004
+typedef double GLdouble;
+#ifdef __cplusplus
+extern "C" {
+#endif
+GL_APICALL void GL_APIENTRY glBegin(GLenum mode);
+GL_APICALL void GL_APIENTRY glEnd(void);
+GL_APICALL void GL_APIENTRY glVertex2d(GLdouble x, GLdouble y);
+GL_APICALL void GL_APIENTRY glTexCoord2f(GLfloat s, GLfloat t);
+GL_APICALL void GL_APIENTRY glColor3f(GLfloat red, GLfloat green, GLfloat blue);
+GL_APICALL void GL_APIENTRY glColor4f(GLfloat red, GLfloat green, GLfloat blue, GLfloat alpha);
+GL_APICALL void GL_APIENTRY glPushMatrix(void);
+GL_APICALL void GL_APIENTRY glPopMatrix(void);
+GL_APICALL void GL_APIENTRY glTranslatef(GLfloat x, GLfloat y, GLfloat z);
+GL_APICALL void GL_APIENTRY glRotatef(GLfloat angle, GLfloat x, GLfloat y, GLfloat z);
+#ifdef __cplusplus
+}
 #endif
 
+#endif /* DGL_USE_GLES2 */
 #endif /* _GL_GL_H_COMPAT_SHIM */

@@ -94,7 +94,9 @@ ExternalProject_Add(aidax_full_cross
 )
 
 watch_external_sources(aidax_full_native DIRECTORIES "${_aidax_full_src}/src")
-watch_external_sources(aidax_full_cross  DIRECTORIES "${_aidax_full_src}/src" "${_aidax_full_src}/modules/dpf/dgl/src" "${_aidax_full_src}/modules/dpf/distrho")
+# (+ the GL/gl.h shim the cross build compiles the DPF UI against)
+watch_external_sources(aidax_full_cross  DIRECTORIES "${_aidax_full_src}/src" "${_aidax_full_src}/modules/dpf/dgl/src" "${_aidax_full_src}/modules/dpf/distrho"
+                                                     "${_patches_dir}/GL")
 
 # ─── Phase 3: Sync & Patch ───────────────────────────────────────────────────
 # Generate sync script from template
