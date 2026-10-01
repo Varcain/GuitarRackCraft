@@ -145,9 +145,37 @@ add_meson_project(pixman
     EXTERNAL_PROJECT_ARGS INSTALL_BYPRODUCTS "${X11_SYSROOT}/lib/libpixman-1.a"
 )
 
-# ─── 6. libpng ──────────────────────────────────────────────────────────────
+# ─── 6. zlib + libpng ───────────────────────────────────────────────────────
+# libpng.pc requires zlib, and pkg-config only looks in the sysroot: without a
+# zlib.pc there, cairo's meson finds no libpng at all. So the NDK's zlib - its
+# headers, its static library and a zlib.pc - goes into the sysroot, where the
+# UI link line's -lz also takes this libz.a.
+file(STRINGS "${NDK_SYSROOT}/usr/include/zlib.h" _zlib_version REGEX "^#define ZLIB_VERSION ")
+string(REGEX REPLACE "^#define ZLIB_VERSION \"([^\"]*)\".*" "\\1" _zlib_version "${_zlib_version}")
+set(_zlib_pc_script "${CMAKE_BINARY_DIR}/scripts/WriteZlibPC.cmake")
+grc_write_if_changed("${_zlib_pc_script}"
+    "include(\"${PROJECT_ROOT}/cmake/modules/ExternalBuild.cmake\")
+write_pkg_config(OUTPUT \"\${OUTPUT}\" NAME zlib DESCRIPTION \"zlib compression library\"
+    VERSION \"${_zlib_version}\" PREFIX \"\${PREFIX}\" LIBS -lz)
+")
+set(_zlib_stamp "${X11_BUILD_DIR}/zlib_sysroot.stamp")
+set(_ndk_zlib "${NDK_SYSROOT}/usr/lib/aarch64-linux-android/libz.a"
+              "${NDK_SYSROOT}/usr/include/zlib.h" "${NDK_SYSROOT}/usr/include/zconf.h")
+add_custom_command(
+    OUTPUT "${_zlib_stamp}"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${X11_SYSROOT}/lib/pkgconfig" "${X11_SYSROOT}/include"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${NDK_SYSROOT}/usr/lib/aarch64-linux-android/libz.a" "${X11_SYSROOT}/lib/libz.a"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${NDK_SYSROOT}/usr/include/zlib.h" "${NDK_SYSROOT}/usr/include/zconf.h" "${X11_SYSROOT}/include/"
+    COMMAND ${CMAKE_COMMAND} -DOUTPUT=${X11_SYSROOT}/lib/pkgconfig/zlib.pc -DPREFIX=${X11_SYSROOT} -P "${_zlib_pc_script}"
+    COMMAND ${CMAKE_COMMAND} -E touch "${_zlib_stamp}"
+    DEPENDS ${_ndk_zlib} "${_zlib_pc_script}"
+    COMMENT "Installing the NDK's zlib into the X11 sysroot"
+)
+add_custom_target(zlib_sysroot DEPENDS "${_zlib_stamp}")
+
 add_autotools_project(libpng
     SOURCE_DIR "${_x11_dir}/libpng" BINARY_DIR "${X11_BUILD_DIR}/libpng" INSTALL_DIR "${X11_SYSROOT}"
+    DEPENDS zlib_sysroot
     CONFIGURE_ARGS --enable-static --disable-shared "CPPFLAGS=-I${X11_SYSROOT}/include" "CFLAGS=${NDK_CFLAGS_STR}" "LDFLAGS=-L${X11_SYSROOT}/lib"
     EXTERNAL_PROJECT_ARGS INSTALL_BYPRODUCTS "${X11_SYSROOT}/lib/libpng.a"
 )
@@ -158,7 +186,7 @@ ExternalProject_Add_Step(libpng autoreconf COMMAND bash "${_ensure_autotools_scr
 # takes pkg-config's search path from the cross file.
 add_meson_project(cairo
     SOURCE_DIR "${_x11_dir}/cairo" BINARY_DIR "${X11_BUILD_DIR}/cairo" INSTALL_DIR "${X11_SYSROOT}"
-    CROSS_FILE ${_x11_cross} DEPENDS libX11 libXext libXrender pixman libpng
+    CROSS_FILE ${_x11_cross} DEPENDS libX11 libXext libXrender pixman libpng zlib_sysroot
     MESON_ARGS -Dxlib=enabled -Dxcb=disabled -Dpng=enabled -Dfreetype=disabled -Dfontconfig=disabled
                -Dglib=disabled -Dspectre=disabled -Dsymbol-lookup=disabled -Dtests=disabled
     EXTERNAL_PROJECT_ARGS INSTALL_BYPRODUCTS "${X11_SYSROOT}/lib/libcairo.a"

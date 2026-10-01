@@ -37,6 +37,9 @@ function(add_meson_project TARGET_NAME)
                 --prefix=<INSTALL_DIR>
                 --cross-file ${ARG_CROSS_FILE}
                 -Ddefault_library=static
+                # A dependency it can't find fails the configure, rather than
+                # being downloaded and built from the project's .wrap file.
+                --wrap-mode=nofallback
                 ${ARG_MESON_ARGS}
         BUILD_COMMAND     ninja -C <BINARY_DIR> -j${NJOBS}
         INSTALL_COMMAND   ninja -C <BINARY_DIR> install
