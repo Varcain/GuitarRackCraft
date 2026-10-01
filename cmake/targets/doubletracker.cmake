@@ -67,7 +67,10 @@ add_custom_command(
     COMMAND ${CMAKE_COMMAND}
         -DFILE="${_dt_cpp}"
         -P "${CMAKE_CURRENT_LIST_DIR}/../inject_arm64_ftz.cmake"
-    DEPENDS "${_dt_dsp}"
+    # The generated code also changes with the faust binary (a host upgrade
+    # brings its own libraries, which -i inlines) and the architecture file.
+    DEPENDS "${_dt_dsp}" "${FAUST}" /usr/share/faust/lv2.cpp
+            "${CMAKE_CURRENT_LIST_DIR}/../inject_arm64_ftz.cmake"
     COMMENT "Generating doubletracker C++ from Faust DSP (lv2.cpp architecture)"
 )
 add_custom_target(doubletracker_faust DEPENDS "${_dt_cpp}")
